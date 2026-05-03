@@ -1,0 +1,1 @@
+ALTER TABLE "company_skills" ADD COLUMN "allowed_roles" text[] DEFAULT ARRAY[]::text[] NOT NULL;

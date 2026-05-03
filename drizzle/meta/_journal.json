@@ -1,0 +1,237 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1776701545669,
+      "tag": "0000_luxuriant_groot",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1776706618750,
+      "tag": "0001_harsh_triton",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1776717652171,
+      "tag": "0002_bright_living_lightning",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1776725892283,
+      "tag": "0003_worthless_white_queen",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1776729406299,
+      "tag": "0004_complete_lorna_dane",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1776758522233,
+      "tag": "0005_fat_sheva_callister",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1776767126040,
+      "tag": "0006_luxuriant_white_queen",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1776770175112,
+      "tag": "0007_true_justin_hammer",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1776772991279,
+      "tag": "0008_heavy_zuras",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1776779240602,
+      "tag": "0009_harsh_yellowjacket",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1776803388625,
+      "tag": "0010_blue_lucky_pierre",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1776805760492,
+      "tag": "0011_green_corsair",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1776845307054,
+      "tag": "0012_flimsy_ken_ellis",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1776847819717,
+      "tag": "0013_soft_genesis",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1776900000000,
+      "tag": "0014_rename_runs_to_traces",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1776864931783,
+      "tag": "0015_mysterious_umar",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1776900000001,
+      "tag": "0016_drop_identity_columns",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1745331600000,
+      "tag": "0017_drop_hire_feature",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1745417400000,
+      "tag": "0018_agent_workspace_files",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1745503800000,
+      "tag": "0019_agent_skill_syncs",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1745590200000,
+      "tag": "0020_add_gateway_run_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1745676600000,
+      "tag": "0021_remove_wakeup_requests",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1745763000000,
+      "tag": "0022_add_conversation_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1745849400000,
+      "tag": "0023_tasks_linked_trace_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1745935800000,
+      "tag": "0024_drop_notification_dismissals",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1746022200000,
+      "tag": "0025_autonomy_hire_columns",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1746108600000,
+      "tag": "0026_autonomy_phase1_closure",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1746195000000,
+      "tag": "0027_user_pending_device_keypair",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1746281400000,
+      "tag": "0028_company_identity_fields",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1746367800000,
+      "tag": "0029_kickoff_state",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1746454200000,
+      "tag": "0030_company_profile_split",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1746540600000,
+      "tag": "0031_agent_workstation_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1746627000000,
+      "tag": "0032_agent_model_override",
+      "breakpoints": true
+    }
+  ]
+}

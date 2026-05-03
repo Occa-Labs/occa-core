@@ -1,0 +1,30 @@
+{
+  "name": "occa",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently -n server,web,worker -c blue,green,yellow \"pnpm dev:server\" \"pnpm dev:web\" \"pnpm dev:worker\"",
+    "dev:server": "pnpm --filter @occa/server dev",
+    "dev:web": "pnpm --filter @occa/web dev",
+    "dev:worker": "pnpm --filter @occa/worker dev",
+    "build": "pnpm --filter @occa/web build",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:studio": "drizzle-kit studio",
+    "typecheck": "pnpm -r exec tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.39",
+    "concurrently": "^9.2.1",
+    "drizzle-kit": "^0.31.0",
+    "drizzle-orm": "^0.44.0",
+    "pg": "^8.20.0",
+    "typescript": "^5"
+  },
+  "pnpm": {
+    "ignoredBuiltDependencies": [
+      "sharp",
+      "unrs-resolver"
+    ]
+  }
+}

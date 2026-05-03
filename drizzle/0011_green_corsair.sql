@@ -1,0 +1,1 @@
+ALTER TABLE "agents" ADD COLUMN "skills_initialized_at" timestamp with time zone;

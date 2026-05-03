@@ -1,0 +1,156 @@
+// Agent-agnostic adapter contract. Concrete adapters (openclaw, claude-cli,
+// cursor, etc.) implement this interface and register themselves in the
+// dispatcher's adapter registry. The dispatcher is the only caller.
+
+import type {
+  LivenessState,
+  TraceStatus,
+  TraceUsage,
+} from "@occa/shared/types";
+import type {
+  AdapterTraceResult,
+  RuntimeEnv,
+  WakePayload,
+} from "./wake-payload";
+
+export interface AdapterTraceEvent {
+  type: string; // "chunk" | "tool_call" | "status" | "error" | ...
+  stream?: "stdout" | "stderr";
+  level?: string;
+  message?: string;
+  payload?: Record<string, unknown>;
+}
+
+// Assigned-skill view passed wake-time. Markdown is included so adapters that
+// want to inline it in the wake prompt can do so without a round-trip; adapters
+// that prefer lazy fetch can drop it and just surface the key list.
+export interface AssignedSkill {
+  key: string;
+  slug: string;
+  name: string;
+  description: string | null;
+  markdown: string;
+}
+
+export interface AdapterExecutionContext {
+  payload: WakePayload;
+  adapterConfig: Record<string, unknown>;
+  runtimeEnv: RuntimeEnv;
+  signal: AbortSignal;
+  onEvent: (event: AdapterTraceEvent) => void;
+  onLivenessHint: (state: LivenessState) => void;
+  sessionParams: Record<string, unknown> | null;
+  skills: AssignedSkill[];
+}
+
+export interface ProbeResult {
+  ok: boolean;
+  latencyMs: number;
+  error?: string;
+  info?: Record<string, unknown>;
+}
+
+// ── Provision lifecycle types ─────────────────────────────────────────────────
+// Used by the create-agent pipeline (server/services/agent-create.ts).
+// Each method maps to one phase of the lifecycle so adapters only need to
+// know about their own protocol — the server orchestrates the DB operations.
+
+export type PrepareCredentialsResult =
+  | {
+      ok: true;
+      /** Adapter-specific fields merged into adapterConfig before DB insert.
+       * openclaw: { deviceKeypair, deviceToken? }
+       * claude-code: {} (API key stays in baseConfig as-is)
+       */
+      configPatch: Record<string, unknown>;
+    }
+  | { ok: false; error: string; reason?: string };
+
+export interface AdapterProvisionInput {
+  /** Full adapterConfig after prepareCredentials configPatch was merged in. */
+  adapterConfig: Record<string, unknown>;
+  /** Desired identifier on the adapter side (e.g. "occa-a1b2c3d4"). */
+  desiredExternalId: string;
+  /** Desired workspace directory. Adapter may override in the result. */
+  workspacePath: string;
+}
+
+export type AdapterProvisionResult =
+  | {
+      ok: true;
+      externalAgentId: string;
+      workspacePath: string;
+      /** Additional fields merged into adapterConfig after provision.
+       * openclaw: { openclawAgentId, workspacePath, deviceToken? }
+       */
+      configPatch: Record<string, unknown>;
+    }
+  | { ok: false; error: string; reason?: string };
+
+export interface AdapterDeprovisionInput {
+  adapterConfig: Record<string, unknown>;
+  externalAgentId: string;
+}
+
+export interface AdapterSeedInput {
+  adapterConfig: Record<string, unknown>;
+  externalAgentId: string;
+  files: Array<{ filename: string; content: string }>;
+}
+
+export type AdapterSeedResult =
+  | { ok: true; pushed: number }
+  | { ok: false; error: string; reason?: string };
+
+// ── Direct prompt / task execution ───────────────────────────────────────────
+// Used by the server task-dispatcher (server/services/task-dispatcher.ts).
+// Distinct from executeTrace (used by the worker) — the dispatcher sends a
+// single prompt and streams the response; the worker runs a full wake cycle.
+
+export interface AdapterSendPromptInput {
+  adapterConfig: Record<string, unknown>;
+  externalAgentId: string;
+  /** Full session key, e.g. "agent:{id}:task:{traceId}". */
+  sessionKey: string;
+  message: string;
+  onEvent?: (stream: string, data: Record<string, unknown>) => void;
+  waitTimeoutMs?: number;
+}
+
+export type AdapterSendPromptResult =
+  | { ok: true; reply: string }
+  | { ok: false; error: string; reason?: string };
+
+export interface AgentAdapter {
+  type: string;
+
+  // ── Connection check ────────────────────────────────────────────────────
+  probeConnection(config: Record<string, unknown>): Promise<ProbeResult>;
+
+  // ── Provision lifecycle ─────────────────────────────────────────────────
+  /** Step 1: validate base creds, generate adapter-internal credentials.
+   *  Returns configPatch merged into adapterConfig before DB insert. */
+  prepareCredentials(
+    baseConfig: Record<string, unknown>,
+  ): Promise<PrepareCredentialsResult>;
+  /** Step 2: create agent entity on the adapter side. */
+  provision(input: AdapterProvisionInput): Promise<AdapterProvisionResult>;
+  /** Cleanup — called on rollback or agent delete. Best-effort. */
+  deprovision(input: AdapterDeprovisionInput): Promise<void>;
+  /** Step 3: push initial workspace files to the agent. */
+  seedWorkspace(input: AdapterSeedInput): Promise<AdapterSeedResult>;
+
+  // ── Task execution ──────────────────────────────────────────────────────
+  /** Send a single prompt and stream back the reply (server dispatcher). */
+  sendPrompt(input: AdapterSendPromptInput): Promise<AdapterSendPromptResult>;
+  /** Run a full wake/trace cycle (worker dispatcher). */
+  executeTrace(ctx: AdapterExecutionContext): Promise<AdapterTraceResult>;
+}
+
+// Re-exports so callers don't have to import from multiple subpaths.
+export type {
+  AdapterTraceResult,
+  WakePayload,
+  RuntimeEnv,
+} from "./wake-payload";
+export type { LivenessState, TraceStatus, TraceUsage };

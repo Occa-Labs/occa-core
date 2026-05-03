@@ -1,0 +1,221 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #101214;
+  color: white;
+  font-family:
+    system-ui,
+    -apple-system,
+    sans-serif;
+}
+
+@theme inline {
+  --font-heading: var(--font-sans);
+  --font-sans: var(--font-sans);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+}
+
+:root {
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --radius: 0.625rem;
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.922 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+}
+
+/* Design tokens — keep in sync with src/components/ui/tokens.ts */
+:root {
+  --surface-bg: rgba(18, 18, 22, 0.78);
+  --surface-bg-elev: rgba(26, 26, 32, 0.88);
+  --surface-bg-rec: rgba(12, 12, 16, 0.65);
+  --surface-blur: blur(24px) saturate(1.6);
+  --surface-blur-hvy: blur(60px) saturate(1.8) brightness(1.06);
+  --surface-border: 1px solid rgba(255, 255, 255, 0.09);
+  --surface-divider: 1px solid rgba(255, 255, 255, 0.065);
+
+  /* App-level backgrounds. `loading` = true blackout shown before any
+   * 3D / shell content is ready (dynamic-import fallback, pre-WebGL
+   * spinner). `scene` = the lighter neutral the 3D office composites
+   * over, also used by the main app container behind the OS shell. */
+  --app-bg-loading: #101214;
+  --app-bg-scene: #202226;
+}
+
+@layer utilities {
+  /* Base surface — dock, windows */
+  .glass {
+    background: var(--surface-bg);
+    backdrop-filter: var(--surface-blur);
+    -webkit-backdrop-filter: var(--surface-blur);
+    border: var(--surface-border);
+  }
+
+  /* Recessed — inner panels, sidebars */
+  .glass-recessed {
+    background: var(--surface-bg-rec);
+    backdrop-filter: var(--surface-blur);
+    -webkit-backdrop-filter: var(--surface-blur);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+  }
+
+  /* Elevated — modals, popovers */
+  .glass-elevated {
+    background: var(--surface-bg-elev);
+    backdrop-filter: var(--surface-blur-hvy);
+    -webkit-backdrop-filter: var(--surface-blur-hvy);
+    border: var(--surface-border);
+  }
+}
+
+/* Spotlight glass — dark tinted card with a 1px gradient inner-border that
+ * follows the cursor. Used by <Card spotlight>. The two custom properties
+ * are written by `useCursorSpotlight` on every rAF; both have animatable
+ * `<number>` syntax so the gradient angle/intensity transitions smoothly
+ * across writes (no flicker on style swap). */
+@property --spotlight-angle {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: -45;
+}
+
+@property --spotlight-distance {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 600;
+}
+
+@layer utilities {
+  /* Marker class for the spotlight card. The bg tint + backdrop-filter
+   * + box-shadow live as INLINE styles on the element (in Card.tsx) to
+   * win the Tailwind v4 utility cascade unconditionally. This class is
+   * here only to host the ::after rim pseudo, which can't be applied
+   * via inline style. */
+  .glass-spotlight {
+    position: relative;
+  }
+
+  .glass-spotlight::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    padding: 0.75px;
+    border-radius: inherit;
+    /* Brighter spotlight against the lighter base — still readable as a
+     * subtle highlight that follows the cursor. */
+    background-image: linear-gradient(
+      calc(1deg * var(--spotlight-angle)),
+      rgba(255, 255, 255, calc(0.7 - var(--spotlight-distance) / 4000)) 0%,
+      rgba(255, 255, 255, 0) 40%,
+      rgba(255, 255, 255, 0) 60%
+        /* rgba(255, 255, 255, calc(0.7 - var(--spotlight-distance) / 4000)) 100% */
+    );
+    -webkit-mask:
+      linear-gradient(#fff 0 0) content-box,
+      linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    pointer-events: none;
+  }
+}
+
+@keyframes text-shine {
+  0% {
+    background-position: -500%;
+  }
+  100% {
+    background-position: 500%;
+  }
+}
+
+@layer utilities {
+  .animate-text-shine {
+    overflow: hidden;
+    background: linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0.35),
+      rgba(255, 255, 255, 0.9),
+      rgba(255, 255, 255, 0.35)
+    );
+    background-repeat: no-repeat;
+    background-size: 80%;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: rgba(255, 255, 255, 0);
+    animation: text-shine 2s linear infinite;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
+}

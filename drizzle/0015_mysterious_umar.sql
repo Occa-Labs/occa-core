@@ -1,0 +1,12 @@
+-- Intentional no-op.
+-- This migration was originally generated pre-rename and would have recreated
+-- traces/trace_events from scratch by dropping heartbeat_runs/heartbeat_run_events.
+-- It was superseded by 0014_rename_runs_to_traces.sql, which was inserted
+-- before it in the journal idx order and does the same transform in-place via
+-- ALTER TABLE ... RENAME. Running the original 0015 after 0014 errors with
+-- `relation "trace_events" already exists` on any fresh DB.
+--
+-- We keep the file (and the journal hash slot) so existing environments that
+-- already ran this migration stay in sync. The SELECT 1 ensures drizzle-kit
+-- has at least one statement to execute.
+SELECT 1;

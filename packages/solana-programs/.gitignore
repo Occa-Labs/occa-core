@@ -1,0 +1,8 @@
+# Anchor build output — never commit
+target/
+
+# Solana test ledger
+test-ledger/
+
+# Node
+node_modules/

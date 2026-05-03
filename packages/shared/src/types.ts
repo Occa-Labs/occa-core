@@ -1,0 +1,919 @@
+import type {
+  users,
+  authNonces,
+  companies,
+  agents,
+  tasks,
+  taskComments,
+  companySkills,
+  traces,
+  traceEvents,
+  agentTaskSessions,
+  agentRuntimeState,
+  routines,
+  routineTriggers,
+  routineRuns,
+  agentApiKeys,
+  approvals,
+  agentSkillSyncs,
+  companyProfile,
+} from "./schema";
+
+export type User = typeof users.$inferSelect;
+export type AuthNonce = typeof authNonces.$inferSelect;
+export type Company = typeof companies.$inferSelect;
+export type CompanyProfile = typeof companyProfile.$inferSelect;
+export type Agent = typeof agents.$inferSelect;
+export type Task = typeof tasks.$inferSelect;
+export type TaskComment = typeof taskComments.$inferSelect;
+export type CompanySkill = typeof companySkills.$inferSelect;
+export type Trace = typeof traces.$inferSelect;
+export type TraceEvent = typeof traceEvents.$inferSelect;
+export type AgentTaskSession = typeof agentTaskSessions.$inferSelect;
+export type AgentRuntimeStateRow = typeof agentRuntimeState.$inferSelect;
+export type Routine = typeof routines.$inferSelect;
+export type RoutineTrigger = typeof routineTriggers.$inferSelect;
+export type RoutineRun = typeof routineRuns.$inferSelect;
+export type AgentApiKey = typeof agentApiKeys.$inferSelect;
+export type Approval = typeof approvals.$inferSelect;
+export type AgentSkillSync = typeof agentSkillSyncs.$inferSelect;
+
+// ── Heartbeat policy — stored inside agents.runtimeConfig.heartbeat ──
+// Read with `runtimeConfig.heartbeat ?? defaults`.
+export interface HeartbeatConfig {
+  enabled: boolean;
+  intervalSec: number;
+  wakeOnAssignment: boolean;
+  wakeOnOnDemand: boolean;
+  wakeOnAutomation: boolean;
+  cooldownSec: number;
+}
+
+export const defaultHeartbeatConfig: HeartbeatConfig = {
+  enabled: true,
+  intervalSec: 300,
+  wakeOnAssignment: true,
+  wakeOnOnDemand: true,
+  wakeOnAutomation: true,
+  cooldownSec: 10,
+};
+
+// ── JWT payload shape (mirrored between server signer + web verifier) ──
+export interface AuthTokenPayload {
+  userId: string;
+  walletAddress: string;
+  iat?: number;
+  exp?: number;
+}
+
+// ── Public-facing user shape (API responses) ──
+export interface AuthUser {
+  id: string;
+  walletAddress: string;
+  isPlatform: boolean;
+  createdAt: string;
+}
+
+// ── Company DTO sent to client ──
+export interface CompanyDTO {
+  id: string;
+  name: string;
+  kind: "user" | "showcase";
+  createdAt: string;
+
+  // Identity / branding
+  tagline: string | null;
+  logoUrl: string | null;
+  niche: string | null;
+  foundedAt: string | null; // ISO date
+
+  // Editorial identity
+  coverageScope: string | null;
+  coverageExcluded: string | null;
+  contentPillars: string[];
+  brandVoice: string | null;
+  forbiddenWords: string[];
+
+  // Mission & audience
+  mission: string | null;
+  vision: string | null;
+  targetAudience: string | null;
+  usps: string[];
+
+  // Output / services
+  coreOffering: string | null;
+  serviceCatalog: string[];
+
+  // Contact
+  contactEmail: string | null;
+  salesEmail: string | null;
+  phone: string | null;
+
+  // Presence
+  websiteUrl: string | null;
+  blogUrl: string | null;
+  newsletterUrl: string | null;
+  docsUrl: string | null;
+  socialHandles: Record<string, string>;
+
+  // Crypto-native
+  treasuryAddress: string | null;
+  chainsCovered: string[];
+
+  // State
+  pausedAt: string | null;
+  pausedReason: string | null;
+
+  // Kickoff lifecycle
+  kickoffState: KickoffState;
+  kickoffStartedAt: string | null;
+  kickoffCompletedAt: string | null;
+}
+
+export type KickoffState = "not_started" | "provisioning" | "completed";
+
+// PATCH body for company updates. Every field is optional — caller sends
+// only what they're changing. `null` clears a field; omitting leaves it.
+export interface UpdateCompanyRequest {
+  name?: string;
+  tagline?: string | null;
+  logoUrl?: string | null;
+  niche?: string | null;
+  foundedAt?: string | null;
+  coverageScope?: string | null;
+  coverageExcluded?: string | null;
+  contentPillars?: string[];
+  brandVoice?: string | null;
+  forbiddenWords?: string[];
+  mission?: string | null;
+  vision?: string | null;
+  targetAudience?: string | null;
+  usps?: string[];
+  coreOffering?: string | null;
+  serviceCatalog?: string[];
+  contactEmail?: string | null;
+  salesEmail?: string | null;
+  phone?: string | null;
+  websiteUrl?: string | null;
+  blogUrl?: string | null;
+  newsletterUrl?: string | null;
+  docsUrl?: string | null;
+  socialHandles?: Record<string, string>;
+  treasuryAddress?: string | null;
+  chainsCovered?: string[];
+}
+
+export interface PauseCompanyRequest {
+  reason?: string | null;
+}
+
+// Aggregated stats shown in the Company window header.
+export interface CompanyStats {
+  agentsCount: number;
+  tasksCount: number;
+  // Reserved for future Company Brain integration.
+  memoryEntriesCount: number;
+}
+
+export interface CompanyResponse {
+  company: CompanyDTO;
+  stats: CompanyStats;
+}
+
+// ── Agent status surfaces ──
+export type AgentActivityState = "idle" | "working" | "cooldown" | "error";
+
+export type AgentConnectionState = "connected" | "disconnected" | "unknown";
+
+// ── Agent DTO sent to client ──
+export interface AgentDTO {
+  id: string;
+  companyId: string;
+  name: string;
+  role: string;
+  adapterType: string;
+  externalAgentId: string | null;
+  desiredSkills: string[];
+  // Reports-to / manager link. NULL = top-level (typically the CEO,
+  // reporting to the human owner). Drives the hire-approval scope rule:
+  // an agent may only request hires inside its own subtree.
+  parentAgentId: string | null;
+  createdAt: string;
+  activityState: AgentActivityState;
+  activityTraceId: string | null;
+  connectionState: AgentConnectionState;
+  connectionCheckedAt: string | null;
+  connectionError: string | null;
+  // Background provisioning state — populated by the kickoff async flow.
+  // 'ready' for any agent created via the direct hire route.
+  provisioningState: AgentProvisioningState;
+  provisioningError: string | null;
+  // 3D office seat anchor ID. Stable per agent — assigned once at hire
+  // time. NULL only for legacy rows pre-migration; the frontend falls
+  // back to a hash-based pick from FALLBACK_WORKSTATIONS when null.
+  workstationId: string | null;
+  // Optional override for the 3D character model. NULL = auto-pick via
+  // claim-and-skip. Non-NULL = pinned GLB url.
+  modelOverride: string | null;
+}
+
+export type AgentProvisioningState = "pending" | "ready" | "failed";
+
+// ── Agent mutations ────────────────────────────────────────────────
+export interface UpdateAgentRequest {
+  name?: string;
+  role?: AgentRole;
+  adapterConfig?: OpenclawAdapterConfig;
+  // Pass `null` to detach (becomes top-level). Server validates that the
+  // new parent is in the same company and not a descendant of this agent
+  // (prevents cycles).
+  parentAgentId?: string | null;
+  // Manual seat reassignment. Slug must match an anchor in ALL_DESKS
+  // (shared/seating). Reserved-zone desks (meeting/lobby/exec) are
+  // intentionally allowed for manual placement; auto-assign skips them.
+  workstationId?: string;
+  // Pass `null` to clear (revert to auto-pick). Pass a GLB url string to
+  // pin the agent to that character model.
+  modelOverride?: string | null;
+}
+
+export interface SyncAgentSkillsRequest {
+  desiredSkills: string[];
+}
+
+export interface AgentResponse {
+  agent: AgentDTO;
+}
+
+// ── GET /api/me ──
+export interface MeResponse {
+  user: AuthUser;
+  company: CompanyDTO | null;
+  agents: AgentDTO[];
+}
+
+// ── Agent role — open vocabulary ────────────────────────────────────
+// Role is a normalized slug (lowercase; [a-z0-9_-]). The canonical catalog
+// (with labels, descriptions, default names, seating zones) lives in
+// `role-catalog.ts`. The slug type is open-vocab — agents can have any
+// regex-valid role string, not just catalog entries.
+export type AgentRole = string;
+export const ROLE_SLUG_PATTERN = /^[a-z0-9_-]+$/;
+export const ROLE_SLUG_MAX = 32;
+
+// ── Adapter types (only openclaw active) ──
+export const ADAPTER_TYPES = ["openclaw"] as const;
+export type AdapterType = (typeof ADAPTER_TYPES)[number];
+
+export interface OpenclawAdapterConfig {
+  gatewayUrl: string;
+  apiKey: string;
+}
+
+// ── POST /api/adapters/openclaw/probe ──
+export interface ProbeRequest {
+  gatewayUrl: string;
+  apiKey: string;
+}
+
+export type ProbeErrorCode =
+  | "unreachable"
+  | "unauthorized"
+  | "pairing_required"
+  | "invalid_response";
+
+export interface ProbeResponse {
+  ok: boolean;
+  latencyMs: number;
+  error?: ProbeErrorCode;
+  info?: { scopes?: string[]; connId?: string; protocol?: number };
+}
+
+// ── POST /api/agents ──
+// Atomic onboarding entry point. If the caller has no company yet, supply
+// `companyName` and the server will create company + agent + provision the
+// OpenClaw side as one operation. If provisioning fails, both rows are
+// rolled back so the user never ends up with an orphan company.
+//
+// If the caller already has a company, `companyName` is ignored — agents
+// always attach to the existing company.
+//
+// 400 `company_required` if no company and no `companyName`.
+export interface CreateAgentRequest {
+  name: string;
+  role: AgentRole;
+  adapterType: AdapterType;
+  adapterConfig: OpenclawAdapterConfig;
+  companyName?: string;
+}
+
+export interface CreateAgentResponse {
+  agent: AgentDTO;
+  // Present when this call also created the company (first-time onboarding).
+  // Lets the client hydrate company state without a follow-up /api/me fetch.
+  company?: CompanyDTO;
+}
+
+// ── GET /api/agents ──
+export interface ListAgentsResponse {
+  agents: AgentDTO[];
+}
+
+// ── POST /api/agents/:id/chat ──
+// conversationId is a stable ID the client generates once per chat session.
+// Reusing it across turns routes messages to the same gateway session so the
+// agent sees conversation history inside OpenClaw.
+export interface AgentChatRequest {
+  message: string;
+  conversationId: string;
+}
+
+export interface AgentChatResponse {
+  reply: string;
+}
+
+// ── GET /api/agents/:id/files ──
+export interface WorkspaceFileDTO {
+  id: string;
+  filename: string;
+  content: string;
+  source: string;
+  templateOrigin: string | null;
+  syncedAt: string | null;
+  updatedAt: string;
+}
+
+export interface ListAgentFilesResponse {
+  files: WorkspaceFileDTO[];
+}
+
+// ── Agent skill syncs ─────────────────────────────────────────────────
+// pending   = queued, worker hasn't picked it up yet
+// installing = worker sent the prompt, waiting for agent reply
+// installed  = agent confirmed with [[SKILL:INSTALLED]]
+// failed     = agent replied [[SKILL:FAILED]] or prompt error
+// outdated   = installed but skillRef differs from library's sourceRef (derived)
+// skill_deleted = skill no longer in library (derived, not persisted)
+export type AgentSkillSyncStatus =
+  | "pending"
+  | "installing"
+  | "installed"
+  | "failed"
+  | "outdated"
+  | "skill_deleted";
+
+export type AgentSkillSyncAction = "install" | "uninstall" | "reinstall";
+
+export interface AgentSkillSyncDTO {
+  id: string;
+  agentId: string;
+  skillKey: string;
+  status: AgentSkillSyncStatus;
+  action: AgentSkillSyncAction;
+  skillRef: string | null;
+  skillUrl: string | null;
+  lastError: string | null;
+  installedAt: string | null;
+  updatedAt: string;
+}
+
+export interface ListAgentSkillSyncsResponse {
+  syncs: AgentSkillSyncDTO[];
+}
+
+// ── Tasks ──────────────────────────────────────────────────────────
+// `blocked` is set by the BLOCK agent action — task is parked waiting
+// on its blockedByTaskIds list. When all blockers reach `done`, the
+// L2 cascade flips it back to `todo` and re-dispatches.
+export const TASK_STATUSES = [
+  "todo",
+  "in_progress",
+  "review",
+  "done",
+  "blocked",
+] as const;
+export type TaskStatus = (typeof TASK_STATUSES)[number];
+
+export const TASK_PRIORITIES = ["low", "medium", "high", "urgent"] as const;
+export type TaskPriority = (typeof TASK_PRIORITIES)[number];
+
+// Single-select shape of work (Notion-style "Task type"). Distinct from the
+// free-form `tags` list — task type describes *what kind of work* it is, while
+// tags are any label the user wants.
+export const TASK_TYPES = [
+  "feature",
+  "bug",
+  "research",
+  "docs",
+  "chore",
+  "other",
+] as const;
+export type TaskType = (typeof TASK_TYPES)[number];
+
+// T-shirt sizing for rough effort estimation. Feeds budget/plan UI later.
+export const EFFORT_LEVELS = ["xs", "s", "m", "l", "xl"] as const;
+export type EffortLevel = (typeof EFFORT_LEVELS)[number];
+
+export type ContentBlock =
+  | { type: "paragraph"; text: string }
+  | { type: "heading_1"; text: string }
+  | { type: "heading_2"; text: string }
+  | { type: "heading_3"; text: string }
+  | { type: "bullet"; text: string }
+  | { type: "checklist"; text: string; checked: boolean }
+  | { type: "quote"; text: string }
+  | { type: "code"; text: string }
+  | { type: "divider" }
+  | {
+      // Emitted by the worker when a trace succeeds. Not user-creatable via
+      // the slash menu — full text lives on the trace itself
+      // (traces.resultJson.text) and is fetched on demand when the card is
+      // clicked.
+      type: "agent_result";
+      traceId: string;
+      agentId: string;
+      agentName: string;
+      timestamp: string;
+      preview: string;
+    };
+
+export interface TaskDTO {
+  id: string;
+  companyId: string;
+  // Per-company monotonic number shown in UI (e.g. #12). Uuid `id` remains the
+  // authoritative key; this is just the human-readable handle.
+  taskNumber: number;
+  assignedAgentId: string | null;
+  assignedAgentName: string | null;
+  title: string;
+  blocks: ContentBlock[];
+  status: TaskStatus;
+  priority: TaskPriority;
+  taskType: TaskType;
+  effortLevel: EffortLevel;
+  tags: string[];
+  dueDate: string | null;
+  linkedTraceId: string | null;
+  // Parent in the task graph (set when an agent created this task via an
+  // approved DELEGATE — the parent task is the one the requesting agent
+  // was working on at the time).
+  parentTaskId: string | null;
+  // Tasks this one is waiting on (BLOCK action target). When all of
+  // these transition to `done`, L2 cascade re-wakes the assignee.
+  blockedByTaskIds: string[];
+  // Mutually exclusive with createdByAgentId.
+  createdByUserId: string | null;
+  // Set when the task was born from an approved agent DELEGATE.
+  createdByAgentId: string | null;
+  // Delegation contract — what "done" looks like, set on agent-created tasks.
+  acceptanceCriteria: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateTaskRequest {
+  title: string;
+  blocks?: ContentBlock[];
+  status?: TaskStatus;
+  priority?: TaskPriority;
+  taskType?: TaskType;
+  effortLevel?: EffortLevel;
+  tags?: string[];
+  dueDate?: string | null;
+  assignedAgentId?: string | null;
+}
+
+export type UpdateTaskRequest = Partial<CreateTaskRequest>;
+
+export interface ListTasksResponse {
+  tasks: TaskDTO[];
+}
+
+export interface TaskResponse {
+  task: TaskDTO;
+}
+
+// ── Task comments — agent ↔ agent + user ↔ agent thread ─────────────
+//
+// Used by the ASK action and the @mention wake mechanism. Body is plain
+// text with `@<agent-name>` tokens; the server resolves names → uuids
+// and stores them in `mentions` + wakes those agents.
+export interface TaskCommentDTO {
+  id: string;
+  taskId: string;
+  // Mutually exclusive — exactly one of these is non-null.
+  authorAgentId: string | null;
+  authorUserId: string | null;
+  // Resolved at server side — agent name shown in UI.
+  authorAgentName: string | null;
+  body: string;
+  // Resolved agent UUIDs from `@name` tokens in `body`.
+  mentions: string[];
+  // Convenience for UI rendering — names matching `mentions[]`.
+  mentionNames: string[];
+  createdAt: string;
+}
+
+export interface CreateTaskCommentRequest {
+  body: string;
+}
+
+export interface ListTaskCommentsResponse {
+  comments: TaskCommentDTO[];
+}
+
+export interface TaskCommentResponse {
+  comment: TaskCommentDTO;
+}
+
+// ── Skills — central catalog, HTTP-on-demand delivery ─────────────
+export const SKILL_SOURCE_TYPES = ["github"] as const;
+export type SkillSourceType = (typeof SKILL_SOURCE_TYPES)[number];
+
+export const SKILL_FILE_KINDS = [
+  "markdown",
+  "script",
+  "reference",
+  "asset",
+] as const;
+export type SkillFileKind = (typeof SKILL_FILE_KINDS)[number];
+
+export interface SkillFileEntry {
+  path: string;
+  kind: SkillFileKind;
+}
+
+export interface SkillDTO {
+  id: string;
+  // null = platform built-in, shared across companies.
+  companyId: string | null;
+  key: string;
+  slug: string;
+  name: string;
+  description: string | null;
+  markdown: string;
+  sourceType: SkillSourceType;
+  sourceLocator: string;
+  sourceRef: string;
+  sourceOwner: string;
+  sourceRepo: string;
+  sourcePath: string;
+  fileInventory: SkillFileEntry[];
+  allowedRoles: AgentRole[];
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ImportSkillRequest {
+  source: string;
+  allowedRoles?: AgentRole[];
+}
+
+export interface UpdateSkillRequest {
+  allowedRoles?: AgentRole[];
+}
+
+export interface ListSkillsResponse {
+  skills: SkillDTO[];
+}
+
+export interface SkillResponse {
+  skill: SkillDTO;
+}
+
+// ── Wake + Trace primitives ───────────────────────────────────────────
+export type WakeSource = "timer" | "assignment" | "on_demand" | "automation" | "chat" | "skill_sync";
+
+export type TraceStatus =
+  | "queued"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "cancelled"
+  | "timed_out";
+
+export type LivenessState = "normal" | "plan_only" | "empty_response";
+
+export type WakeActorType = "user" | "agent" | "system";
+
+export interface WakeActor {
+  type: WakeActorType;
+  id: string | null;
+}
+
+
+export interface TraceUsage {
+  tokensIn: number;
+  tokensOut: number;
+  cachedTokensIn: number;
+  costCents: number;
+}
+
+export interface TraceDTO {
+  id: string;
+  agentId: string;
+  companyId: string;
+  taskId: string | null;
+  conversationId: string | null;
+  retryOfTraceId: string | null;
+  invocationSource: WakeSource;
+  triggerDetail: string | null;
+  status: TraceStatus;
+  startedAt: string | null;
+  finishedAt: string | null;
+  error: string | null;
+  errorCode: string | null;
+  livenessState: LivenessState | null;
+  continuationAttempt: number;
+  failureRetryAttempt: number;
+  retryReason: string | null;
+  scheduledAt: string | null;
+  usage: TraceUsage | null;
+  resultJson: Record<string, unknown> | null;
+  sessionIdAfter: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TraceEventDTO {
+  id: number;
+  traceId: string;
+  seq: number;
+  eventType: string;
+  stream: string | null;
+  level: string | null;
+  message: string | null;
+  payload: Record<string, unknown> | null;
+  createdAt: string;
+}
+
+export interface WakeAgentRequest {
+  reason?: string;
+  taskId?: string;
+}
+
+export interface WakeAgentResponse {
+  traceId: string;
+  coalesced: boolean;
+}
+
+export interface CancelTraceRequest {
+  reason?: string;
+}
+
+export interface ListTracesResponse {
+  traces: TraceDTO[];
+  nextCursor: string | null;
+}
+
+export interface TraceResponse {
+  trace: TraceDTO;
+}
+
+export interface ListTraceEventsResponse {
+  events: TraceEventDTO[];
+  nextSeq: number;
+}
+
+export interface PostTraceHeartbeatEventRequest {
+  seq: number;
+  eventType: string;
+  stream?: string | null;
+  level?: string | null;
+  message?: string | null;
+  payload?: Record<string, unknown> | null;
+}
+
+// ── Agent API keys ────────────────────────────────────────────────────
+export interface AgentApiKeyDTO {
+  id: string;
+  agentId: string;
+  name: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+}
+
+export interface CreateAgentTokenRequest {
+  name: string;
+}
+
+export interface CreateAgentTokenResponse {
+  key: AgentApiKeyDTO;
+  rawKey: string; // shown once at creation
+}
+
+export interface ListAgentTokensResponse {
+  keys: AgentApiKeyDTO[];
+}
+
+// ── Routines ──────────────────────────────────────────────────────────
+export type RoutineTriggerKind = "cron" | "webhook" | "manual";
+
+export interface RoutineTriggerDTO {
+  id: string;
+  routineId: string;
+  kind: RoutineTriggerKind;
+  label: string | null;
+  enabled: boolean;
+  cronExpression: string | null;
+  timezone: string | null;
+  nextRunAt: string | null;
+  lastFiredAt: string | null;
+}
+
+export interface RoutineDTO {
+  id: string;
+  companyId: string;
+  title: string;
+  description: string | null;
+  assigneeAgentId: string | null;
+  priority: string;
+  status: string;
+  concurrencyPolicy: string;
+  catchUpPolicy: string;
+  variables: Record<string, unknown> | null;
+  lastTriggeredAt: string | null;
+  lastEnqueuedAt: string | null;
+  triggers: RoutineTriggerDTO[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateRoutineRequest {
+  title: string;
+  description?: string;
+  assigneeAgentId: string;
+  priority?: string;
+  triggers: Array<{
+    kind: RoutineTriggerKind;
+    label?: string;
+    enabled?: boolean;
+    cronExpression?: string;
+    timezone?: string;
+  }>;
+}
+
+export interface UpdateRoutineRequest {
+  title?: string;
+  description?: string;
+  assigneeAgentId?: string;
+  priority?: string;
+  status?: string;
+}
+
+export interface CreateTriggerRequest {
+  kind: RoutineTriggerKind;
+  label?: string;
+  enabled?: boolean;
+  cronExpression?: string;
+  timezone?: string;
+}
+
+export interface UpdateTriggerRequest {
+  label?: string;
+  enabled?: boolean;
+  cronExpression?: string;
+  timezone?: string;
+}
+
+export interface ListRoutinesResponse {
+  routines: RoutineDTO[];
+}
+
+export interface RoutineResponse {
+  routine: RoutineDTO;
+}
+
+// ── Agent activity — grouped trace feed ───────────────────────────────
+// Activity groups surface all agent interactions in one unified feed.
+// Grouping key: conversationId (chat), taskId (task run), skillKey via
+// triggerDetail (skill_sync), or traceId (standalone/scheduled runs).
+export type ActivityGroupKind = "chat" | "task" | "skill_sync" | "trace";
+
+export interface ActivityTraceRef {
+  id: string;
+  status: TraceStatus;
+  invocationSource: WakeSource;
+  startedAt: string | null;
+  finishedAt: string | null;
+  error: string | null;
+  createdAt: string;
+}
+
+export interface ActivityGroup {
+  // Stable group identifier (conversationId | taskId | skillKey | traceId)
+  groupKey: string;
+  kind: ActivityGroupKind;
+  // Human-readable label: task title, skill name, conversation preview, etc.
+  label: string;
+  // Latest trace in the group
+  latestTrace: ActivityTraceRef;
+  // Total number of traces in this group
+  traceCount: number;
+  // Timestamp of the most recent activity
+  lastActivityAt: string;
+}
+
+export interface ListActivityResponse {
+  groups: ActivityGroup[];
+  nextCursor: string | null;
+}
+
+// ── Approvals ────────────────────────────────────────────────────────
+// Free-form action discriminator. Known actions are listed in
+// APPROVAL_ACTION_TYPES; the schema accepts any string so future action
+// kinds can land without a migration.
+export const APPROVAL_ACTION_TYPES = ["delegate", "hire"] as const;
+export type ApprovalActionType =
+  | (typeof APPROVAL_ACTION_TYPES)[number]
+  | (string & {});
+
+export const APPROVAL_STATUSES = [
+  "pending",
+  "approved",
+  "rejected",
+  "cancelled",
+] as const;
+export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
+
+export const APPROVAL_DECISIONS = ["approve", "reject"] as const;
+export type ApprovalDecision = (typeof APPROVAL_DECISIONS)[number];
+
+// Payload schema for actionType === "delegate" — assign work to an
+// existing agent in the requester's subtree. On approve, server creates a
+// child task and dispatches it.
+export interface DelegatePayload {
+  targetAgentId: string;
+  title: string;
+  description: string;
+  acceptanceCriteria?: string;
+  parentTaskId?: string | null;
+}
+
+// Payload schema for actionType === "hire" — bring an entirely new agent
+// onto the team. On approve, server runs the full create-pipeline
+// (provision OpenClaw + seed workspace + auto-assign skills + enqueue
+// skill installs) then creates a child task assigned to the new agent and
+// dispatches it. The new agent's `parentAgentId` becomes the requester's
+// id so the org tree grows naturally from hire actions.
+export interface HirePayload {
+  targetRole: AgentRole; // must be a value from AGENT_ROLES
+  targetName: string;
+  title: string;
+  description: string;
+  acceptanceCriteria?: string;
+  parentTaskId?: string | null;
+}
+
+// Body for the agent-self approval submission endpoint.
+export interface AgentApprovalCreateRequest {
+  actionType: ApprovalActionType;
+  payload: DelegatePayload | HirePayload | Record<string, unknown>;
+}
+
+export interface AgentApprovalCreateResponse {
+  approvalId: string;
+}
+
+export interface ApprovalDTO {
+  id: string;
+  companyId: string;
+  requestedByAgentId: string | null;
+  actionType: ApprovalActionType;
+  payload: Record<string, unknown>;
+  status: ApprovalStatus;
+  requestedAt: string;
+  decidedAt: string | null;
+  decidedByUserId: string | null;
+  rejectionReason: string | null;
+}
+
+export interface DecideApprovalRequest {
+  decision: "approve" | "reject";
+  rejectionReason?: string;
+}
+
+export interface DecideApprovalResponse {
+  approval: ApprovalDTO;
+}
+
+export interface ListApprovalsResponse {
+  approvals: ApprovalDTO[];
+}
+
+// ── Routine triggers + status ────────────────────────────────────────
+export const ROUTINE_TRIGGER_KINDS = ["cron", "webhook", "manual"] as const;
+export type RoutineTriggerKindEnum = (typeof ROUTINE_TRIGGER_KINDS)[number];
+
+export const ROUTINE_STATUSES = ["active", "paused", "archived"] as const;
+export type RoutineStatusEnum = (typeof ROUTINE_STATUSES)[number];
+
+// ── Kickoff presets ──────────────────────────────────────────────────
+export const KICKOFF_PRESETS = ["bootstrap", "standard", "full"] as const;
+export type KickoffPreset = (typeof KICKOFF_PRESETS)[number];
+
+// ── Skill sync actions ───────────────────────────────────────────────
+export const SKILL_SYNC_ACTIONS = ["install", "uninstall", "reinstall"] as const;
+export type SkillSyncAction = (typeof SKILL_SYNC_ACTIONS)[number];

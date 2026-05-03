@@ -1,0 +1,11 @@
+.next
+out
+*.tsbuildinfo
+
+
+/docs/*
+/public/models/animations/*
+/public/models/characters/*
+/public/models/office/*
+/public/models/Characters.glb
+/public/models/Demo.glb

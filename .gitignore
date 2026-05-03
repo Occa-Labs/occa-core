@@ -1,0 +1,45 @@
+# dependencies
+node_modules
+.pnpm-store
+
+# build output
+dist
+build
+out
+.next
+.turbo
+*.tsbuildinfo
+
+# env
+.env
+.env.local
+.env.*.local
+
+# logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# editors / OS
+.DS_Store
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea
+
+# test / coverage
+coverage
+
+# project-local
+.occa/
+.occa-instance/
+
+# generated files
+/docs/*
+
+# tools
+.claude
+.github
+CLAUDE.md
