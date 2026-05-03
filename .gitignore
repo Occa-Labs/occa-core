@@ -36,9 +36,6 @@ coverage
 .occa/
 .occa-instance/
 
-# generated files
-/docs/*
-
 # tools
 .claude
 .github

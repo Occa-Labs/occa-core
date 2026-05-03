@@ -1,0 +1,49 @@
+graph TB
+    OP[Operator Wallet<br/>EOA / Multi-sig / Governance]
+
+    subgraph Identity["Identity Layer — PDAs permanent"]
+        CO[CompanyAccount PDA<br/>seeds: company + auth + nonce]
+        AG1[AgentAccount PDA<br/>seeds: agent + company + 0]
+        AG2[AgentAccount PDA<br/>seeds: agent + company + 1]
+    end
+
+    subgraph Treasury["Treasury Layer"]
+        TR[TreasuryAccount PDA<br/>holds SOL + SPL]
+        PO[PolicyAccount PDA<br/>Routine/Discretionary/Privileged]
+    end
+
+    subgraph Wallet["Wallet Layer — rotatable signers"]
+        W1[Agent A signing key<br/>SLIP-0010 derived]
+        W2[Agent B signing key<br/>MPC threshold]
+    end
+
+    subgraph Trace["Trace Anchor Layer"]
+        TA1[TraceAnchorAccount<br/>task_id_1]
+        TA2[TraceAnchorAccount<br/>task_id_2]
+    end
+
+    SBT[Token-2022 SBT<br/>NonTransferable - Phase 2+]
+
+    OP -->|signs Privileged tx| CO
+    OP -.->|transfer_authority| CO
+    CO -->|treasury pointer| TR
+    CO -->|policy pointer| PO
+    CO --> AG1
+    CO --> AG2
+    AG1 -->|agent_address| W1
+    AG2 -->|agent_address| W2
+    W1 -->|signs commit_trace| TA1
+    W2 -->|signs commit_trace| TA2
+    SBT -.->|minted to PDA| AG1
+
+    classDef pda fill:#e1f5ff,stroke:#0277bd,stroke-width:2px
+    classDef wallet fill:#fff4e6,stroke:#e65100,stroke-width:2px
+    classDef trace fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px
+    classDef badge fill:#fce4ec,stroke:#c2185b,stroke-width:2px,stroke-dasharray: 5 5
+    classDef op fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+
+    class CO,AG1,AG2,TR,PO pda
+    class W1,W2 wallet
+    class TA1,TA2 trace
+    class SBT badge
+    class OP op

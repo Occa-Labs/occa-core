@@ -1,0 +1,32 @@
+sequenceDiagram
+    autonumber
+    actor OP as Operator
+    participant REG as Registry Program
+    participant CO as CompanyAccount PDA
+    participant TR as TreasuryAccount PDA
+    participant PO as PolicyAccount PDA
+    participant AG as AgentAccount PDA
+
+    Note over OP,AG: Phase 1 — Company Creation
+    OP->>REG: create_company(nonce, metadata_uri)
+    REG->>CO: init PDA seeds=company+OP+nonce
+    REG->>TR: init PDA seeds=treasury+CO
+    REG->>PO: init default PolicyAccount
+    REG-->>OP: company_pda address
+
+    Note over OP,AG: Phase 2 — Agent Registration
+    OP->>OP: derive keypair via SLIP-0010<br/>m/44h/501h/0h/0h
+    OP->>REG: register_agent(company, agent_address, Derived, index=0)
+    REG->>AG: init PDA seeds=agent+CO+0
+    REG-->>OP: agent_pda address
+
+    Note over OP,AG: Phase 3 — Key Rotation
+    OP->>OP: derive new keypair at index=1
+    OP->>REG: update_agent(new_address, derivation_index=1)
+    REG->>AG: mutate agent_address + derivation_index<br/>PDA address unchanged
+    REG-->>OP: ok — reputation preserved
+
+    Note over OP,AG: Phase 4 — Authority Transfer
+    OP->>REG: transfer_authority(new_authority)
+    REG->>CO: mutate controlling_authority<br/>PDA address unchanged
+    REG-->>OP: ok — company identity intact

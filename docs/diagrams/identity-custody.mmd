@@ -1,0 +1,43 @@
+flowchart TB
+    Q{Operator profile?}
+
+    Q -->|Default solo / SMB| D[Derived Custody]
+    Q -->|High-value / multi-stakeholder| M[Threshold MPC]
+    Q -->|Enterprise + compliance| C[Custodial]
+
+    subgraph Derived["Derived — SLIP-0010"]
+        D --> D1[Master seed = controlling_authority]
+        D1 --> D2[Hardened path<br/>m/44h/501h/index'/0h]
+        D2 --> D3[OCCA delegated signer<br/>holds derived key]
+        D3 --> D4[Signs commit_trace only<br/>+ transparency log]
+    end
+
+    subgraph MPC["Threshold MPC — k-of-n"]
+        M --> M1[Operator share]
+        M --> M2[OCCA share]
+        M --> M3[Optional 3rd party share]
+        M1 --> M4[Quorum signing<br/>Ed25519 TSS]
+        M2 --> M4
+        M3 --> M4
+        M4 --> M5[No single party<br/>can sign alone]
+    end
+
+    subgraph Custodial["Custodial — HSM/KMS"]
+        C --> C1[OCCA-managed signer]
+        C1 --> C2[Per-action policy:<br/>limits, allowlist, windows]
+        C2 --> C3[Compliance tier]
+    end
+
+    D4 --> OUT[agent_address signs<br/>on-chain transactions]
+    M5 --> OUT
+    C3 --> OUT
+
+    classDef derived fill:#e3f2fd,stroke:#1565c0
+    classDef mpc fill:#f3e5f5,stroke:#6a1b9a
+    classDef custodial fill:#fff3e0,stroke:#e65100
+    classDef out fill:#e8f5e9,stroke:#2e7d32,stroke-width:3px
+
+    class D,D1,D2,D3,D4 derived
+    class M,M1,M2,M3,M4,M5 mpc
+    class C,C1,C2,C3 custodial
+    class OUT out

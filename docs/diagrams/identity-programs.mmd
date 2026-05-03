@@ -1,0 +1,32 @@
+flowchart LR
+    subgraph Programs["5 OCCA Programs"]
+        REG[Registry Program]
+        TRP[Treasury Program]
+        TAP[Trace Anchor Program]
+        MKT[Marketplace Program]
+        REP[Reputation Program]
+    end
+
+    REG --> CO[CompanyAccount]
+    REG --> AG[AgentAccount]
+    REG --> SK[SkillAccount]
+    REG --> RT[RoutineAccount]
+
+    TRP --> TR[TreasuryAccount]
+    TRP --> PO[PolicyAccount]
+
+    TAP --> TA[TraceAnchorAccount]
+
+    MKT --> CT[ContractAccount]
+    MKT --> LS[ListingAccount]
+    MKT --> LC[LicenseAccount]
+
+    REP -.->|reads only| AG
+    REP -.->|reads only| TA
+    REP -.->|reads only| CT
+
+    classDef prog fill:#e1f5ff,stroke:#01579b,stroke-width:2px
+    classDef acc fill:#fff,stroke:#666
+
+    class REG,TRP,TAP,MKT,REP prog
+    class CO,AG,SK,RT,TR,PO,TA,CT,LS,LC acc
