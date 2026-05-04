@@ -77,6 +77,15 @@ export const companies = pgTable(
       withTimezone: true,
     }),
 
+    // ── On-chain Registry mirror (drizzle 0033) ──────────────────────
+    // Populated after `create_company` is confirmed on Solana. Source of
+    // truth lives on-chain; these are cache columns for fast lookup.
+    // NULL until the company has been registered on-chain.
+    companyPda: text("company_pda").unique(),
+    controllingAuthority: text("controlling_authority"),
+    chainNonce: integer("chain_nonce"),
+    chainTxSignature: text("chain_tx_signature"),
+
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -225,6 +234,20 @@ export const agents = pgTable(
     // `buildAgentModelMap` claim-and-skip. Non-NULL = pin this agent to
     // the chosen GLB regardless of role / claim order.
     modelOverride: text("model_override"),
+
+    // ── On-chain Registry mirror (drizzle 0033) ──────────────────────
+    // Populated after `register_agent` is confirmed on Solana. Custody
+    // model 'sign_to_derive' (default) means OCCA never holds the agent
+    // privkey — `agent_address` is derived FE-side via wallet.signMessage.
+    agentPda: text("agent_pda").unique(),
+    agentAddress: text("agent_address"),
+    agentIndex: integer("agent_index"),
+    custodyModel: text("custody_model").notNull().default("sign_to_derive"),
+    derivationMsgVersion: integer("derivation_msg_version")
+      .notNull()
+      .default(1),
+    agentChainTxSignature: text("agent_chain_tx_signature"),
+
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -239,6 +262,10 @@ export const agents = pgTable(
     uniqueIndex("uniq_agents_company_workstation")
       .on(t.companyId, t.workstationId)
       .where(sql`${t.workstationId} IS NOT NULL`),
+    // Per-company: agent_index unique (mirrors PDA seed uniqueness).
+    uniqueIndex("uniq_agents_company_agent_index")
+      .on(t.companyId, t.agentIndex)
+      .where(sql`${t.agentIndex} IS NOT NULL`),
   ],
 );
 

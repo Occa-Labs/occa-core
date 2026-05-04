@@ -97,6 +97,11 @@ export const ERROR_CODES = {
   // SSH / dev
   SSH_CONFIG_MISSING: "ssh_config_missing",
   SSH_FAILED: "ssh_failed",
+
+  // On-chain Registry
+  ALREADY_REGISTERED: "already_registered",
+  CHAIN_TX_FAILED: "chain_tx_failed",
+  OPERATOR_NOT_CONFIGURED: "operator_not_configured",
 } as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];

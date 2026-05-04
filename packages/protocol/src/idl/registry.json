@@ -1,0 +1,368 @@
+{
+  "address": "oCCAYWgH3KTWccrdHUkrGZQK8YAGTNVQp4V4Hxsv8LQ",
+  "metadata": {
+    "name": "registry",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "OCCA Registry program — Company & Agent identity PDAs (Phase 1 MVP)"
+  },
+  "instructions": [
+    {
+      "name": "create_company",
+      "docs": [
+        "Create a new CompanyAccount PDA.",
+        "",
+        "Seeds: `[\"company\", controlling_authority, nonce_le_u32]`",
+        "",
+        "`nonce` lets a single controlling_authority own multiple companies.",
+        "Server-side picks the next free nonce per authority. `metadata_uri`",
+        "is an off-chain pointer (IPFS / Arweave / HTTPS) — empty string is",
+        "allowed for MVP."
+      ],
+      "discriminator": [
+        36,
+        192,
+        217,
+        147,
+        233,
+        129,
+        198,
+        18
+      ],
+      "accounts": [
+        {
+          "name": "company",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  109,
+                  112,
+                  97,
+                  110,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "authority"
+              },
+              {
+                "kind": "arg",
+                "path": "nonce"
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "docs": [
+            "The future `controlling_authority` of the company. Required to",
+            "sign so a third party can't squat someone else's authority+nonce",
+            "PDA. For MVP this is the operator hot wallet."
+          ],
+          "signer": true
+        },
+        {
+          "name": "payer",
+          "docs": [
+            "Pays rent for the new account. May or may not equal `authority`."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "nonce",
+          "type": "u32"
+        },
+        {
+          "name": "metadata_uri",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "name": "register_agent",
+      "docs": [
+        "Create a new AgentAccount PDA under an existing company.",
+        "",
+        "Seeds: `[\"agent\", company_pda, agent_index_le_u32]`",
+        "",
+        "`agent_index` is a per-company u32 counter (NOT a UUID) — server",
+        "is responsible for picking the next free index. `agent_address` is",
+        "the wallet that will sign trace anchors (later phase). For MVP",
+        "custody_model=3 (SignToDerive), the FE derives this pubkey via",
+        "wallet.signMessage and OCCA never holds the privkey."
+      ],
+      "discriminator": [
+        135,
+        157,
+        66,
+        195,
+        2,
+        113,
+        175,
+        30
+      ],
+      "accounts": [
+        {
+          "name": "company",
+          "docs": [
+            "Existing company. `has_one` enforces that `controlling_authority`",
+            "(signer below) matches the field stored on the company."
+          ]
+        },
+        {
+          "name": "controlling_authority",
+          "docs": [
+            "Must match `company.controlling_authority`."
+          ],
+          "signer": true,
+          "relations": [
+            "company"
+          ]
+        },
+        {
+          "name": "agent",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  103,
+                  101,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "company"
+              },
+              {
+                "kind": "arg",
+                "path": "agent_index"
+              }
+            ]
+          }
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "agent_index",
+          "type": "u32"
+        },
+        {
+          "name": "agent_address",
+          "type": "pubkey"
+        },
+        {
+          "name": "custody_model",
+          "type": "u8"
+        },
+        {
+          "name": "role_id",
+          "type": "u32"
+        },
+        {
+          "name": "adapter_id",
+          "type": "pubkey"
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "AgentAccount",
+      "discriminator": [
+        241,
+        119,
+        69,
+        140,
+        233,
+        9,
+        112,
+        50
+      ]
+    },
+    {
+      "name": "CompanyAccount",
+      "discriminator": [
+        37,
+        215,
+        171,
+        200,
+        8,
+        141,
+        69,
+        96
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "MetadataUriTooLong",
+      "msg": "metadata_uri exceeds MAX_METADATA_URI_LEN"
+    },
+    {
+      "code": 6001,
+      "name": "InvalidCustodyModel",
+      "msg": "custody_model is not a known variant"
+    },
+    {
+      "code": 6002,
+      "name": "Unauthorized",
+      "msg": "signer does not match company.controlling_authority"
+    }
+  ],
+  "types": [
+    {
+      "name": "AgentAccount",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "version",
+            "type": "u8"
+          },
+          {
+            "name": "company",
+            "docs": [
+              "Owning CompanyAccount PDA."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "agent_address",
+            "docs": [
+              "Wallet that will sign agent-side actions (e.g. commit_trace later)."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "custody_model",
+            "docs": [
+              "See top-of-file mapping."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "derivation_index",
+            "docs": [
+              "SLIP-0010 hardened derivation index. Reserved for Phase 3 rotation."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "agent_index",
+            "docs": [
+              "Per-company counter — also part of the PDA seed."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "role_id",
+            "docs": [
+              "Reference to a role catalog entry (off-chain)."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "adapter_id",
+            "docs": [
+              "Pinned adapter version. Pubkey::default() = unspecified."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "status",
+            "docs": [
+              "0=Active, 1=Degraded, 2=Retired."
+            ],
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CompanyAccount",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "version",
+            "docs": [
+              "Schema version — bump on field changes."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "controlling_authority",
+            "docs": [
+              "Privileged-class signer for this company."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "treasury",
+            "docs": [
+              "Pointer to TreasuryAccount PDA (Pubkey::default() until Phase 2)."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "policy",
+            "docs": [
+              "Pointer to PolicyAccount PDA (Pubkey::default() until Phase 2)."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "created_at",
+            "docs": [
+              "Unix timestamp (seconds) at creation."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "nonce",
+            "docs": [
+              "Seed disambiguator — same authority can own multiple companies."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "metadata_uri",
+            "docs": [
+              "Off-chain metadata URI (IPFS / Arweave / HTTPS). Bounded by",
+              "MAX_METADATA_URI_LEN to keep account size predictable."
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    }
+  ]
+}

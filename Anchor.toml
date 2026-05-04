@@ -1,0 +1,25 @@
+[toolchain]
+
+[features]
+resolution = true
+skip-lint = false
+
+[programs.localnet]
+registry = "oCCAYWgH3KTWccrdHUkrGZQK8YAGTNVQp4V4Hxsv8LQ"
+
+[programs.devnet]
+registry = "oCCAYWgH3KTWccrdHUkrGZQK8YAGTNVQp4V4Hxsv8LQ"
+
+[registry]
+url = "https://api.apr.dev"
+
+[provider]
+cluster = "Devnet"
+wallet = "~/.config/solana/id.json"
+
+[workspace]
+members = ["programs/registry"]
+
+[scripts]
+# No JS-based tests yet; we'll add bankrun/integration tests in CP3.
+test = "echo 'no tests yet'"

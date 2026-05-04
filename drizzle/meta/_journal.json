@@ -232,6 +232,13 @@
       "when": 1746627000000,
       "tag": "0032_agent_model_override",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1746713400000,
+      "tag": "0033_chain_registry_columns",
+      "breakpoints": true
     }
   ]
 }
