@@ -2,9 +2,21 @@
 
 import type { ReactNode } from "react";
 import { PrivyProvider } from "@privy-io/react-auth";
-import { toSolanaWalletConnectors } from "@privy-io/react-auth/solana";
+import {
+  defaultSolanaRpcsPlugin,
+  toSolanaWalletConnectors,
+} from "@privy-io/react-auth/solana";
 
 const APP_ID = process.env.NEXT_PUBLIC_PRIVY_APP_ID ?? "";
+
+// Privy needs an RPC entry per CAIP chain the SDK might touch. Even though
+// OCCA only operates on devnet, some external wallets (Phantom, etc.)
+// advertise `solana:mainnet` in their chain set, and Privy throws
+// "No RPC configuration found for chain solana:mainnet" if that cluster
+// has no entry. This plugin registers Privy-hosted fallback RPCs for
+// both mainnet + devnet — sufficient for our needs since on-chain calls
+// still go through the server's operator wallet.
+const solanaRpcsPlugin = defaultSolanaRpcsPlugin();
 
 // shouldAutoConnect: false — Privy defaults to true, which iterates every
 // detected Solana adapter on page load and tries to silently re-attach.
@@ -41,6 +53,7 @@ export function AppPrivyProvider({ children }: { children: ReactNode }) {
         externalWallets: {
           solana: { connectors: solanaConnectors },
         },
+        plugins: [solanaRpcsPlugin],
       }}
     >
       {children}

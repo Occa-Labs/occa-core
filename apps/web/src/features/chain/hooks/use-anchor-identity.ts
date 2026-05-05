@@ -1,30 +1,25 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
-import bs58 from "bs58";
-import { useSignMessage as useSolanaSignMessage } from "@privy-io/react-auth/solana";
 import {
-  CURRENT_DERIVATION_MSG_VERSION,
-  encodeDerivationMessage,
-  deriveAgentKeypairFromSignature,
-} from "occa-sdk";
-import { chainApi, meApi } from "@/lib/api";
+  useSignTransaction as useSolanaSignTransaction,
+  useWallets as useSolanaWallets,
+} from "@privy-io/react-auth/solana";
+import { chainApi } from "@/lib/api";
+import { SOLANA_CAIP_CHAIN } from "@/lib/env-flags";
 import {
   type AnchorErrorCode,
   classifyWalletError,
   mapServerError,
 } from "../lib/anchor-errors";
 
-type SolanaWallet = Parameters<
-  ReturnType<typeof useSolanaSignMessage>["signMessage"]
->[0]["wallet"];
+type SolanaWallet = ReturnType<typeof useSolanaWallets>["wallets"][number];
 
 export type AnchorStage =
   | "idle"
   | "registering-company"
   | "ready-to-sign"
   | "awaiting-signature"
-  | "deriving-keypair"
   | "registering-agent"
   | "complete";
 
@@ -37,7 +32,6 @@ export interface AnchorError {
 export interface AnchorResult {
   companyPda: string;
   agentPda: string;
-  agentAddress: string;
   agentIndex: number;
   agentChainTxSignature: string | null;
 }
@@ -47,10 +41,13 @@ export interface UseAnchorIdentityResult {
   error: AnchorError | null;
   result: AnchorResult | null;
   /** Phase A: register company on-chain. Idempotent, safe to auto-run. */
-  registerCompany: (companyId: string) => Promise<void>;
-  /** Phase B: sign + derive + register agent. MUST be invoked from a user
-   *  gesture (e.g. button onClick) — external Solana wallets like Phantom
-   *  silently no-op signMessage requests originating from useEffect. */
+  registerCompany: (input: {
+    companyId: string;
+    wallet: SolanaWallet;
+  }) => Promise<void>;
+  /** Phase B: register the CEO agent on-chain. MUST be invoked from a
+   *  user gesture (e.g. button onClick) — wallets like Phantom silently
+   *  no-op signTransaction requests originating from useEffect. */
   signAndRegisterAgent: (input: {
     agentId: string;
     wallet: SolanaWallet;
@@ -62,8 +59,22 @@ const log = (...args: unknown[]) => {
   if (typeof window !== "undefined") console.log("[anchor]", ...args);
 };
 
+function toBytes(base64: string): Uint8Array {
+  const bin = atob(base64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i += 1) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function toBase64(bytes: Uint8Array): string {
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 1)
+    bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+
 export function useAnchorIdentity(): UseAnchorIdentityResult {
-  const { signMessage } = useSolanaSignMessage();
+  const { signTransaction } = useSolanaSignTransaction();
   const [stage, setStage] = useState<AnchorStage>("idle");
   const [error, setError] = useState<AnchorError | null>(null);
   const [result, setResult] = useState<AnchorResult | null>(null);
@@ -79,30 +90,69 @@ export function useAnchorIdentity(): UseAnchorIdentityResult {
   }, []);
 
   // ── Phase A ───────────────────────────────────────────────────────
-  const registerCompany = useCallback(async (companyId: string) => {
-    if (inFlightRef.current) return;
-    if (companyPdaRef.current) {
-      // Already done in this session — just advance stage.
-      setStage("ready-to-sign");
-      return;
-    }
-    inFlightRef.current = true;
-    setError(null);
-    setStage("registering-company");
-    log("registerCompany start", { companyId });
-    try {
-      const res = await chainApi.registerCompany(companyId);
-      companyPdaRef.current = res.companyPda;
-      log("registerCompany ok", { companyPda: res.companyPda });
-      setStage("ready-to-sign");
-    } catch (err) {
-      const m = mapServerError(err);
-      setError({ ...m, stage: "registering-company" });
-      setStage("idle");
-    } finally {
-      inFlightRef.current = false;
-    }
-  }, []);
+  const registerCompany = useCallback(
+    async ({
+      companyId,
+      wallet,
+    }: {
+      companyId: string;
+      wallet: SolanaWallet;
+    }) => {
+      if (inFlightRef.current) return;
+      if (companyPdaRef.current) {
+        setStage("ready-to-sign");
+        return;
+      }
+      inFlightRef.current = true;
+      setError(null);
+      setStage("registering-company");
+      log("registerCompany prepare", { companyId });
+      try {
+        const prepRes = await chainApi.prepareCompany(companyId);
+        if (prepRes.alreadyRegistered) {
+          companyPdaRef.current = prepRes.companyPda;
+          log("registerCompany already on-chain", {
+            companyPda: prepRes.companyPda,
+          });
+          setStage("ready-to-sign");
+          return;
+        }
+
+        let signedBytes: Uint8Array;
+        try {
+          const signRes = await signTransaction({
+            transaction: toBytes(prepRes.transaction),
+            wallet,
+            chain: SOLANA_CAIP_CHAIN,
+          });
+          signedBytes = signRes.signedTransaction;
+        } catch (err) {
+          log("registerCompany signTransaction failed", err);
+          const m = classifyWalletError(err);
+          setError({ ...m, stage: "registering-company" });
+          setStage("idle");
+          return;
+        }
+
+        const confirmRes = await chainApi.confirmCompany(companyId, {
+          signedTransaction: toBase64(signedBytes),
+          blockhash: prepRes.blockhash,
+          lastValidBlockHeight: prepRes.lastValidBlockHeight,
+          nonce: prepRes.chainNonce,
+        });
+        companyPdaRef.current = confirmRes.companyPda;
+        log("registerCompany ok", { companyPda: confirmRes.companyPda });
+        setStage("ready-to-sign");
+      } catch (err) {
+        const m = mapServerError(err);
+        setError({ ...m, stage: "registering-company" });
+        setStage("idle");
+      } finally {
+        inFlightRef.current = false;
+      }
+    },
+    [signTransaction],
+  );
 
   // ── Phase B ───────────────────────────────────────────────────────
   const signAndRegisterAgent = useCallback(
@@ -111,8 +161,7 @@ export function useAnchorIdentity(): UseAnchorIdentityResult {
         log("signAndRegisterAgent ignored — in flight");
         return;
       }
-      const companyPda = companyPdaRef.current;
-      if (!companyPda) {
+      if (!companyPdaRef.current) {
         setError({
           code: "unknown",
           message: "Phase A must complete before signing.",
@@ -129,62 +178,48 @@ export function useAnchorIdentity(): UseAnchorIdentityResult {
       });
 
       try {
-        // Discover agentIndex (CEO = 0 unless server pinned).
-        const me = await meApi.get().catch(() => null);
-        const agentRow = me?.agents.find((a) => a.id === agentId) ?? null;
-        const agentIndex = agentRow?.agentIndex ?? 0;
-
         setStage("awaiting-signature");
-        const messageBytes = encodeDerivationMessage({
-          companyPda,
-          agentIndex,
-          version: CURRENT_DERIVATION_MSG_VERSION,
-        });
-        log("calling signMessage", {
-          walletAddress: wallet.address,
-          msgBytes: messageBytes.length,
-        });
-
-        let signatureBytes: Uint8Array;
-        try {
-          const sigRes = await signMessage({
-            message: messageBytes,
-            wallet,
-            options: {
-              uiOptions: {
-                title: "Anchor your CEO on Solana",
-                description:
-                  "OCCA needs your signature to derive the agent's on-chain keypair. Your private key never leaves your wallet.",
-                buttonText: "Sign",
-              },
-            },
+        const prepRes = await chainApi.prepareAgent(agentId);
+        if (prepRes.alreadyRegistered) {
+          setResult({
+            companyPda: companyPdaRef.current,
+            agentPda: prepRes.agentPda,
+            agentIndex: prepRes.agentIndex,
+            agentChainTxSignature: null,
           });
-          signatureBytes = sigRes.signature;
-          log("signMessage ok", { len: signatureBytes.length });
+          setStage("complete");
+          log("signAndRegisterAgent already on-chain", prepRes);
+          return;
+        }
+
+        let signedBytes: Uint8Array;
+        try {
+          const signRes = await signTransaction({
+            transaction: toBytes(prepRes.transaction),
+            wallet,
+            chain: SOLANA_CAIP_CHAIN,
+          });
+          signedBytes = signRes.signedTransaction;
+          log("signTransaction ok", { len: signedBytes.length });
         } catch (err) {
-          log("signMessage failed", err);
+          log("signTransaction failed", err);
           const m = classifyWalletError(err);
           setError({ ...m, stage: "awaiting-signature" });
           setStage("ready-to-sign");
           return;
         }
 
-        setStage("deriving-keypair");
-        const agentKeypair = deriveAgentKeypairFromSignature(signatureBytes);
-        const agentAddress = agentKeypair.publicKey.toBase58();
-        const derivationSignature = bs58.encode(signatureBytes);
-
         setStage("registering-agent");
         try {
-          const res = await chainApi.registerAgent(agentId, {
-            agentAddress,
-            derivationSignature,
-            derivationMessageVersion: CURRENT_DERIVATION_MSG_VERSION,
+          const res = await chainApi.confirmAgent(agentId, {
+            signedTransaction: toBase64(signedBytes),
+            blockhash: prepRes.blockhash,
+            lastValidBlockHeight: prepRes.lastValidBlockHeight,
+            agentIndex: prepRes.agentIndex,
           });
           setResult({
-            companyPda,
+            companyPda: companyPdaRef.current,
             agentPda: res.agentPda,
-            agentAddress: res.agentAddress,
             agentIndex: res.agentIndex,
             agentChainTxSignature: res.agentChainTxSignature,
           });
@@ -198,7 +233,7 @@ export function useAnchorIdentity(): UseAnchorIdentityResult {
         inFlightRef.current = false;
       }
     },
-    [signMessage],
+    [signTransaction],
   );
 
   return {

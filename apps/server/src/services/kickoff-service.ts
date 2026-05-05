@@ -34,6 +34,10 @@ import {
   type RoleCategory as SharedRoleCategory,
 } from "@occa/shared";
 import { assignSeatForCompany } from "../features/agents/services/seat-assignment";
+import {
+  buildExternalAgentId,
+  buildWorkspacePath,
+} from "../features/agents/domain/external-id";
 import { childLogger } from "../lib/logger";
 
 const log = childLogger("kickoff");
@@ -552,7 +556,11 @@ async function provisionOne(
   if (validate.deviceToken) deviceToken = validate.deviceToken;
   log.info("device keypair validated");
 
-  const externalAgentId = buildExternalAgentId(agentRow.id);
+  const externalAgentId = buildExternalAgentId(
+    agentRow.id,
+    agentRow.role,
+    agentRow.name,
+  );
   const workspacePath = buildWorkspacePath(externalAgentId);
 
   log.info(
@@ -693,14 +701,4 @@ async function provisionOne(
       updatedAt: new Date(),
     })
     .where(eq(agents.id, agentRow.id));
-}
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-function buildExternalAgentId(occaAgentId: string): string {
-  return `occa-${occaAgentId.replace(/-/g, "").slice(0, 8)}`;
-}
-
-function buildWorkspacePath(externalAgentId: string): string {
-  return `~/.openclaw/workspaces/${externalAgentId}`;
 }

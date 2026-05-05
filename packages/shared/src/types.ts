@@ -131,10 +131,13 @@ export interface CompanyDTO {
 
   // ── On-chain Registry mirror ───────────────────────────────────────
   // Populated after `create_company` confirms on Solana. NULL until the
-  // company has been anchored. The PDA address is the durable identity —
-  // controllingAuthority can rotate without changing it.
+  // company has been anchored.
+  //
+  // `ownerWallet` mirrors the on-chain `owner` field — the user wallet
+  // that signed the create. It IS the sole authority for state-changing
+  // ix on this CompanyAccount.
   companyPda: string | null;
-  controllingAuthority: string | null;
+  ownerWallet: string | null;
   chainNonce: number | null;
   chainTxSignature: string | null;
 }
@@ -226,14 +229,17 @@ export interface AgentDTO {
   modelOverride: string | null;
 
   // ── On-chain Registry mirror ───────────────────────────────────────
-  // Populated after `register_agent` confirms on Solana. Custody model
-  // 'sign_to_derive' (MVP default) means OCCA never holds the privkey —
-  // `agentAddress` is the pubkey derived FE-side via wallet.signMessage.
+  // Populated after `register_agent` confirms on Solana.
+  //
+  // `ownerWallet` = user wallet (same as company.ownerWallet). Sole
+  // signer for state-changing ix on this AgentAccount.
+  //
+  // `operatingWallet` = optional user-supplied transactional wallet.
+  // NULL = not set yet (on-chain shows Pubkey::default()).
   agentPda: string | null;
-  agentAddress: string | null;
   agentIndex: number | null;
-  custodyModel: string;
-  derivationMsgVersion: number;
+  ownerWallet: string | null;
+  operatingWallet: string | null;
   agentChainTxSignature: string | null;
 }
 

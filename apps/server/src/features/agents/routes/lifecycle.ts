@@ -57,10 +57,7 @@ import {
   buildExternalAgentId,
   buildWorkspacePath,
 } from "../domain/external-id";
-import {
-  createAgentBody,
-  patchAgentBody,
-} from "../domain/schemas";
+import { createAgentBody, patchAgentBody } from "../domain/schemas";
 import { log } from "./_shared";
 
 const router: Router = Router();
@@ -91,7 +88,10 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
   if (!parsed.success) {
     res
       .status(StatusCodes.BAD_REQUEST)
-      .json({ error: ERROR_CODES.INVALID_BODY, detail: parsed.error.flatten() });
+      .json({
+        error: ERROR_CODES.INVALID_BODY,
+        detail: parsed.error.flatten(),
+      });
     return;
   }
   const userId = req.user!.userId;
@@ -123,8 +123,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
   };
   const stepStart = (step: string, label: string) =>
     emit("step", { status: "running", step, label });
-  const stepDone = (step: string) =>
-    emit("step", { status: "done", step });
+  const stepDone = (step: string) => emit("step", { status: "done", step });
   const fail = (
     message: string,
     step?: string,
@@ -181,7 +180,9 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
   const existingAgent = userAgents.find((row) => {
     const cfg = row.adapterConfig as Record<string, unknown> | undefined;
     const stored = cfg?.gatewayUrl;
-    return typeof stored === "string" && normalizeGatewayUrl(stored) === probeKey;
+    return (
+      typeof stored === "string" && normalizeGatewayUrl(stored) === probeKey
+    );
   });
   const agentCfg = existingAgent?.adapterConfig as
     | Record<string, unknown>
@@ -199,7 +200,9 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
   if (agentKeypairValid) {
     keypair = deserializeKeypair(agentKeypair);
     deviceToken =
-      typeof agentCfg?.deviceToken === "string" ? agentCfg.deviceToken : undefined;
+      typeof agentCfg?.deviceToken === "string"
+        ? agentCfg.deviceToken
+        : undefined;
   } else {
     const [userRow] = await db
       .select({ pendingDeviceKeypair: users.pendingDeviceKeypair })
@@ -302,10 +305,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
       fail("company_already_exists", "creating_record");
       return;
     }
-    fail(
-      err instanceof Error ? err.message : "db_error",
-      "creating_record",
-    );
+    fail(err instanceof Error ? err.message : "db_error", "creating_record");
     return;
   }
   stepDone("creating_record");
@@ -313,7 +313,11 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
   // Step 2: Provision on gateway (may emit gateway_restart substep)
   stepStart("provisioning", "Provisioning on gateway");
   const companyId = agentRow.companyId;
-  const externalAgentId = buildExternalAgentId(agentRow.id);
+  const externalAgentId = buildExternalAgentId(
+    agentRow.id,
+    agentRow.role,
+    agentRow.name,
+  );
   const workspacePath = buildWorkspacePath(externalAgentId);
 
   let restartStepEmitted = false;
@@ -339,7 +343,8 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
       },
     },
   );
-  if (provision.ok && provision.deviceToken) deviceToken = provision.deviceToken;
+  if (provision.ok && provision.deviceToken)
+    deviceToken = provision.deviceToken;
 
   if (!provision.ok) {
     const currentStep = restartStepEmitted ? "gateway_restart" : "provisioning";
@@ -372,7 +377,8 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
   // Step 3: Seed workspace files
   stepStart("seeding_workspace", "Seeding workspace files");
   const occaApiUrl =
-    process.env.OCCA_API_URL ?? `http://localhost:${process.env.PORT ?? "3002"}`;
+    process.env.OCCA_API_URL ??
+    `http://localhost:${process.env.PORT ?? "3002"}`;
   const now = new Date();
   let rendered: Awaited<ReturnType<typeof renderWorkspaceFiles>>;
   try {
@@ -488,7 +494,9 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
     : null;
   const body: CreateAgentResponse = {
     agent: await hydrateAgentDTO(finalRow),
-    company: companyRow ? toCompanyDTO(companyRow, companyProfileRow) : undefined,
+    company: companyRow
+      ? toCompanyDTO(companyRow, companyProfileRow)
+      : undefined,
   };
   emit("done", body);
   res.end();
@@ -583,7 +591,8 @@ router.post(
     let deviceToken: string | undefined =
       typeof cfg.deviceToken === "string" ? cfg.deviceToken : undefined;
     const externalAgentId =
-      agentRecord.externalAgentId ?? buildExternalAgentId(agentRecord.id);
+      agentRecord.externalAgentId ??
+      buildExternalAgentId(agentRecord.id, agentRecord.role, agentRecord.name);
     const workspacePath = buildWorkspacePath(externalAgentId);
 
     res.setHeader("Content-Type", "text/event-stream");
@@ -605,7 +614,12 @@ router.post(
       emit("step", { status: "running", step, label });
     const stepDone = (step: string) => emit("step", { status: "done", step });
     const fail = (message: string, step?: string) => {
-      emit("error", { message, step, agentId: agentRecord.id, retryable: true });
+      emit("error", {
+        message,
+        step,
+        agentId: agentRecord.id,
+        retryable: true,
+      });
       res.end();
     };
 
@@ -635,7 +649,9 @@ router.post(
       },
     );
     if (!provision.ok) {
-      const currentStep = restartStepEmitted ? "gateway_restart" : "provisioning";
+      const currentStep = restartStepEmitted
+        ? "gateway_restart"
+        : "provisioning";
       fail(
         `provision_failed: ${provision.error}${provision.reason ? ` — ${provision.reason}` : ""}`,
         currentStep,
@@ -704,7 +720,10 @@ router.post(
       apiKey,
       device: keypair,
       externalAgentId: provision.externalAgentId,
-      files: rendered.map((f) => ({ filename: f.filename, content: f.content })),
+      files: rendered.map((f) => ({
+        filename: f.filename,
+        content: f.content,
+      })),
     });
     if (!seed.ok) {
       fail(
@@ -784,7 +803,9 @@ router.post(
       : null;
     const body: CreateAgentResponse = {
       agent: await hydrateAgentDTO(finalRow),
-      company: companyRow ? toCompanyDTO(companyRow, companyProfileRow) : undefined,
+      company: companyRow
+        ? toCompanyDTO(companyRow, companyProfileRow)
+        : undefined,
     };
     emit("done", body);
     res.end();
@@ -822,36 +843,32 @@ router.get("/:id", requireAuth, async (req: Request, res: Response) => {
 
 // GET /api/agents/:id/files — list workspace files from
 // agent_workspace_files.
-router.get(
-  "/:id/files",
-  requireAuth,
-  async (req: Request, res: Response) => {
-    const existing = await findOwnedByUserId({
-      userId: req.user!.userId,
-      agentId: req.params.id,
-    });
-    if (!existing) {
-      res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.NOT_FOUND });
-      return;
-    }
-    const rows = await db
-      .select()
-      .from(agentWorkspaceFiles)
-      .where(eq(agentWorkspaceFiles.agentId, existing.id));
-    const body: ListAgentFilesResponse = {
-      files: rows.map((r) => ({
-        id: r.id,
-        filename: r.filename,
-        content: r.content,
-        source: r.source,
-        templateOrigin: r.templateOrigin ?? null,
-        syncedAt: r.syncedAt?.toISOString() ?? null,
-        updatedAt: r.updatedAt.toISOString(),
-      })),
-    };
-    res.json(body);
-  },
-);
+router.get("/:id/files", requireAuth, async (req: Request, res: Response) => {
+  const existing = await findOwnedByUserId({
+    userId: req.user!.userId,
+    agentId: req.params.id,
+  });
+  if (!existing) {
+    res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.NOT_FOUND });
+    return;
+  }
+  const rows = await db
+    .select()
+    .from(agentWorkspaceFiles)
+    .where(eq(agentWorkspaceFiles.agentId, existing.id));
+  const body: ListAgentFilesResponse = {
+    files: rows.map((r) => ({
+      id: r.id,
+      filename: r.filename,
+      content: r.content,
+      source: r.source,
+      templateOrigin: r.templateOrigin ?? null,
+      syncedAt: r.syncedAt?.toISOString() ?? null,
+      updatedAt: r.updatedAt.toISOString(),
+    })),
+  };
+  res.json(body);
+});
 
 // PATCH /api/agents/:id — edit name/role/adapterConfig
 router.patch("/:id", requireAuth, async (req: Request, res: Response) => {
@@ -867,7 +884,10 @@ router.patch("/:id", requireAuth, async (req: Request, res: Response) => {
   if (!parsed.success) {
     res
       .status(StatusCodes.BAD_REQUEST)
-      .json({ error: ERROR_CODES.INVALID_BODY, detail: parsed.error.flatten() });
+      .json({
+        error: ERROR_CODES.INVALID_BODY,
+        detail: parsed.error.flatten(),
+      });
     return;
   }
   const update: Partial<typeof agents.$inferInsert> = {

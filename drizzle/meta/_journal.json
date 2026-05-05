@@ -239,6 +239,13 @@
       "when": 1746713400000,
       "tag": "0033_chain_registry_columns",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1746799800000,
+      "tag": "0034_chain_registry_owner_split",
+      "breakpoints": true
     }
   ]
 }

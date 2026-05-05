@@ -1,17 +1,17 @@
 {
   "name": "occa-sdk",
-  "version": "0.1.0",
-  "description": "OCCA on-chain protocol SDK — PDA helpers, instruction builders, sign-to-derive custody, and types for the OCCA Registry program on Solana.",
+  "version": "0.2.0",
+  "description": "OCCA on-chain protocol SDK — PDA helpers, instruction builders, and types for the OCCA Registry program (Company / AgentIdentity / Deployment) on Solana.",
   "license": "MIT",
   "author": "OCCA",
-  "homepage": "https://github.com/occa-network/occa#readme",
+  "homepage": "https://github.com/Occa-Labs/occa-core/tree/main/packages/occa-sdk#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/occa-network/occa.git",
-    "directory": "occa/packages/occa-sdk"
+    "url": "git+https://github.com/Occa-Labs/occa-core.git",
+    "directory": "packages/occa-sdk"
   },
   "bugs": {
-    "url": "https://github.com/occa-network/occa/issues"
+    "url": "https://github.com/Occa-Labs/occa-core/issues"
   },
   "keywords": [
     "solana",
@@ -21,7 +21,7 @@
     "agent-identity",
     "ai-agents",
     "registry",
-    "sign-to-derive",
+    "deployment",
     "web3"
   ],
   "type": "module",
@@ -44,11 +44,6 @@
       "import": "./dist/constants.js",
       "require": "./dist/constants.cjs"
     },
-    "./derivation": {
-      "types": "./dist/derivation.d.ts",
-      "import": "./dist/derivation.js",
-      "require": "./dist/derivation.cjs"
-    },
     "./instructions": {
       "types": "./dist/instructions.d.ts",
       "import": "./dist/instructions.js",
@@ -64,14 +59,13 @@
   "scripts": {
     "build": "tsup",
     "prepublishOnly": "pnpm build",
+    "sync-idl": "cp ../../../occa-programs/target/idl/registry.json src/idl/registry.json",
     "devnet-smoke": "tsx scripts/devnet-smoke.ts"
   },
   "dependencies": {
-    "@solana/web3.js": "^1.98.4",
-    "@noble/hashes": "^1.4.0"
+    "@solana/web3.js": "^1.98.4"
   },
   "devDependencies": {
-    "@noble/ed25519": "^3.1.0",
     "@types/node": "^20",
     "tsup": "^8.0.0",
     "tsx": "^4.0.0",

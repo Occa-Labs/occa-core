@@ -62,7 +62,7 @@ export function toCompanyDTO(
       : null,
 
     companyPda: company.companyPda ?? null,
-    controllingAuthority: company.controllingAuthority ?? null,
+    ownerWallet: company.ownerWallet ?? null,
     chainNonce: company.chainNonce ?? null,
     chainTxSignature: company.chainTxSignature ?? null,
   };

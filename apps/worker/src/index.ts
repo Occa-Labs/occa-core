@@ -3,9 +3,16 @@ import { startDispatcherLoop } from "./dispatcher";
 import { startSchedulerLoop } from "./scheduler";
 import { startConnectionProbeLoop } from "./connection-probe";
 import { startSkillSyncLoop } from "./skill-sync";
-import { pool } from "./db";
+import { pool, waitForSchema } from "./db";
 
 async function main() {
+  // Server owns migrations; worker just waits for them. Polling is cheaper
+  // than coupling worker to server's ensure-schema and avoids loud table-
+  // missing errors when both processes start in parallel after a DB reset.
+  console.log("[worker] waiting for schema...");
+  await waitForSchema();
+  console.log("[worker] schema ready");
+
   let leader: Awaited<ReturnType<typeof acquireLeader>>;
   try {
     leader = await acquireLeader();
@@ -41,7 +48,7 @@ async function main() {
 main().catch((err) => {
   console.error(
     "[worker] fatal:",
-    err instanceof Error ? err.stack ?? err.message : err,
+    err instanceof Error ? (err.stack ?? err.message) : err,
   );
   process.exit(1);
 });

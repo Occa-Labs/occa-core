@@ -10,17 +10,6 @@ out
 .turbo
 *.tsbuildinfo
 
-# anchor / cargo
-target/
-Cargo.lock
-.anchor/
-test-ledger/
-
-# program keypair — pubkey is hardcoded in declare_id!() but the secret
-# stays out of git. Backup separately.
-programs/*/registry-keypair.json
-programs/*/*-keypair.json
-
 # env
 .env
 .env.local

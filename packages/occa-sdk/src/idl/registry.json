@@ -1,5 +1,5 @@
 {
-  "address": "oCCAYWgH3KTWccrdHUkrGZQK8YAGTNVQp4V4Hxsv8LQ",
+  "address": "occakrum1PrVDaXauDuSiwPKfrhdnm7uVWKJxE39kfm",
   "metadata": {
     "name": "registry",
     "version": "0.1.0",
@@ -12,12 +12,7 @@
       "docs": [
         "Create a new CompanyAccount PDA.",
         "",
-        "Seeds: `[\"company\", controlling_authority, nonce_le_u32]`",
-        "",
-        "`nonce` lets a single controlling_authority own multiple companies.",
-        "Server-side picks the next free nonce per authority. `metadata_uri`",
-        "is an off-chain pointer (IPFS / Arweave / HTTPS) — empty string is",
-        "allowed for MVP."
+        "Seeds: `[\"company\", owner, nonce_le_u32]`"
       ],
       "discriminator": [
         36,
@@ -49,7 +44,7 @@
               },
               {
                 "kind": "account",
-                "path": "authority"
+                "path": "owner"
               },
               {
                 "kind": "arg",
@@ -59,18 +54,16 @@
           }
         },
         {
-          "name": "authority",
+          "name": "owner",
           "docs": [
-            "The future `controlling_authority` of the company. Required to",
-            "sign so a third party can't squat someone else's authority+nonce",
-            "PDA. For MVP this is the operator hot wallet."
+            "Owning user wallet — signer to prevent PDA squatting."
           ],
           "signer": true
         },
         {
           "name": "payer",
           "docs": [
-            "Pays rent for the new account. May or may not equal `authority`."
+            "Pays rent. Typically the operator hot wallet (sponsored UX)."
           ],
           "writable": true,
           "signer": true
@@ -86,46 +79,68 @@
           "type": "u32"
         },
         {
+          "name": "name",
+          "type": "string"
+        },
+        {
+          "name": "locale",
+          "type": "string"
+        },
+        {
           "name": "metadata_uri",
           "type": "string"
+        },
+        {
+          "name": "metadata_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
         }
       ]
     },
     {
-      "name": "register_agent",
+      "name": "create_deployment",
       "docs": [
-        "Create a new AgentAccount PDA under an existing company.",
+        "Create a Deployment binding an existing AgentIdentity to a Company.",
         "",
-        "Seeds: `[\"agent\", company_pda, agent_index_le_u32]`",
+        "Seeds: `[\"deployment\", company_pda, deployment_index_le_u32]`",
         "",
-        "`agent_index` is a per-company u32 counter (NOT a UUID) — server",
-        "is responsible for picking the next free index. `agent_address` is",
-        "the wallet that will sign trace anchors (later phase). For MVP",
-        "custody_model=3 (SignToDerive), the FE derives this pubkey via",
-        "wallet.signMessage and OCCA never holds the privkey."
+        "`deployment_index` is a per-company u32 counter — caller picks",
+        "the next free index. Same identity may be deployed multiple times",
+        "in the same company (e.g. retired then re-deployed) — each gets",
+        "its own index.",
+        "",
+        "Constraint: `identity.owner == company.owner`. Both fields are",
+        "immutable, so this binding is permanent."
       ],
       "discriminator": [
-        135,
-        157,
-        66,
-        195,
-        2,
-        113,
-        175,
-        30
+        55,
+        207,
+        186,
+        101,
+        21,
+        218,
+        102,
+        171
       ],
       "accounts": [
         {
-          "name": "company",
+          "name": "company"
+        },
+        {
+          "name": "identity",
           "docs": [
-            "Existing company. `has_one` enforces that `controlling_authority`",
-            "(signer below) matches the field stored on the company."
+            "AgentIdentity to deploy. Phase 1: must be owned by the same",
+            "wallet as the company (enforced in handler)."
           ]
         },
         {
-          "name": "controlling_authority",
+          "name": "owner",
           "docs": [
-            "Must match `company.controlling_authority`."
+            "Company owner (signer). Authority for state changes."
           ],
           "signer": true,
           "relations": [
@@ -133,15 +148,20 @@
           ]
         },
         {
-          "name": "agent",
+          "name": "deployment",
           "writable": true,
           "pda": {
             "seeds": [
               {
                 "kind": "const",
                 "value": [
-                  97,
-                  103,
+                  100,
+                  101,
+                  112,
+                  108,
+                  111,
+                  121,
+                  109,
                   101,
                   110,
                   116
@@ -153,7 +173,7 @@
               },
               {
                 "kind": "arg",
-                "path": "agent_index"
+                "path": "deployment_index"
               }
             ]
           }
@@ -170,40 +190,438 @@
       ],
       "args": [
         {
-          "name": "agent_index",
+          "name": "deployment_index",
           "type": "u32"
         },
         {
-          "name": "agent_address",
-          "type": "pubkey"
+          "name": "role",
+          "type": "string"
         },
         {
-          "name": "custody_model",
-          "type": "u8"
-        },
-        {
-          "name": "role_id",
-          "type": "u32"
+          "name": "parent_deployment_index",
+          "type": {
+            "option": "u32"
+          }
         },
         {
           "name": "adapter_id",
           "type": "pubkey"
+        },
+        {
+          "name": "metadata_uri",
+          "type": "string"
+        },
+        {
+          "name": "metadata_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "register_agent_identity",
+      "docs": [
+        "Mint a new AgentIdentity PDA.",
+        "",
+        "Seeds: `[\"agent_identity\", agent_pubkey]`",
+        "",
+        "`agent_pubkey` is a caller-supplied identifier (typically derived",
+        "from a generated keypair held by the user wallet). It is the",
+        "stable identity of the agent across deployments. The recorded",
+        "`owner` is immutable — there is no transfer instruction."
+      ],
+      "discriminator": [
+        57,
+        31,
+        242,
+        205,
+        57,
+        129,
+        123,
+        35
+      ],
+      "accounts": [
+        {
+          "name": "identity",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  103,
+                  101,
+                  110,
+                  116,
+                  95,
+                  105,
+                  100,
+                  101,
+                  110,
+                  116,
+                  105,
+                  116,
+                  121
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "agent_pubkey"
+              }
+            ]
+          }
+        },
+        {
+          "name": "owner",
+          "docs": [
+            "Identity owner (= user wallet that minted this identity)."
+          ],
+          "signer": true
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "agent_pubkey",
+          "type": "pubkey"
+        },
+        {
+          "name": "name",
+          "type": "string"
+        },
+        {
+          "name": "metadata_uri",
+          "type": "string"
+        },
+        {
+          "name": "metadata_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "retire_deployment",
+      "docs": [
+        "Retire a deployment. Terminal — once retired, this Deployment",
+        "PDA is read-only forever (preserves history). To re-engage the",
+        "same identity in the same company, create a new deployment with",
+        "the next deployment_index."
+      ],
+      "discriminator": [
+        45,
+        188,
+        162,
+        197,
+        136,
+        180,
+        202,
+        153
+      ],
+      "accounts": [
+        {
+          "name": "deployment",
+          "writable": true
+        },
+        {
+          "name": "owner",
+          "signer": true,
+          "relations": [
+            "deployment"
+          ]
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "set_operating_wallet",
+      "docs": [
+        "Set or replace the deployment's operating wallet. Pass",
+        "`Pubkey::default()` to clear. Owner-only."
+      ],
+      "discriminator": [
+        20,
+        151,
+        94,
+        114,
+        217,
+        30,
+        52,
+        132
+      ],
+      "accounts": [
+        {
+          "name": "deployment",
+          "writable": true
+        },
+        {
+          "name": "owner",
+          "signer": true,
+          "relations": [
+            "deployment"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "new_operating_wallet",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "update_agent_identity_metadata",
+      "docs": [
+        "Update identity metadata (rename, change persona, etc.).",
+        "Identity-owner only."
+      ],
+      "discriminator": [
+        250,
+        182,
+        24,
+        200,
+        201,
+        147,
+        60,
+        183
+      ],
+      "accounts": [
+        {
+          "name": "identity",
+          "writable": true
+        },
+        {
+          "name": "owner",
+          "signer": true,
+          "relations": [
+            "identity"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "name",
+          "type": "string"
+        },
+        {
+          "name": "metadata_uri",
+          "type": "string"
+        },
+        {
+          "name": "metadata_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "update_company_metadata",
+      "docs": [
+        "Update company metadata (name / locale / off-chain pointer).",
+        "Owner-only. Use to rename, update brand assets, etc."
+      ],
+      "discriminator": [
+        186,
+        229,
+        190,
+        16,
+        234,
+        141,
+        170,
+        89
+      ],
+      "accounts": [
+        {
+          "name": "company",
+          "writable": true
+        },
+        {
+          "name": "owner",
+          "signer": true,
+          "relations": [
+            "company"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "name",
+          "type": "string"
+        },
+        {
+          "name": "locale",
+          "type": "string"
+        },
+        {
+          "name": "metadata_uri",
+          "type": "string"
+        },
+        {
+          "name": "metadata_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "update_company_status",
+      "docs": [
+        "Pause / resume a company. Paused companies should be skipped by",
+        "dispatchers off-chain. Owner-only."
+      ],
+      "discriminator": [
+        61,
+        6,
+        101,
+        120,
+        141,
+        13,
+        125,
+        75
+      ],
+      "accounts": [
+        {
+          "name": "company",
+          "writable": true
+        },
+        {
+          "name": "owner",
+          "signer": true,
+          "relations": [
+            "company"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "new_status",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "update_deployment_metadata",
+      "docs": [
+        "Update deployment metadata (role, off-chain pointer).",
+        "Owner-only."
+      ],
+      "discriminator": [
+        100,
+        135,
+        41,
+        32,
+        16,
+        41,
+        29,
+        76
+      ],
+      "accounts": [
+        {
+          "name": "deployment",
+          "writable": true
+        },
+        {
+          "name": "owner",
+          "signer": true,
+          "relations": [
+            "deployment"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "role",
+          "type": "string"
+        },
+        {
+          "name": "metadata_uri",
+          "type": "string"
+        },
+        {
+          "name": "metadata_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "update_deployment_status",
+      "docs": [
+        "Toggle deployment between Active and Paused. Owner-only.",
+        "Use `retire_deployment` for terminal transition."
+      ],
+      "discriminator": [
+        225,
+        195,
+        150,
+        254,
+        178,
+        203,
+        53,
+        147
+      ],
+      "accounts": [
+        {
+          "name": "deployment",
+          "writable": true
+        },
+        {
+          "name": "owner",
+          "signer": true,
+          "relations": [
+            "deployment"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "new_status",
+          "type": "u8"
         }
       ]
     }
   ],
   "accounts": [
     {
-      "name": "AgentAccount",
+      "name": "AgentIdentity",
       "discriminator": [
+        11,
+        149,
+        31,
+        27,
+        186,
+        76,
         241,
-        119,
-        69,
-        140,
-        233,
-        9,
-        112,
-        50
+        72
       ]
     },
     {
@@ -218,90 +636,147 @@
         69,
         96
       ]
+    },
+    {
+      "name": "Deployment",
+      "discriminator": [
+        66,
+        90,
+        104,
+        89,
+        183,
+        130,
+        64,
+        178
+      ]
     }
   ],
   "errors": [
     {
       "code": 6000,
+      "name": "Unauthorized",
+      "msg": "signer does not match the account owner"
+    },
+    {
+      "code": 6001,
+      "name": "NameRequired",
+      "msg": "name is required"
+    },
+    {
+      "code": 6002,
+      "name": "NameTooLong",
+      "msg": "name exceeds MAX_NAME_LEN"
+    },
+    {
+      "code": 6003,
+      "name": "LocaleTooLong",
+      "msg": "locale exceeds MAX_LOCALE_LEN"
+    },
+    {
+      "code": 6004,
+      "name": "RoleRequired",
+      "msg": "role is required"
+    },
+    {
+      "code": 6005,
+      "name": "RoleTooLong",
+      "msg": "role exceeds MAX_ROLE_LEN"
+    },
+    {
+      "code": 6006,
       "name": "MetadataUriTooLong",
       "msg": "metadata_uri exceeds MAX_METADATA_URI_LEN"
     },
     {
-      "code": 6001,
-      "name": "InvalidCustodyModel",
-      "msg": "custody_model is not a known variant"
+      "code": 6007,
+      "name": "InvalidStatus",
+      "msg": "invalid status value"
     },
     {
-      "code": 6002,
-      "name": "Unauthorized",
-      "msg": "signer does not match company.controlling_authority"
+      "code": 6008,
+      "name": "DeploymentRetired",
+      "msg": "deployment is retired and cannot be modified"
+    },
+    {
+      "code": 6009,
+      "name": "IdentityOwnerMismatch",
+      "msg": "identity owner does not match company owner"
     }
   ],
   "types": [
     {
-      "name": "AgentAccount",
+      "name": "AgentIdentity",
       "type": {
         "kind": "struct",
         "fields": [
           {
             "name": "version",
-            "type": "u8"
-          },
-          {
-            "name": "company",
             "docs": [
-              "Owning CompanyAccount PDA."
-            ],
-            "type": "pubkey"
-          },
-          {
-            "name": "agent_address",
-            "docs": [
-              "Wallet that will sign agent-side actions (e.g. commit_trace later)."
-            ],
-            "type": "pubkey"
-          },
-          {
-            "name": "custody_model",
-            "docs": [
-              "See top-of-file mapping."
+              "Schema version."
             ],
             "type": "u8"
           },
           {
-            "name": "derivation_index",
+            "name": "agent_pubkey",
             "docs": [
-              "SLIP-0010 hardened derivation index. Reserved for Phase 3 rotation."
-            ],
-            "type": "u32"
-          },
-          {
-            "name": "agent_index",
-            "docs": [
-              "Per-company counter — also part of the PDA seed."
-            ],
-            "type": "u32"
-          },
-          {
-            "name": "role_id",
-            "docs": [
-              "Reference to a role catalog entry (off-chain)."
-            ],
-            "type": "u32"
-          },
-          {
-            "name": "adapter_id",
-            "docs": [
-              "Pinned adapter version. Pubkey::default() = unspecified."
+              "Stable identity key — also baked into the PDA seed."
             ],
             "type": "pubkey"
           },
           {
-            "name": "status",
+            "name": "owner",
             "docs": [
-              "0=Active, 1=Degraded, 2=Retired."
+              "Owning user wallet. Immutable — set at mint and never changes."
             ],
-            "type": "u8"
+            "type": "pubkey"
+          },
+          {
+            "name": "created_at",
+            "docs": [
+              "Unix timestamp at mint."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "updated_at",
+            "docs": [
+              "Unix timestamp of last state mutation."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "name",
+            "docs": [
+              "Display name (e.g. \"Aiden\"). Not unique — identities are",
+              "disambiguated by `agent_pubkey`."
+            ],
+            "type": "string"
+          },
+          {
+            "name": "metadata_uri",
+            "docs": [
+              "Off-chain metadata URI — persona, avatar, public bio."
+            ],
+            "type": "string"
+          },
+          {
+            "name": "metadata_hash",
+            "docs": [
+              "SHA-256 of metadata JSON."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "reputation_uri",
+            "docs": [
+              "Pointer to ReputationAccount (Phase 2). Empty string = unminted."
+            ],
+            "type": "string"
           }
         ]
       }
@@ -319,9 +794,9 @@
             "type": "u8"
           },
           {
-            "name": "controlling_authority",
+            "name": "owner",
             "docs": [
-              "Privileged-class signer for this company."
+              "Owning user wallet — also baked into the PDA seed."
             ],
             "type": "pubkey"
           },
@@ -342,24 +817,186 @@
           {
             "name": "created_at",
             "docs": [
-              "Unix timestamp (seconds) at creation."
+              "Unix timestamp at creation."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "updated_at",
+            "docs": [
+              "Unix timestamp of last state mutation."
             ],
             "type": "i64"
           },
           {
             "name": "nonce",
             "docs": [
-              "Seed disambiguator — same authority can own multiple companies."
+              "Seed disambiguator — same owner can register multiple companies."
             ],
             "type": "u32"
           },
           {
-            "name": "metadata_uri",
+            "name": "status",
             "docs": [
-              "Off-chain metadata URI (IPFS / Arweave / HTTPS). Bounded by",
-              "MAX_METADATA_URI_LEN to keep account size predictable."
+              "Active=0, Paused=1."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "name",
+            "docs": [
+              "Display name."
             ],
             "type": "string"
+          },
+          {
+            "name": "locale",
+            "docs": [
+              "BCP-47 locale tag for default UI rendering (\"en\", \"id\", ...)."
+            ],
+            "type": "string"
+          },
+          {
+            "name": "metadata_uri",
+            "docs": [
+              "Off-chain metadata URI (IPFS / Arweave / HTTPS) — extended profile,",
+              "brand assets, etc."
+            ],
+            "type": "string"
+          },
+          {
+            "name": "metadata_hash",
+            "docs": [
+              "SHA-256 of canonical metadata JSON for integrity verification."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "Deployment",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "version",
+            "docs": [
+              "Schema version."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "agent_identity",
+            "docs": [
+              "AgentIdentity PDA this deployment belongs to."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "company",
+            "docs": [
+              "CompanyAccount PDA this deployment belongs to."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "deployment_index",
+            "docs": [
+              "Per-company counter — also part of the PDA seed."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "owner",
+            "docs": [
+              "Mirror of `company.owner` for fast single-account auth checks."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "operating_wallet",
+            "docs": [
+              "Externally-provided wallet for agent-side transactions.",
+              "Pubkey::default() = unset."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "adapter_id",
+            "docs": [
+              "Pinned adapter (Pubkey::default() = unspecified)."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "role",
+            "docs": [
+              "Capability persona / function tag (e.g. \"ceo\", \"sdr\"). NOT a",
+              "job title — see Whitepaper §15.7 + CLAUDE.md naming guardrails."
+            ],
+            "type": "string"
+          },
+          {
+            "name": "parent_deployment_index",
+            "docs": [
+              "Reporting parent within the company (None = top-level)."
+            ],
+            "type": {
+              "option": "u32"
+            }
+          },
+          {
+            "name": "status",
+            "docs": [
+              "Active=0, Paused=1, Retired=2 (terminal)."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "deployed_at",
+            "docs": [
+              "Unix timestamp when deployment was created."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "retired_at",
+            "docs": [
+              "Unix timestamp when retired (0 = still active)."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "updated_at",
+            "docs": [
+              "Unix timestamp of last state mutation."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "metadata_uri",
+            "docs": [
+              "Off-chain metadata URI — model preferences, skill list, etc."
+            ],
+            "type": "string"
+          },
+          {
+            "name": "metadata_hash",
+            "docs": [
+              "SHA-256 of metadata JSON."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
           }
         ]
       }

@@ -77,12 +77,17 @@ export const companies = pgTable(
       withTimezone: true,
     }),
 
-    // ── On-chain Registry mirror (drizzle 0033) ──────────────────────
+    // ── On-chain Registry mirror (drizzle 0033 + 0034) ──────────────
     // Populated after `create_company` is confirmed on Solana. Source of
     // truth lives on-chain; these are cache columns for fast lookup.
     // NULL until the company has been registered on-chain.
+    //
+    // `owner_wallet` mirrors the on-chain `owner` field (= user wallet).
+    // It IS the sole authority for state-changing instructions. The
+    // operator hot wallet is fee-payer only and never appears in the
+    // CompanyAccount layout.
     companyPda: text("company_pda").unique(),
-    controllingAuthority: text("controlling_authority"),
+    ownerWallet: text("owner_wallet"),
     chainNonce: integer("chain_nonce"),
     chainTxSignature: text("chain_tx_signature"),
 
@@ -235,17 +240,20 @@ export const agents = pgTable(
     // the chosen GLB regardless of role / claim order.
     modelOverride: text("model_override"),
 
-    // ── On-chain Registry mirror (drizzle 0033) ──────────────────────
-    // Populated after `register_agent` is confirmed on Solana. Custody
-    // model 'sign_to_derive' (default) means OCCA never holds the agent
-    // privkey — `agent_address` is derived FE-side via wallet.signMessage.
+    // ── On-chain Registry mirror (drizzle 0033 + 0034) ──────────────
+    // Populated after `register_agent` is confirmed on Solana.
+    //
+    // `owner_wallet` = user wallet (same as company.owner_wallet) — sole
+    // signer for state-changing ix on this AgentAccount.
+    //
+    // `operating_wallet` = optional user-supplied transactional wallet
+    // (the agent's "checking account" for routing real funds). NULL =
+    // not yet set; on-chain it shows as `Pubkey::default()` until the
+    // user invokes `set_operating_wallet`.
     agentPda: text("agent_pda").unique(),
-    agentAddress: text("agent_address"),
     agentIndex: integer("agent_index"),
-    custodyModel: text("custody_model").notNull().default("sign_to_derive"),
-    derivationMsgVersion: integer("derivation_msg_version")
-      .notNull()
-      .default(1),
+    ownerWallet: text("owner_wallet"),
+    operatingWallet: text("operating_wallet"),
     agentChainTxSignature: text("agent_chain_tx_signature"),
 
     createdAt: timestamp("created_at", { withTimezone: true })

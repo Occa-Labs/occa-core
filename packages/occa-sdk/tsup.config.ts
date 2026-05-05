@@ -5,7 +5,6 @@ export default defineConfig({
     index: "src/index.ts",
     pda: "src/pda.ts",
     constants: "src/constants.ts",
-    derivation: "src/derivation.ts",
     instructions: "src/instructions.ts",
   },
   format: ["esm", "cjs"],
@@ -15,5 +14,5 @@ export default defineConfig({
   outDir: "dist",
   target: "es2020",
   // runtime deps stay external — the consumer's bundler resolves them.
-  external: ["@solana/web3.js", "@noble/hashes"],
+  external: ["@solana/web3.js"],
 });

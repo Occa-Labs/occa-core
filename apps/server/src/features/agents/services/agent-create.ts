@@ -30,22 +30,19 @@ import { db } from "../../../infra/database/client";
 import { childLogger } from "../../../lib/logger";
 
 const log = childLogger("agent-create");
-import { renderWorkspaceFiles, roleLabelFor } from "../../../lib/workspace-templates";
+import {
+  renderWorkspaceFiles,
+  roleLabelFor,
+} from "../../../lib/workspace-templates";
 import {
   autoAssignSkillsToNewAgent,
   enqueueSkillSyncs,
 } from "../../skills/services/agent-skill-assign";
 import { assignSeatForCompany } from "./seat-assignment";
-
-// External id for the OpenClaw-side agent. Mirrors routes/agents.ts —
-// derived from the OCCA UUID so it's short, deterministic, traceable.
-function buildExternalAgentId(occaAgentId: string): string {
-  return `occa-${occaAgentId.replace(/-/g, "").slice(0, 8)}`;
-}
-
-function buildWorkspacePath(externalAgentId: string): string {
-  return `~/.openclaw/workspaces/${externalAgentId}`;
-}
+import {
+  buildExternalAgentId,
+  buildWorkspacePath,
+} from "../domain/external-id";
 
 export interface CreateAgentInternalInput {
   companyId: string;
@@ -157,7 +154,11 @@ export async function createAgentInternal(
     };
   }
 
-  const externalAgentId = buildExternalAgentId(agentRow.id);
+  const externalAgentId = buildExternalAgentId(
+    agentRow.id,
+    agentRow.role,
+    agentRow.name,
+  );
   const workspacePath = buildWorkspacePath(externalAgentId);
 
   // Rollback helper — used after step 3 if any subsequent step fails.
@@ -348,7 +349,9 @@ async function augmentWithCompanyDeviceIdentity(args: {
   const existing = candidates.find((row) => {
     const cfg = row.adapterConfig as Record<string, unknown> | undefined;
     const stored = cfg?.gatewayUrl;
-    return typeof stored === "string" && normalizeGatewayUrl(stored) === targetKey;
+    return (
+      typeof stored === "string" && normalizeGatewayUrl(stored) === targetKey
+    );
   });
   const cfg = existing?.adapterConfig as Record<string, unknown> | undefined;
   if (!cfg?.deviceKeypair) return args.baseConfig;

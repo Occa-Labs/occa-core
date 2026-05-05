@@ -111,106 +111,144 @@ export const adaptersApi = {
 };
 
 // ── On-chain Registry ──────────────────────────────────────────────────────
-// Both endpoints are idempotent: re-calling after a successful anchor
-// returns `alreadyRegistered: true` with the existing fields. Server holds
-// the operator hot wallet and signs `controlling_authority` for MVP.
-export interface RegisterCompanyOnChainResponse {
+// All state-changing instructions are signed by the user wallet (`owner`).
+// The operator hot wallet is the fee-payer ONLY. Per ix the FE flow is:
+//   1. POST /…/prepare    → BE returns a base64 tx with operator's
+//                           fee-payer signature pre-attached.
+//   2. Wallet signTx      → Privy adds the owner signature in browser.
+//   3. POST /…/confirm    → BE submits the fully-signed tx, confirms,
+//                           and persists the on-chain cache columns.
+//
+// Endpoints are idempotent: re-calling after a successful anchor returns
+// `alreadyRegistered: true` with the existing fields and no `transaction`.
+
+interface PreparedTx {
+  transaction: string;
+  blockhash: string;
+  lastValidBlockHeight: number;
+}
+
+export interface PrepareCompanyOnChainRequest {
+  metadataUri?: string;
+}
+
+export type PrepareCompanyOnChainResponse =
+  | {
+      alreadyRegistered: true;
+      companyPda: string;
+      ownerWallet: string;
+      chainNonce: number;
+      chainTxSignature?: string | null;
+      recoveredFromChain?: boolean;
+    }
+  | ({
+      alreadyRegistered: false;
+      companyPda: string;
+      ownerWallet: string;
+      chainNonce: number;
+    } & PreparedTx);
+
+export interface ConfirmCompanyOnChainRequest {
+  signedTransaction: string;
+  blockhash: string;
+  lastValidBlockHeight: number;
+  nonce: number;
+}
+
+export interface ConfirmCompanyOnChainResponse {
   alreadyRegistered: boolean;
   companyPda: string;
-  controllingAuthority: string;
+  ownerWallet: string;
   chainNonce: number;
   chainTxSignature: string | null;
 }
 
-export interface RegisterAgentOnChainRequest {
-  agentAddress: string;
-  derivationSignature: string;
-  derivationMessageVersion?: number;
+export type PrepareAgentOnChainResponse =
+  | {
+      alreadyRegistered: true;
+      agentPda: string;
+      agentIndex: number;
+    }
+  | ({
+      alreadyRegistered: false;
+      agentPda: string;
+      agentIndex: number;
+    } & PreparedTx);
+
+export interface ConfirmAgentOnChainRequest {
+  signedTransaction: string;
+  blockhash: string;
+  lastValidBlockHeight: number;
+  agentIndex: number;
 }
 
-export interface RegisterAgentOnChainResponse {
+export interface ConfirmAgentOnChainResponse {
   alreadyRegistered: boolean;
   agentPda: string;
-  agentAddress: string;
   agentIndex: number;
-  derivationMessageVersion?: number;
+  ownerWallet?: string;
   agentChainTxSignature: string | null;
 }
 
-export interface BatchPrepareAgentsRequest {
-  agentIds: string[];
+export interface PrepareSetOperatingWalletRequest {
+  operatingWallet: string;
 }
 
-export interface BatchPrepareAgentsResponse {
-  companyPda: string;
-  derivationMessageVersion: number;
-  hires: Array<{
-    agentId: string;
-    agentIndex: number | null;
-    alreadyRegistered: boolean;
-  }>;
-  /** Canonical message FE must sign with the user's wallet. */
-  batchMessage: string;
+export interface PrepareSetOperatingWalletResponse extends PreparedTx {
+  operatingWallet: string;
 }
 
-export interface BatchRegisterAgentsRequest {
-  derivationSignature: string;
-  derivationMessageVersion?: number;
-  hires: Array<{ agentId: string; agentAddress: string }>;
+export interface ConfirmSetOperatingWalletRequest {
+  signedTransaction: string;
+  blockhash: string;
+  lastValidBlockHeight: number;
+  operatingWallet: string;
 }
 
-export interface BatchRegisterAgentsResponse {
-  alreadyRegistered: boolean;
-  derivationMessageVersion?: number;
-  registered: Array<
-    | {
-        agentId: string;
-        agentPda: string;
-        agentAddress: string;
-        agentIndex: number;
-        agentChainTxSignature: string;
-        alreadyRegistered: false;
-      }
-    | {
-        agentId: string;
-        agentPda: string | null;
-        alreadyRegistered: true;
-      }
-  >;
+export interface ConfirmSetOperatingWalletResponse {
+  operatingWallet: string;
+  signature: string;
 }
 
 export const chainApi = {
-  registerCompany: (companyId: string) =>
-    request<RegisterCompanyOnChainResponse>(
-      `/api/chain/companies/${companyId}/register`,
-      {
-        method: "POST",
-        body: JSON.stringify({}),
-      },
+  prepareCompany: (
+    companyId: string,
+    body: PrepareCompanyOnChainRequest = {},
+  ) =>
+    request<PrepareCompanyOnChainResponse>(
+      `/api/chain/companies/${companyId}/register/prepare`,
+      { method: "POST", body: JSON.stringify(body) },
     ),
-  registerAgent: (agentId: string, input: RegisterAgentOnChainRequest) =>
-    request<RegisterAgentOnChainResponse>(
-      `/api/chain/agents/${agentId}/register`,
-      {
-        method: "POST",
-        body: JSON.stringify(input),
-      },
+  confirmCompany: (companyId: string, body: ConfirmCompanyOnChainRequest) =>
+    request<ConfirmCompanyOnChainResponse>(
+      `/api/chain/companies/${companyId}/register/confirm`,
+      { method: "POST", body: JSON.stringify(body) },
     ),
-  batchPrepareAgents: (companyId: string, input: BatchPrepareAgentsRequest) =>
-    request<BatchPrepareAgentsResponse>(
-      `/api/chain/companies/${companyId}/agents/batch-prepare`,
-      {
-        method: "POST",
-        body: JSON.stringify(input),
-      },
+  prepareAgent: (agentId: string) =>
+    request<PrepareAgentOnChainResponse>(
+      `/api/chain/agents/${agentId}/register/prepare`,
+      { method: "POST", body: JSON.stringify({}) },
     ),
-  batchRegisterAgents: (companyId: string, input: BatchRegisterAgentsRequest) =>
-    request<BatchRegisterAgentsResponse>(
-      `/api/chain/companies/${companyId}/agents/batch-register`,
-      {
-        method: "POST",
-        body: JSON.stringify(input),
-      },
+  confirmAgent: (agentId: string, body: ConfirmAgentOnChainRequest) =>
+    request<ConfirmAgentOnChainResponse>(
+      `/api/chain/agents/${agentId}/register/confirm`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  prepareSetOperatingWallet: (
+    agentId: string,
+    body: PrepareSetOperatingWalletRequest,
+  ) =>
+    request<PrepareSetOperatingWalletResponse>(
+      `/api/chain/agents/${agentId}/operating-wallet/prepare`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  confirmSetOperatingWallet: (
+    agentId: string,
+    body: ConfirmSetOperatingWalletRequest,
+  ) =>
+    request<ConfirmSetOperatingWalletResponse>(
+      `/api/chain/agents/${agentId}/operating-wallet/confirm`,
+      { method: "POST", body: JSON.stringify(body) },
     ),
 };
 

@@ -1,5 +1,10 @@
 import { PublicKey } from "@solana/web3.js";
-import { AGENT_SEED, COMPANY_SEED, REGISTRY_PROGRAM_ID } from "./constants";
+import {
+  AGENT_IDENTITY_SEED,
+  COMPANY_SEED,
+  DEPLOYMENT_SEED,
+  REGISTRY_PROGRAM_ID,
+} from "./constants";
 
 /**
  * Encode a u32 as little-endian 4 bytes (matches Anchor / Borsh on-chain
@@ -17,39 +22,62 @@ export function u32LeBytes(value: number): Buffer {
 /**
  * CompanyAccount PDA.
  *
- *   seeds = ["company", controlling_authority, nonce_le_u32]
+ *   seeds = ["company", owner, nonce_le_u32]
  *
- * The nonce allows a single controlling_authority to create multiple
- * companies. For MVP, server picks `nonce = 0` for the first company per
- * authority and increments on collision.
+ * Wallet-bound seed: a wallet's companies can be enumerated directly
+ * from chain by probing `(owner, nonce=0..N)`. The owner is also the
+ * sole authority for state-changing ix on this account.
  */
 export function deriveCompanyPda(
-  controllingAuthority: PublicKey,
+  owner: PublicKey,
   nonce: number,
   programId: PublicKey = REGISTRY_PROGRAM_ID,
 ): { pda: PublicKey; bump: number } {
   const [pda, bump] = PublicKey.findProgramAddressSync(
-    [COMPANY_SEED, controllingAuthority.toBuffer(), u32LeBytes(nonce)],
+    [COMPANY_SEED, owner.toBuffer(), u32LeBytes(nonce)],
     programId,
   );
   return { pda, bump };
 }
 
 /**
- * AgentAccount PDA.
+ * AgentIdentity PDA.
  *
- *   seeds = ["agent", company_pda, agent_index_le_u32]
+ *   seeds = ["agent_identity", agent_pubkey]
  *
- * `agent_index` is a per-company counter (u32), not a UUID. Maintained by
- * the server; first agent uses index = 0.
+ * `agent_pubkey` is a stable identity key chosen by the caller (typically
+ * a fresh keypair generated client-side). Identity is independent of any
+ * company — the same identity may be deployed multiple times across the
+ * same owner's companies.
  */
-export function deriveAgentPda(
-  companyPda: PublicKey,
-  agentIndex: number,
+export function deriveAgentIdentityPda(
+  agentPubkey: PublicKey,
   programId: PublicKey = REGISTRY_PROGRAM_ID,
 ): { pda: PublicKey; bump: number } {
   const [pda, bump] = PublicKey.findProgramAddressSync(
-    [AGENT_SEED, companyPda.toBuffer(), u32LeBytes(agentIndex)],
+    [AGENT_IDENTITY_SEED, agentPubkey.toBuffer()],
+    programId,
+  );
+  return { pda, bump };
+}
+
+/**
+ * Deployment PDA.
+ *
+ *   seeds = ["deployment", company_pda, deployment_index_le_u32]
+ *
+ * `deployment_index` is a per-company u32 counter. Maintained by the
+ * caller — pick the next free index. Same `agent_identity` may have
+ * multiple deployments under the same company (e.g. retired then
+ * re-deployed); each deployment gets its own index.
+ */
+export function deriveDeploymentPda(
+  companyPda: PublicKey,
+  deploymentIndex: number,
+  programId: PublicKey = REGISTRY_PROGRAM_ID,
+): { pda: PublicKey; bump: number } {
+  const [pda, bump] = PublicKey.findProgramAddressSync(
+    [DEPLOYMENT_SEED, companyPda.toBuffer(), u32LeBytes(deploymentIndex)],
     programId,
   );
   return { pda, bump };

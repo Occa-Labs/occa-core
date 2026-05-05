@@ -128,7 +128,9 @@ function readAgentsList(parsedConfig: Record<string, unknown>): AgentEntry[] {
   if (!Array.isArray(list)) return [];
   return list
     .map((item) => asRecord(item))
-    .filter((r): r is Record<string, unknown> => !!r && typeof r.id === "string")
+    .filter(
+      (r): r is Record<string, unknown> => !!r && typeof r.id === "string",
+    )
     .map((r) => ({ ...(r as AgentEntry) }));
 }
 
@@ -247,9 +249,13 @@ async function fetchConfig(
   rpcTimeoutMs: number,
   opts: { debugLabel?: string } = {},
 ): Promise<GatewayConfigSnapshot> {
-  const res = await client.sendRpc("config.get", {}, {
-    timeoutMs: rpcTimeoutMs,
-  });
+  const res = await client.sendRpc(
+    "config.get",
+    {},
+    {
+      timeoutMs: rpcTimeoutMs,
+    },
+  );
   const label = opts.debugLabel ?? "config.get";
   // Observed OpenClaw shape: { path, exists, raw (nullable), parsed, hash, … }.
   // `parsed` carries the authoritative in-memory config object — we prefer
@@ -371,108 +377,61 @@ export async function provisionAgent(
       input,
       handshakeTimeoutMs,
       async (client) => {
-        let snapshot: GatewayConfigSnapshot;
+        // Prefer the granular `agents.create` RPC. Unlike `config.patch`
+        // with a full `agents.list` replacement, this RPC merges into the
+        // gateway's existing agent set — auto-discovered agents (e.g. the
+        // built-in `main` agent under ~/.openclaw/agents/main) and any
+        // agents created via the openclaw CLI by other operators are left
+        // untouched. This is the only safe shape for shared/multi-tenant
+        // gateways.
+        //
+        // Gateway derives the agent id from `name` via normalizeAgentId
+        // (lowercased, [^a-z0-9_-] -> '-'). OCCA's `desiredId` is already
+        // a slug like `occa-<uuid-prefix>`, so the resulting id matches.
         try {
-          snapshot = await fetchConfig(client, rpcTimeoutMs, {
-            debugLabel: "config.get initial",
-          });
-        } catch (err) {
-          return {
-            ok: false,
-            error: "config_get_failed",
-            reason: err instanceof Error ? err.message : String(err),
-          } as const;
-        }
-
-        const list = readAgentsList(snapshot.parsedConfig);
-        const existingIds = list.map((a) => a.id).join(",");
-        console.log(
-          `[adapter-openclaw] existing agents.list: size=${list.length} ids=[${existingIds}]`,
-        );
-        const existing = list.find((a) => a.id === input.desiredId);
-        if (existing) {
-          // Idempotent retry path: a previous provision attempt for THIS
-          // agent already committed the entry on gateway (e.g. config patch
-          // applied but verify timed out, leaving the OCCA-side row with
-          // a NULL externalAgentId). Skip the patch + restart cycle and
-          // fall through to verification.
-          //
-          // No workspace-path equality check: gateway stores expanded paths
-          // (`/root/.openclaw/...`) while we send tilde paths (`~/.openclaw/...`),
-          // so naive string compare gives false positives. desiredId is a
-          // UUID-derived per-agent identifier — collision implies the same
-          // agent regardless of stored path representation.
-          console.log(
-            `[adapter-openclaw] idempotent: agent ${input.desiredId} already configured (gateway workspace=${existing.workspace ?? "n/a"}) — skipping patch`,
-          );
-          return { ok: "committed" } as const;
-        }
-
-        const nextList: AgentEntry[] = [
-          ...list,
-          { id: input.desiredId, workspace: input.workspacePath },
-        ];
-        const patchRaw = buildPatchRaw(nextList);
-        console.log(
-          `[adapter-openclaw] sending config.patch: baseHash=${snapshot.baseHash.slice(0, 16)}… raw=${patchRaw.slice(0, 500)}`,
-        );
-
-        let patchResponse: unknown;
-        try {
-          patchResponse = await client.sendRpc(
-            "config.patch",
-            { raw: patchRaw, baseHash: snapshot.baseHash },
+          const resp = await client.sendRpc(
+            "agents.create",
+            { name: input.desiredId, workspace: input.workspacePath },
             { timeoutMs: rpcTimeoutMs },
           );
+          const rec = asRecord(resp);
+          const returnedId =
+            typeof rec?.agentId === "string" ? rec.agentId : input.desiredId;
+          if (returnedId !== input.desiredId) {
+            console.warn(
+              `[adapter-openclaw] agents.create returned id=${returnedId} but expected ${input.desiredId} — gateway normalized differently`,
+            );
+          }
+          console.log(
+            `[adapter-openclaw] agents.create ok id=${returnedId} workspace=${input.workspacePath}`,
+          );
+          return { ok: "committed" } as const;
         } catch (err) {
           if (isRestartSignal(err)) {
-            // The gateway applied the patch and restarted before the RPC
-            // response could land. Fall through to verification-by-polling
-            // outside the current (dead) WS.
             console.log(
-              `[adapter-openclaw] config.patch: restart signal received — will verify via reconnect polling`,
+              `[adapter-openclaw] agents.create: restart signal received — will verify via reconnect polling`,
             );
             patchSawRestart = true;
             opts?.onStep?.("restart_detected");
             return { ok: "restart" } as const;
           }
-          console.warn(
-            `[adapter-openclaw] config.patch failed: ${err instanceof Error ? err.message : String(err)}`,
-          );
+          const msg = err instanceof Error ? err.message : String(err);
+          // Idempotent retry path: a previous provision call already
+          // committed this agent on the gateway. Treat as committed and
+          // fall through to verify-by-list.
+          if (/already exists/i.test(msg)) {
+            console.log(
+              `[adapter-openclaw] agents.create idempotent: id=${input.desiredId} already exists on gateway`,
+            );
+            return { ok: "committed" } as const;
+          }
+          console.warn(`[adapter-openclaw] agents.create failed: ${msg}`);
           return {
             ok: false,
             error: "config_patch_failed",
-            reason: err instanceof Error ? err.message : String(err),
+            reason: msg,
           } as const;
         }
-
-        console.log(
-          `[adapter-openclaw] config.patch response: ${previewJson(patchResponse)}`,
-        );
-
-        // Best-effort in-connection verify: immediately after a clean patch
-        // response, re-read config on the same WS. If the agent is already
-        // present here, we can skip the reconnect-and-poll loop entirely.
-        // Any failure is non-fatal — we fall through to polling.
-        try {
-          const postSnap = await fetchConfig(client, rpcTimeoutMs, {
-            debugLabel: "config.get post-patch",
-          });
-          const postList = readAgentsList(postSnap.parsedConfig);
-          const postPresent = postList.some((a) => a.id === input.desiredId);
-          console.log(
-            `[adapter-openclaw] post-patch read: present=${postPresent} listSize=${postList.length} ids=[${postList.map((a) => a.id).join(",")}]`,
-          );
-        } catch (err) {
-          console.warn(
-            `[adapter-openclaw] post-patch config.get failed (will still poll): ${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
-
-        console.log(
-          `[adapter-openclaw] provisioned agent id=${input.desiredId} workspace=${input.workspacePath}`,
-        );
-        return { ok: "committed" } as const;
       },
       captureToken,
     );
@@ -502,7 +461,9 @@ export async function provisionAgent(
     if (!verify.ok) {
       return {
         ok: false,
-        error: patchSawRestart ? "gateway_restart_timeout" : "config_patch_failed",
+        error: patchSawRestart
+          ? "gateway_restart_timeout"
+          : "config_patch_failed",
         reason: verify.reason,
       };
     }
@@ -546,123 +507,125 @@ export async function deprovisionAgent(
   let patchSawRestart = false;
 
   try {
-    const inner = await withClient(input, handshakeTimeoutMs, async (client) => {
-      let snapshot: GatewayConfigSnapshot;
-      try {
-        snapshot = await fetchConfig(client, rpcTimeoutMs);
-      } catch (err) {
-        return {
-          ok: false,
-          error: "config_get_failed",
-          reason: err instanceof Error ? err.message : String(err),
-        } as const;
-      }
-
-      const list = readAgentsList(snapshot.parsedConfig);
-      const present = list.some((a) => a.id === input.externalAgentId);
-
-      if (!present) {
-        console.log(
-          `[adapter-openclaw] deprovision noop: id=${input.externalAgentId} not present`,
-        );
-        return { ok: "noop" } as const;
-      }
-
-      // Prefer the dedicated `agents.delete` RPC — observed behaviour on
-      // this gateway build shows that shrinking `agents.list` via
-      // `config.patch` resolves ok but does not actually commit (config hash
-      // stays identical). `agents.delete` is called out in the RPC reference
-      // and looks like the intended remove path; shape isn't documented so
-      // we probe variants the same way we do for agents.files.set.
-      const deleteVariants: Array<(id: string) => Record<string, unknown>> = [
-        (id) => ({ agentId: id }),
-        (id) => ({ id }),
-      ];
-      let agentsDeleteSupported = false;
-      let agentsDeleteOk = false;
-      let lastRejection: string | null = null;
-      for (const build of deleteVariants) {
-        const params = build(input.externalAgentId);
+    const inner = await withClient(
+      input,
+      handshakeTimeoutMs,
+      async (client) => {
+        let snapshot: GatewayConfigSnapshot;
         try {
-          const resp = await client.sendRpc("agents.delete", params, {
-            timeoutMs: rpcTimeoutMs,
-          });
-          agentsDeleteSupported = true;
-          agentsDeleteOk = true;
-          console.log(
-            `[adapter-openclaw] agents.delete ${previewJson(params)} -> ${previewJson(resp)}`,
-          );
-          break;
+          snapshot = await fetchConfig(client, rpcTimeoutMs);
         } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          // Method-not-found style errors mean this gateway build doesn't
-          // expose agents.delete — fall through to config.patch. Anything
-          // else (invalid_params, etc.) means the method exists but the
-          // shape is wrong; try the next variant.
-          if (
-            /unknown method|method not found|not implemented/i.test(msg)
-          ) {
+          return {
+            ok: false,
+            error: "config_get_failed",
+            reason: err instanceof Error ? err.message : String(err),
+          } as const;
+        }
+
+        const list = readAgentsList(snapshot.parsedConfig);
+        const present = list.some((a) => a.id === input.externalAgentId);
+
+        if (!present) {
+          console.log(
+            `[adapter-openclaw] deprovision noop: id=${input.externalAgentId} not present`,
+          );
+          return { ok: "noop" } as const;
+        }
+
+        // Prefer the dedicated `agents.delete` RPC — observed behaviour on
+        // this gateway build shows that shrinking `agents.list` via
+        // `config.patch` resolves ok but does not actually commit (config hash
+        // stays identical). `agents.delete` is called out in the RPC reference
+        // and looks like the intended remove path; shape isn't documented so
+        // we probe variants the same way we do for agents.files.set.
+        const deleteVariants: Array<(id: string) => Record<string, unknown>> = [
+          (id) => ({ agentId: id }),
+          (id) => ({ id }),
+        ];
+        let agentsDeleteSupported = false;
+        let agentsDeleteOk = false;
+        let lastRejection: string | null = null;
+        for (const build of deleteVariants) {
+          const params = build(input.externalAgentId);
+          try {
+            const resp = await client.sendRpc("agents.delete", params, {
+              timeoutMs: rpcTimeoutMs,
+            });
+            agentsDeleteSupported = true;
+            agentsDeleteOk = true;
             console.log(
-              `[adapter-openclaw] agents.delete unavailable on this gateway; falling back to config.patch`,
+              `[adapter-openclaw] agents.delete ${previewJson(params)} -> ${previewJson(resp)}`,
             );
             break;
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            // Method-not-found style errors mean this gateway build doesn't
+            // expose agents.delete — fall through to config.patch. Anything
+            // else (invalid_params, etc.) means the method exists but the
+            // shape is wrong; try the next variant.
+            if (/unknown method|method not found|not implemented/i.test(msg)) {
+              console.log(
+                `[adapter-openclaw] agents.delete unavailable on this gateway; falling back to config.patch`,
+              );
+              break;
+            }
+            agentsDeleteSupported = true;
+            lastRejection = msg;
+            console.log(
+              `[adapter-openclaw] agents.delete ${previewJson(params)} rejected: ${msg}`,
+            );
           }
-          agentsDeleteSupported = true;
-          lastRejection = msg;
-          console.log(
-            `[adapter-openclaw] agents.delete ${previewJson(params)} rejected: ${msg}`,
-          );
         }
-      }
 
-      if (agentsDeleteSupported && agentsDeleteOk) {
+        if (agentsDeleteSupported && agentsDeleteOk) {
+          console.log(
+            `[adapter-openclaw] deprovisioned agent id=${input.externalAgentId} via agents.delete`,
+          );
+          return { ok: "committed" } as const;
+        }
+        if (agentsDeleteSupported && !agentsDeleteOk) {
+          // Method exists but no variant accepted. Surface the last rejection
+          // so the caller can see what the schema expects.
+          return {
+            ok: false,
+            error: "config_patch_failed",
+            reason: `agents.delete variants rejected: ${lastRejection ?? "unknown"}`,
+          } as const;
+        }
+
+        // Fallback: legacy config.patch list-replacement.
+        const filtered = list.filter((a) => a.id !== input.externalAgentId);
+        try {
+          const patchRaw = buildPatchRaw(filtered);
+          console.log(
+            `[adapter-openclaw] sending config.patch (remove): baseHash=${snapshot.baseHash.slice(0, 16)}… listSize=${filtered.length}`,
+          );
+          const patchResp = await client.sendRpc(
+            "config.patch",
+            { raw: patchRaw, baseHash: snapshot.baseHash },
+            { timeoutMs: rpcTimeoutMs },
+          );
+          console.log(
+            `[adapter-openclaw] config.patch (remove) response: ${previewJson(patchResp)}`,
+          );
+        } catch (err) {
+          if (isRestartSignal(err)) {
+            patchSawRestart = true;
+            return { ok: "restart" } as const;
+          }
+          return {
+            ok: false,
+            error: "config_patch_failed",
+            reason: err instanceof Error ? err.message : String(err),
+          } as const;
+        }
+
         console.log(
-          `[adapter-openclaw] deprovisioned agent id=${input.externalAgentId} via agents.delete`,
+          `[adapter-openclaw] deprovisioned agent id=${input.externalAgentId} via config.patch`,
         );
         return { ok: "committed" } as const;
-      }
-      if (agentsDeleteSupported && !agentsDeleteOk) {
-        // Method exists but no variant accepted. Surface the last rejection
-        // so the caller can see what the schema expects.
-        return {
-          ok: false,
-          error: "config_patch_failed",
-          reason: `agents.delete variants rejected: ${lastRejection ?? "unknown"}`,
-        } as const;
-      }
-
-      // Fallback: legacy config.patch list-replacement.
-      const filtered = list.filter((a) => a.id !== input.externalAgentId);
-      try {
-        const patchRaw = buildPatchRaw(filtered);
-        console.log(
-          `[adapter-openclaw] sending config.patch (remove): baseHash=${snapshot.baseHash.slice(0, 16)}… listSize=${filtered.length}`,
-        );
-        const patchResp = await client.sendRpc(
-          "config.patch",
-          { raw: patchRaw, baseHash: snapshot.baseHash },
-          { timeoutMs: rpcTimeoutMs },
-        );
-        console.log(
-          `[adapter-openclaw] config.patch (remove) response: ${previewJson(patchResp)}`,
-        );
-      } catch (err) {
-        if (isRestartSignal(err)) {
-          patchSawRestart = true;
-          return { ok: "restart" } as const;
-        }
-        return {
-          ok: false,
-          error: "config_patch_failed",
-          reason: err instanceof Error ? err.message : String(err),
-        } as const;
-      }
-
-      console.log(
-        `[adapter-openclaw] deprovisioned agent id=${input.externalAgentId} via config.patch`,
-      );
-      return { ok: "committed" } as const;
-    });
+      },
+    );
 
     if (inner.ok === false) return inner;
     if (inner.ok === "noop") return { ok: true };
@@ -682,7 +645,9 @@ export async function deprovisionAgent(
     if (!verify.ok) {
       return {
         ok: false,
-        error: patchSawRestart ? "gateway_restart_timeout" : "config_patch_failed",
+        error: patchSawRestart
+          ? "gateway_restart_timeout"
+          : "config_patch_failed",
         reason: verify.reason,
       };
     }
@@ -704,7 +669,9 @@ export async function deprovisionAgent(
 }
 
 // Read-only companion to provision/deprovision. Used by the dev GC endpoint
-// to diff the gateway's agents.list against the OCCA DB and find orphans.
+// to diff the gateway's runtime agent set against the OCCA DB and find
+// orphans. Uses `agents.list` RPC so auto-discovered agents (e.g. `main`)
+// and CLI-created agents are included alongside config-defined entries.
 export async function listGatewayAgents(
   input: ListGatewayAgentsInput,
   opts?: { handshakeTimeoutMs?: number; rpcTimeoutMs?: number },
@@ -712,20 +679,32 @@ export async function listGatewayAgents(
   const handshakeTimeoutMs = opts?.handshakeTimeoutMs ?? 10_000;
   const rpcTimeoutMs = opts?.rpcTimeoutMs ?? 15_000;
   try {
-    const entries = await withClient(input, handshakeTimeoutMs, async (client) => {
-      const snap = await fetchConfig(client, rpcTimeoutMs, {
-        debugLabel: "config.get list",
-      });
-      return readAgentsList(snap.parsedConfig);
-    });
-    return {
-      ok: true,
-      agents: entries.map((e) => ({
-        id: e.id,
-        workspace:
-          typeof e.workspace === "string" ? e.workspace : e.workspace ? null : null,
-      })),
-    };
+    const entries = await withClient(
+      input,
+      handshakeTimeoutMs,
+      async (client) => {
+        const resp = await client.sendRpc(
+          "agents.list",
+          {},
+          {
+            timeoutMs: rpcTimeoutMs,
+          },
+        );
+        const rec = asRecord(resp);
+        const arr = Array.isArray(rec?.agents) ? rec.agents : [];
+        return arr
+          .map((item) => asRecord(item))
+          .filter(
+            (r): r is Record<string, unknown> =>
+              !!r && typeof r.id === "string",
+          )
+          .map((r) => ({
+            id: r.id as string,
+            workspace: typeof r.workspace === "string" ? r.workspace : null,
+          }));
+      },
+    );
+    return { ok: true, agents: entries };
   } catch (err) {
     return {
       ok: false,

@@ -4,11 +4,15 @@ import bs58 from "bs58";
 let cached: Keypair | null = null;
 
 /**
- * Operator hot wallet. Used as `controlling_authority` + payer for both
- * `create_company` and `register_agent` in MVP. Set
- * `OCCA_OPERATOR_SECRET_KEY` to a base58-encoded 64-byte secretKey
- * (output of `solana-keygen` / Phantom export). Throws if missing — chain
- * routes are the only callers, and they should fail loudly when
+ * Operator hot wallet. Fee-payer ONLY for on-chain registry instructions
+ * (`create_company`, `register_agent`, `set_operating_wallet`). Never an
+ * authority on any account — every state-changing ix is signed by the
+ * user wallet (`owner`) in the browser; the operator just partial-signs
+ * the tx server-side so the user doesn't need SOL to onboard.
+ *
+ * Set `OCCA_OPERATOR_SECRET_KEY` to a base58-encoded 64-byte secretKey
+ * (output of `solana-keygen` / Phantom export). Throws if missing —
+ * chain routes are the only callers, and they should fail loudly when
  * misconfigured.
  */
 export function getOperatorKeypair(): Keypair {

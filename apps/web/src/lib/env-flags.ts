@@ -79,3 +79,19 @@ export const SOLANA_CLUSTER: SolanaCluster =
         : "devnet";
 
 export const IS_MAINNET: boolean = SOLANA_CLUSTER === "mainnet-beta";
+
+// CAIP-2 chain id for the active cluster. Privy's signTransaction /
+// signAndSendTransaction expect this format (`solana:mainnet`,
+// `solana:devnet`, `solana:testnet`). Localnet has no canonical CAIP id;
+// we map it to devnet so wallets don't reject the tx.
+export type SolanaCaipChain =
+  | "solana:mainnet"
+  | "solana:devnet"
+  | "solana:testnet";
+
+export const SOLANA_CAIP_CHAIN: SolanaCaipChain =
+  SOLANA_CLUSTER === "mainnet-beta"
+    ? "solana:mainnet"
+    : SOLANA_CLUSTER === "testnet"
+      ? "solana:testnet"
+      : "solana:devnet";

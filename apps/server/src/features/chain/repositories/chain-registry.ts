@@ -9,7 +9,7 @@ import { db } from "../../../infra/database/client";
 export async function persistCompanyChainRegistration(args: {
   companyId: string;
   companyPda: string;
-  controllingAuthority: string;
+  ownerWallet: string;
   chainNonce: number;
   chainTxSignature: string;
 }): Promise<void> {
@@ -17,7 +17,7 @@ export async function persistCompanyChainRegistration(args: {
     .update(companies)
     .set({
       companyPda: args.companyPda,
-      controllingAuthority: args.controllingAuthority,
+      ownerWallet: args.ownerWallet,
       chainNonce: args.chainNonce,
       chainTxSignature: args.chainTxSignature,
       updatedAt: new Date(),
@@ -26,44 +26,40 @@ export async function persistCompanyChainRegistration(args: {
 }
 
 /**
- * Pick the next free per-authority nonce for create_company. Picks
- * `MAX(chain_nonce) + 1` over rows already registered under this
- * authority; starts at 0 if none.
- */
-export async function nextChainNonce(
-  controllingAuthority: string,
-): Promise<number> {
-  const [row] = await db
-    .select({
-      max: sql<number | null>`MAX(${companies.chainNonce})`,
-    })
-    .from(companies)
-    .where(eq(companies.controllingAuthority, controllingAuthority));
-  const max = row?.max;
-  return max === null || max === undefined ? 0 : Number(max) + 1;
-}
-
-/**
- * Mutate agent row with on-chain cache columns.
+ * Mutate agent row with on-chain cache columns after a successful
+ * `register_agent` confirmation.
  */
 export async function persistAgentChainRegistration(args: {
   agentId: string;
   agentPda: string;
-  agentAddress: string;
   agentIndex: number;
-  custodyModel: string;
-  derivationMsgVersion: number;
+  ownerWallet: string;
   agentChainTxSignature: string;
 }): Promise<void> {
   await db
     .update(agents)
     .set({
       agentPda: args.agentPda,
-      agentAddress: args.agentAddress,
       agentIndex: args.agentIndex,
-      custodyModel: args.custodyModel,
-      derivationMsgVersion: args.derivationMsgVersion,
+      ownerWallet: args.ownerWallet,
       agentChainTxSignature: args.agentChainTxSignature,
+      updatedAt: new Date(),
+    })
+    .where(eq(agents.id, args.agentId));
+}
+
+/**
+ * Persist an updated `operating_wallet` after `set_operating_wallet`
+ * confirms on-chain.
+ */
+export async function persistAgentOperatingWallet(args: {
+  agentId: string;
+  operatingWallet: string;
+}): Promise<void> {
+  await db
+    .update(agents)
+    .set({
+      operatingWallet: args.operatingWallet,
       updatedAt: new Date(),
     })
     .where(eq(agents.id, args.agentId));
@@ -86,8 +82,8 @@ export async function nextAgentIndex(companyId: string): Promise<number> {
 
 /**
  * Reserve an `agent_index` on a row that does not yet have one. Used by
- * the batch prepare flow so the FE can sign a derivation message that
- * embeds the exact indexes server will register on-chain.
+ * the prepare flow so the FE-signed transaction targets the exact PDA
+ * the server assigned.
  *
  * The (company_id, agent_index) unique index in the DB will throw if
  * two callers race for the same slot — caller should treat that as a
