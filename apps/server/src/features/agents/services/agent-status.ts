@@ -71,6 +71,12 @@ function toDTO(
     provisioningError: row.provisioningError ?? null,
     workstationId: row.workstationId ?? null,
     modelOverride: row.modelOverride ?? null,
+    agentPda: row.agentPda ?? null,
+    agentAddress: row.agentAddress ?? null,
+    agentIndex: row.agentIndex ?? null,
+    custodyModel: row.custodyModel,
+    derivationMsgVersion: row.derivationMsgVersion,
+    agentChainTxSignature: row.agentChainTxSignature ?? null,
   };
 }
 

@@ -43,7 +43,13 @@ import type {
 // in `features/<name>/api/`. The fetch helper + ApiError now live in
 // `lib/api-client.ts` — re-exported here so existing imports keep working
 // until each feature is migrated.
-import { ApiError, getStoredToken, request, setStoredToken, API_BASE } from "./api-client";
+import {
+  ApiError,
+  getStoredToken,
+  request,
+  setStoredToken,
+  API_BASE,
+} from "./api-client";
 
 export { ApiError, getStoredToken, request, setStoredToken, API_BASE };
 
@@ -102,6 +108,110 @@ export const adaptersApi = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+};
+
+// ── On-chain Registry ──────────────────────────────────────────────────────
+// Both endpoints are idempotent: re-calling after a successful anchor
+// returns `alreadyRegistered: true` with the existing fields. Server holds
+// the operator hot wallet and signs `controlling_authority` for MVP.
+export interface RegisterCompanyOnChainResponse {
+  alreadyRegistered: boolean;
+  companyPda: string;
+  controllingAuthority: string;
+  chainNonce: number;
+  chainTxSignature: string | null;
+}
+
+export interface RegisterAgentOnChainRequest {
+  agentAddress: string;
+  derivationSignature: string;
+  derivationMessageVersion?: number;
+}
+
+export interface RegisterAgentOnChainResponse {
+  alreadyRegistered: boolean;
+  agentPda: string;
+  agentAddress: string;
+  agentIndex: number;
+  derivationMessageVersion?: number;
+  agentChainTxSignature: string | null;
+}
+
+export interface BatchPrepareAgentsRequest {
+  agentIds: string[];
+}
+
+export interface BatchPrepareAgentsResponse {
+  companyPda: string;
+  derivationMessageVersion: number;
+  hires: Array<{
+    agentId: string;
+    agentIndex: number | null;
+    alreadyRegistered: boolean;
+  }>;
+  /** Canonical message FE must sign with the user's wallet. */
+  batchMessage: string;
+}
+
+export interface BatchRegisterAgentsRequest {
+  derivationSignature: string;
+  derivationMessageVersion?: number;
+  hires: Array<{ agentId: string; agentAddress: string }>;
+}
+
+export interface BatchRegisterAgentsResponse {
+  alreadyRegistered: boolean;
+  derivationMessageVersion?: number;
+  registered: Array<
+    | {
+        agentId: string;
+        agentPda: string;
+        agentAddress: string;
+        agentIndex: number;
+        agentChainTxSignature: string;
+        alreadyRegistered: false;
+      }
+    | {
+        agentId: string;
+        agentPda: string | null;
+        alreadyRegistered: true;
+      }
+  >;
+}
+
+export const chainApi = {
+  registerCompany: (companyId: string) =>
+    request<RegisterCompanyOnChainResponse>(
+      `/api/chain/companies/${companyId}/register`,
+      {
+        method: "POST",
+        body: JSON.stringify({}),
+      },
+    ),
+  registerAgent: (agentId: string, input: RegisterAgentOnChainRequest) =>
+    request<RegisterAgentOnChainResponse>(
+      `/api/chain/agents/${agentId}/register`,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+      },
+    ),
+  batchPrepareAgents: (companyId: string, input: BatchPrepareAgentsRequest) =>
+    request<BatchPrepareAgentsResponse>(
+      `/api/chain/companies/${companyId}/agents/batch-prepare`,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+      },
+    ),
+  batchRegisterAgents: (companyId: string, input: BatchRegisterAgentsRequest) =>
+    request<BatchRegisterAgentsResponse>(
+      `/api/chain/companies/${companyId}/agents/batch-register`,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+      },
+    ),
 };
 
 export const companiesApi = {
@@ -191,13 +301,17 @@ export const agentsApi = {
     request<ListAgentFilesResponse>(`/api/agents/${id}/files`),
   createStream: async (
     input: CreateAgentRequest,
-    onEvent: (evt: { status: "running" | "done"; step: string; label?: string }) => void,
+    onEvent: (evt: {
+      status: "running" | "done";
+      step: string;
+      label?: string;
+    }) => void,
     signal?: AbortSignal,
   ): Promise<CreateAgentResponse> => {
     const token = getStoredToken();
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
-      "Accept": "text/event-stream",
+      Accept: "text/event-stream",
     };
     if (token) headers["Authorization"] = `Bearer ${token}`;
     const res = await fetch(`${API_BASE}/api/agents`, {
@@ -208,7 +322,11 @@ export const agentsApi = {
     });
     if (!res.ok) {
       let body: unknown = null;
-      try { body = await res.json(); } catch { /* ignore */ }
+      try {
+        body = await res.json();
+      } catch {
+        /* ignore */
+      }
       throw new ApiError(res.status, body);
     }
     const reader = res.body!.getReader();
@@ -218,49 +336,70 @@ export const agentsApi = {
     let currentData = "";
     return new Promise<CreateAgentResponse>((resolve, reject) => {
       const pump = (): Promise<void> =>
-        reader.read().then(({ done, value }) => {
-          if (done) { reject(new ApiError(0, { error: "stream_closed" })); return; }
-          buf += decoder.decode(value, { stream: true });
-          const lines = buf.split("\n");
-          buf = lines.pop()!;
-          for (const line of lines) {
-            if (line === "") {
-              if (currentData !== "") {
-                try {
-                  const payload = JSON.parse(currentData) as Record<string, unknown>;
-                  if (currentEvent === "done") {
-                    resolve(payload as unknown as CreateAgentResponse);
-                    reader.cancel().catch(() => {});
-                    return;
-                  } else if (currentEvent === "error") {
-                    reject(new ApiError(502, payload));
-                    reader.cancel().catch(() => {});
-                    return;
-                  } else if (currentEvent === "step") {
-                    onEvent(payload as { status: "running" | "done"; step: string; label?: string });
-                  }
-                } catch { /* malformed JSON, skip */ }
-              }
-              currentEvent = "";
-              currentData = "";
-            } else if (line.startsWith("event:")) {
-              currentEvent = line.slice(6).trim();
-            } else if (line.startsWith("data:")) {
-              currentData += line.slice(5).trim();
+        reader
+          .read()
+          .then(({ done, value }) => {
+            if (done) {
+              reject(new ApiError(0, { error: "stream_closed" }));
+              return;
             }
-          }
-          return pump();
-        }).catch(reject);
+            buf += decoder.decode(value, { stream: true });
+            const lines = buf.split("\n");
+            buf = lines.pop()!;
+            for (const line of lines) {
+              if (line === "") {
+                if (currentData !== "") {
+                  try {
+                    const payload = JSON.parse(currentData) as Record<
+                      string,
+                      unknown
+                    >;
+                    if (currentEvent === "done") {
+                      resolve(payload as unknown as CreateAgentResponse);
+                      reader.cancel().catch(() => {});
+                      return;
+                    } else if (currentEvent === "error") {
+                      reject(new ApiError(502, payload));
+                      reader.cancel().catch(() => {});
+                      return;
+                    } else if (currentEvent === "step") {
+                      onEvent(
+                        payload as {
+                          status: "running" | "done";
+                          step: string;
+                          label?: string;
+                        },
+                      );
+                    }
+                  } catch {
+                    /* malformed JSON, skip */
+                  }
+                }
+                currentEvent = "";
+                currentData = "";
+              } else if (line.startsWith("event:")) {
+                currentEvent = line.slice(6).trim();
+              } else if (line.startsWith("data:")) {
+                currentData += line.slice(5).trim();
+              }
+            }
+            return pump();
+          })
+          .catch(reject);
       void pump();
     });
   },
   reprovisionStream: async (
     id: string,
-    onEvent: (evt: { status: "running" | "done"; step: string; label?: string }) => void,
+    onEvent: (evt: {
+      status: "running" | "done";
+      step: string;
+      label?: string;
+    }) => void,
     signal?: AbortSignal,
   ): Promise<CreateAgentResponse> => {
     const token = getStoredToken();
-    const headers: Record<string, string> = { "Accept": "text/event-stream" };
+    const headers: Record<string, string> = { Accept: "text/event-stream" };
     if (token) headers["Authorization"] = `Bearer ${token}`;
     const res = await fetch(`${API_BASE}/api/agents/${id}/reprovision`, {
       method: "POST",
@@ -269,7 +408,11 @@ export const agentsApi = {
     });
     if (!res.ok) {
       let body: unknown = null;
-      try { body = await res.json(); } catch { /* ignore */ }
+      try {
+        body = await res.json();
+      } catch {
+        /* ignore */
+      }
       throw new ApiError(res.status, body);
     }
     const reader = res.body!.getReader();
@@ -279,39 +422,56 @@ export const agentsApi = {
     let currentData = "";
     return new Promise<CreateAgentResponse>((resolve, reject) => {
       const pump = (): Promise<void> =>
-        reader.read().then(({ done, value }) => {
-          if (done) { reject(new ApiError(0, { error: "stream_closed" })); return; }
-          buf += decoder.decode(value, { stream: true });
-          const lines = buf.split("\n");
-          buf = lines.pop()!;
-          for (const line of lines) {
-            if (line === "") {
-              if (currentData !== "") {
-                try {
-                  const payload = JSON.parse(currentData) as Record<string, unknown>;
-                  if (currentEvent === "done") {
-                    resolve(payload as unknown as CreateAgentResponse);
-                    reader.cancel().catch(() => {});
-                    return;
-                  } else if (currentEvent === "error") {
-                    reject(new ApiError(502, payload));
-                    reader.cancel().catch(() => {});
-                    return;
-                  } else if (currentEvent === "step") {
-                    onEvent(payload as { status: "running" | "done"; step: string; label?: string });
-                  }
-                } catch { /* malformed JSON, skip */ }
-              }
-              currentEvent = "";
-              currentData = "";
-            } else if (line.startsWith("event:")) {
-              currentEvent = line.slice(6).trim();
-            } else if (line.startsWith("data:")) {
-              currentData += line.slice(5).trim();
+        reader
+          .read()
+          .then(({ done, value }) => {
+            if (done) {
+              reject(new ApiError(0, { error: "stream_closed" }));
+              return;
             }
-          }
-          return pump();
-        }).catch(reject);
+            buf += decoder.decode(value, { stream: true });
+            const lines = buf.split("\n");
+            buf = lines.pop()!;
+            for (const line of lines) {
+              if (line === "") {
+                if (currentData !== "") {
+                  try {
+                    const payload = JSON.parse(currentData) as Record<
+                      string,
+                      unknown
+                    >;
+                    if (currentEvent === "done") {
+                      resolve(payload as unknown as CreateAgentResponse);
+                      reader.cancel().catch(() => {});
+                      return;
+                    } else if (currentEvent === "error") {
+                      reject(new ApiError(502, payload));
+                      reader.cancel().catch(() => {});
+                      return;
+                    } else if (currentEvent === "step") {
+                      onEvent(
+                        payload as {
+                          status: "running" | "done";
+                          step: string;
+                          label?: string;
+                        },
+                      );
+                    }
+                  } catch {
+                    /* malformed JSON, skip */
+                  }
+                }
+                currentEvent = "";
+                currentData = "";
+              } else if (line.startsWith("event:")) {
+                currentEvent = line.slice(6).trim();
+              } else if (line.startsWith("data:")) {
+                currentData += line.slice(5).trim();
+              }
+            }
+            return pump();
+          })
+          .catch(reject);
       void pump();
     });
   },
@@ -323,7 +483,9 @@ export const agentsApi = {
     signal?: AbortSignal,
   ): Promise<string> => {
     const token = getStoredToken();
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
     if (token) headers["Authorization"] = `Bearer ${token}`;
     const res = await fetch(`${API_BASE}/api/agents/${id}/chat`, {
       method: "POST",
@@ -333,7 +495,11 @@ export const agentsApi = {
     });
     if (!res.ok) {
       let body: unknown = null;
-      try { body = await res.json(); } catch { /* ignore */ }
+      try {
+        body = await res.json();
+      } catch {
+        /* ignore */
+      }
       throw new ApiError(res.status, body);
     }
     // Parse SSE stream
@@ -344,40 +510,58 @@ export const agentsApi = {
     let currentData = "";
     return new Promise<string>((resolve, reject) => {
       const pump = (): Promise<void> =>
-        reader.read().then(({ done, value }) => {
-          if (done) { resolve(""); return; }
-          buf += decoder.decode(value, { stream: true });
-          const lines = buf.split("\n");
-          buf = lines.pop()!;
-          for (const line of lines) {
-            if (line === "") {
-              // Event boundary — dispatch accumulated block
-              if (currentData !== "") {
-                try {
-                  const payload = JSON.parse(currentData) as Record<string, unknown>;
-                  if (currentEvent === "done") {
-                    resolve(typeof payload.reply === "string" ? payload.reply : "");
-                    reader.cancel().catch(() => {});
-                    return;
-                  } else if (currentEvent === "error") {
-                    reject(new ApiError(502, payload));
-                    reader.cancel().catch(() => {});
-                    return;
-                  } else {
-                    onEvent(payload as { stream: string; data: Record<string, unknown> });
-                  }
-                } catch { /* malformed JSON, skip */ }
-              }
-              currentEvent = "";
-              currentData = "";
-            } else if (line.startsWith("event:")) {
-              currentEvent = line.slice(6).trim();
-            } else if (line.startsWith("data:")) {
-              currentData += line.slice(5).trim();
+        reader
+          .read()
+          .then(({ done, value }) => {
+            if (done) {
+              resolve("");
+              return;
             }
-          }
-          return pump();
-        }).catch(reject);
+            buf += decoder.decode(value, { stream: true });
+            const lines = buf.split("\n");
+            buf = lines.pop()!;
+            for (const line of lines) {
+              if (line === "") {
+                // Event boundary — dispatch accumulated block
+                if (currentData !== "") {
+                  try {
+                    const payload = JSON.parse(currentData) as Record<
+                      string,
+                      unknown
+                    >;
+                    if (currentEvent === "done") {
+                      resolve(
+                        typeof payload.reply === "string" ? payload.reply : "",
+                      );
+                      reader.cancel().catch(() => {});
+                      return;
+                    } else if (currentEvent === "error") {
+                      reject(new ApiError(502, payload));
+                      reader.cancel().catch(() => {});
+                      return;
+                    } else {
+                      onEvent(
+                        payload as {
+                          stream: string;
+                          data: Record<string, unknown>;
+                        },
+                      );
+                    }
+                  } catch {
+                    /* malformed JSON, skip */
+                  }
+                }
+                currentEvent = "";
+                currentData = "";
+              } else if (line.startsWith("event:")) {
+                currentEvent = line.slice(6).trim();
+              } else if (line.startsWith("data:")) {
+                currentData += line.slice(5).trim();
+              }
+            }
+            return pump();
+          })
+          .catch(reject);
       void pump();
     });
   },
@@ -618,7 +802,10 @@ export const kickoffApi = {
       (event, data) => {
         if (event === "status") onFrame(data as KickoffStatusFrame);
         else if (event === "done")
-          onDone((data as { kickoffState: KickoffStatusFrame["kickoffState"] }).kickoffState);
+          onDone(
+            (data as { kickoffState: KickoffStatusFrame["kickoffState"] })
+              .kickoffState,
+          );
       },
       signal,
     ),
@@ -639,4 +826,3 @@ export const approvalsApi = {
       body: JSON.stringify({ decision, rejectionReason }),
     }),
 };
-

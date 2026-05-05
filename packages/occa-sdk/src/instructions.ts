@@ -7,7 +7,7 @@ import { REGISTRY_PROGRAM_ID } from "./constants";
 import { deriveAgentPda, deriveCompanyPda, u32LeBytes } from "./pda";
 
 // Anchor instruction discriminators — copied verbatim from
-// `packages/protocol/src/idl/registry.json`. If the program is rebuilt
+// `packages/occa-sdk/src/idl/registry.json`. If the program is rebuilt
 // with renamed instructions, regen the IDL and update both.
 const DISCRIMINATOR = {
   createCompany: Buffer.from([36, 192, 217, 147, 233, 129, 198, 18]),

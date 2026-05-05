@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Loader2,
   Check,
   AlertTriangle,
   RotateCcw,
   Sparkles,
+  Link2,
 } from "lucide-react";
 import { AppWindow } from "@/components/ui/app-window";
 import { Button } from "@/components/ui/button";
@@ -18,6 +19,9 @@ import {
   type KickoffStatusFrame,
 } from "@/lib/api";
 import { CEO_ROLE } from "@occa/shared/role-catalog";
+import { useBatchAnchorAgents } from "@/features/chain/hooks/use-batch-anchor-agents";
+import { useAnchorWallet } from "@/features/chain/hooks/use-anchor-wallet";
+import { prettifyAnchorError } from "@/features/chain/lib/anchor-errors";
 
 interface HiringWindowProps {
   companyId: string;
@@ -58,13 +62,21 @@ export function HiringWindow({
   onReset,
 }: HiringWindowProps) {
   const [agents, setAgents] = useState<KickoffAgentStatus[]>([]);
-  const [phase, setPhase] = useState<KickoffStatusFrame["kickoffState"]>(
-    "provisioning",
-  );
+  const [phase, setPhase] =
+    useState<KickoffStatusFrame["kickoffState"]>("provisioning");
   const [streamError, setStreamError] = useState<string | null>(null);
   const [resetError, setResetError] = useState<string | null>(null);
   const [resetting, setResetting] = useState(false);
   const [confirmingReset, setConfirmingReset] = useState(false);
+
+  // Batch on-chain anchoring runs AFTER kickoff finishes provisioning.
+  // We hold completion (don't fire onCompleted) until the user either
+  // anchors the team or explicitly skips — anchoring binds every hire
+  // to a Solana keypair derived from one wallet signature.
+  const anchor = useBatchAnchorAgents();
+  const walletStatus = useAnchorWallet();
+  const [anchorSkipped, setAnchorSkipped] = useState(false);
+  const preparedRef = useRef(false);
 
   useEffect(() => {
     const ctrl = new AbortController();
@@ -75,10 +87,9 @@ export function HiringWindow({
         (frame) => {
           setAgents(frame.agents.filter((a) => a.role !== CEO_ROLE));
           setPhase(frame.kickoffState);
-          if (frame.kickoffState === "completed") onCompleted();
         },
-        (finalState) => {
-          if (finalState === "completed") onCompleted();
+        () => {
+          /* completion handled by the anchor-gate effect below */
         },
         ctrl.signal,
       )
@@ -97,16 +108,40 @@ export function HiringWindow({
 
     return () =>
       ctrl.abort(new DOMException("HiringWindow unmount", "AbortError"));
-  }, [companyId, onCompleted]);
+  }, [companyId]);
 
   const ready = agents.filter((a) => a.provisioningState === "ready").length;
   const failed = agents.filter((a) => a.provisioningState === "failed").length;
   const total = agents.length;
 
+  // Auto-prepare batch anchor as soon as kickoff finishes. Idempotent
+  // server-side: re-running just returns the existing reservations.
+  useEffect(() => {
+    if (phase !== "completed") return;
+    if (preparedRef.current) return;
+    if (anchor.stage !== "idle") return;
+    if (agents.length === 0) return;
+    preparedRef.current = true;
+    void anchor.prepare({
+      companyId,
+      agentIds: agents.map((a) => a.id),
+    });
+  }, [phase, agents, anchor, companyId]);
+
+  // Once anchoring resolves (complete or skipped), forward to the parent.
+  useEffect(() => {
+    if (phase !== "completed") return;
+    if (anchor.stage === "complete" || anchorSkipped) {
+      onCompleted();
+    }
+  }, [phase, anchor.stage, anchorSkipped, onCompleted]);
+
   const subtitle = streamError
     ? "Stream error"
     : phase === "completed"
-      ? "Team ready — entering OCCA…"
+      ? anchor.stage === "complete" || anchorSkipped
+        ? "Team ready — entering OCCA…"
+        : "Team provisioned · anchor on Solana to finish"
       : `${ready}/${total || "?"} ready${failed > 0 ? ` · ${failed} failed` : ""}`;
 
   const doReset = async () => {
@@ -173,6 +208,34 @@ export function HiringWindow({
           {agents.map((a) => (
             <HireCard key={a.id} agent={a} />
           ))}
+
+          {/* Anchor-on-Solana CTA — only after kickoff completes. Skipped
+           *  cleanly when there's nothing to anchor (totalNew === 0). */}
+          {phase === "completed" && !anchorSkipped && (
+            <AnchorPanel
+              anchorStage={anchor.stage}
+              anchorError={
+                anchor.error
+                  ? prettifyAnchorError(anchor.error.code).headline
+                  : null
+              }
+              anchorTotal={anchor.totalNew}
+              walletReady={walletStatus.kind === "ready"}
+              walletStatus={walletStatus.kind}
+              onSign={() => {
+                if (walletStatus.kind !== "ready") return;
+                void anchor.signAndRegister({
+                  companyId,
+                  wallet: walletStatus.wallet,
+                });
+              }}
+              onSkip={() => setAnchorSkipped(true)}
+              onRetry={() => {
+                anchor.reset();
+                preparedRef.current = false;
+              }}
+            />
+          )}
         </div>
 
         {/* Footer */}
@@ -238,7 +301,8 @@ function ProgressRing({
 }) {
   const settled = ready + failed;
   const pct = Math.round((settled / total) * 100);
-  const stroke = failed > 0 ? "#ef4444" : ready === total ? "#10b981" : "#5fdcff";
+  const stroke =
+    failed > 0 ? "#ef4444" : ready === total ? "#10b981" : "#5fdcff";
   return (
     <div className="relative size-12 shrink-0">
       <svg viewBox="0 0 36 36" className="size-12 -rotate-90">
@@ -349,6 +413,143 @@ function HireCard({ agent }: { agent: KickoffAgentStatus }) {
         {stateIcon}
         <span className="leading-none">{stateText}</span>
       </Badge>
+    </div>
+  );
+}
+
+// ── Anchor-on-Solana panel (post-kickoff) ─────────────────────────────────
+//
+// Renders a single inline CTA inside the HiringWindow once kickoff
+// finishes. Captures one wallet signature → hook derives N keypairs →
+// server batches register_agent into a single (or chunked) tx.
+//
+// Click handlers are passed in from the parent so all the hook + wallet
+// state lives in one place upstream.
+function AnchorPanel({
+  anchorStage,
+  anchorError,
+  anchorTotal,
+  walletReady,
+  walletStatus,
+  onSign,
+  onSkip,
+  onRetry,
+}: {
+  anchorStage:
+    | "idle"
+    | "preparing"
+    | "ready-to-sign"
+    | "awaiting-signature"
+    | "deriving-keypairs"
+    | "registering"
+    | "complete";
+  anchorError: string | null;
+  anchorTotal: number;
+  walletReady: boolean;
+  walletStatus: "loading" | "no-wallet" | "mismatch" | "ready";
+  onSign: () => void;
+  onSkip: () => void;
+  onRetry: () => void;
+}) {
+  // Don't render if there's literally nothing to anchor — saves the user
+  // from a confusing "0 hires" CTA when prepare returned all already-
+  // registered.
+  if (anchorStage === "complete") {
+    return (
+      <div className="rounded-xl border border-emerald-400/30 bg-emerald-500/8 px-4 py-3 flex items-center gap-3">
+        <Link2 className="size-4 text-emerald-300/85" />
+        <div className="flex-1 text-[12px] text-emerald-100/90">
+          Team anchored on Solana.
+        </div>
+      </div>
+    );
+  }
+
+  const busy =
+    anchorStage === "preparing" ||
+    anchorStage === "awaiting-signature" ||
+    anchorStage === "deriving-keypairs" ||
+    anchorStage === "registering";
+
+  const busyLabel =
+    anchorStage === "preparing"
+      ? "Reserving on-chain slots…"
+      : anchorStage === "awaiting-signature"
+        ? "Waiting for wallet signature…"
+        : anchorStage === "deriving-keypairs"
+          ? "Deriving keypairs…"
+          : anchorStage === "registering"
+            ? "Submitting on-chain tx…"
+            : null;
+
+  return (
+    <div className="rounded-xl border border-white/10 bg-white/4 px-4 py-3 flex flex-col gap-3">
+      <div className="flex items-start gap-3">
+        <div className="size-8 shrink-0 rounded-full bg-cyan-400/15 flex items-center justify-center">
+          <Link2 className="size-4 text-cyan-200" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="text-[13px] font-medium text-white/90">
+            Anchor team on Solana
+          </div>
+          <div className="text-[11px] text-white/55 mt-0.5">
+            One signature derives an on-chain keypair for{" "}
+            {anchorTotal > 0 ? `all ${anchorTotal} hires` : "every hire"}. Your
+            private key never leaves your wallet.
+          </div>
+        </div>
+      </div>
+
+      {anchorError && (
+        <div className="text-[11px] text-red-300/85 bg-red-500/10 rounded-md px-2.5 py-1.5">
+          {anchorError}
+        </div>
+      )}
+
+      {!walletReady && walletStatus !== "loading" && (
+        <div className="text-[11px] text-amber-300/85 bg-amber-500/10 rounded-md px-2.5 py-1.5">
+          {walletStatus === "no-wallet"
+            ? "Connect a Solana wallet to anchor."
+            : "Wallet doesn't match the one bound to your account."}
+        </div>
+      )}
+
+      <div className="flex items-center gap-2 justify-end">
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={onSkip}
+          disabled={busy}
+          title="You can anchor later from settings."
+        >
+          Skip for now
+        </Button>
+        {anchorError ? (
+          <Button size="sm" variant="primary" onClick={onRetry}>
+            <RotateCcw className="size-3" />
+            Retry
+          </Button>
+        ) : (
+          <Button
+            size="sm"
+            variant="primary"
+            onClick={onSign}
+            disabled={busy || !walletReady}
+          >
+            {busy ? (
+              <>
+                <Loader2 className="size-3 animate-spin" />
+                {busyLabel}
+              </>
+            ) : (
+              <>
+                <Link2 className="size-3" />
+                Anchor on Solana
+              </>
+            )}
+          </Button>
+        )}
+      </div>
     </div>
   );
 }

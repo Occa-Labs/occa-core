@@ -16,6 +16,182 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.13.0",
+    date: "2026-05-05",
+    title: "Production preview & dynamic idle",
+    items: [
+      {
+        tag: "feature",
+        text: "Dynamic idle anchors — agents rotate between standing and sitting zones every ~60s with per-agent stagger, so the office never feels frozen.",
+      },
+      {
+        tag: "feature",
+        text: "Production-preview mode (NEXT_PUBLIC_PREVIEW_PRODUCTION=1) hides in-progress chrome (Tasks, Routines, Skills, Dev Tools, Room Tour) behind a single env flag for staging demos.",
+      },
+      {
+        tag: "improvement",
+        text: "Tasks, Routines, and Skills stay visible in the dock while gated — greyed icon + 'coming soon' tooltip instead of disappearing entirely.",
+      },
+      {
+        tag: "improvement",
+        text: "Centralized feature flags in lib/env-flags.ts (IS_PRODUCTION_MODE, IS_DEV_MODE, FEATURES) — single source of truth for shell + feature gates.",
+      },
+    ],
+  },
+  {
+    version: "0.12.0",
+    date: "2026-05-03",
+    title: "Workspace cleanup",
+    items: [
+      {
+        tag: "improvement",
+        text: "Removed ~3.4k lines of dead code paths and stale fixtures across server, web, and packages; tightened .gitignore for local artifacts.",
+      },
+    ],
+  },
+  {
+    version: "0.11.0",
+    date: "2026-05-02",
+    title: "Animation polish & seed data",
+    items: [
+      {
+        tag: "improvement",
+        text: "Idle motion jitter — micro-sway per agent so characters never lock into identical poses, with cleaned-up animation clip routing.",
+      },
+      {
+        tag: "feature",
+        text: "Seed-data tooling for spinning up a populated company instantly during local dev and demo recording.",
+      },
+    ],
+  },
+  {
+    version: "0.10.0",
+    date: "2026-05-01",
+    title: "Room tour, idle fixes, and workstation polish",
+    items: [
+      {
+        tag: "feature",
+        text: "Room tour cinematic — Jia walks a recorded path through the office and returns to her spawn, triggered from Settings → Office.",
+      },
+      {
+        tag: "feature",
+        text: "Tour-record dialog for capturing new waypoint paths directly from the OS.",
+      },
+      {
+        tag: "feature",
+        text: "Per-agent seat assignment surfaced in the agent detail view.",
+      },
+      {
+        tag: "fix",
+        text: "Idle position + animation drift bug — agents no longer flip between standing and sitting clips mid-pose; dual-ref guard added at the clip identity level.",
+      },
+      {
+        tag: "improvement",
+        text: "Heavier canvas pass with new monitor-screen content and tightened agent-character rig.",
+      },
+    ],
+  },
+  {
+    version: "0.9.0",
+    date: "2026-04-30",
+    title: "Office shell rewrite",
+    items: [
+      {
+        tag: "breaking",
+        text: "Folder restructure — apps/web now uses /features/* and apps/server uses /domain/* + /infra/*. Old flat /components and /lib paths are gone.",
+      },
+      {
+        tag: "feature",
+        text: "New shell chrome: top menu bar, FPS indicator, view-mode toggle, dev-reset button, floating-panel + dropdown primitives.",
+      },
+      {
+        tag: "feature",
+        text: "Component library bootstrapped — Button, Badge, Card, Alert, Autocomplete, Dropdown, Input, Select, SearchInput, EmptyState, LoadingState, Toggle, plus shared tokens.ts surface system.",
+      },
+      {
+        tag: "feature",
+        text: "Notifications redesign — split into floating notification-center popover and full notifications-window.",
+      },
+      {
+        tag: "improvement",
+        text: "Office-anchors module rebuilt with proper standing/sitting zone catalogues; idle-anchors helper extracted.",
+      },
+      {
+        tag: "improvement",
+        text: "Agent + company windows split into focused panels; markdown-viewer extended for docs.",
+      },
+    ],
+  },
+  {
+    version: "0.8.0",
+    date: "2026-04-29",
+    title: "Onboarding & kickoff overhaul",
+    items: [
+      {
+        tag: "feature",
+        text: "Multi-step onboarding flow with per-role asset bundles (CCO, SDR, default) — SOUL.md, AGENTS.md, TOOLS.md, USER.md materialized at agent creation.",
+      },
+      {
+        tag: "feature",
+        text: "Kickoff state machine (drizzle 0029) tracks each company through profile → identity → first-agent.",
+      },
+      {
+        tag: "breaking",
+        text: "Company profile split (drizzle 0030) — identity fields moved out of the monolithic profile blob into typed columns.",
+      },
+      {
+        tag: "feature",
+        text: "Agents now carry a workstation_id (drizzle 0031) and an optional per-agent model_override (drizzle 0032).",
+      },
+      {
+        tag: "feature",
+        text: "Chain registry columns (drizzle 0033) wire companies to their on-chain registry entries.",
+      },
+      {
+        tag: "feature",
+        text: "User pending device keypair table (drizzle 0027) for first-time wallet bootstrap.",
+      },
+    ],
+  },
+  {
+    version: "0.7.5",
+    date: "2026-04-27",
+    title: "Agent hires agent",
+    items: [
+      {
+        tag: "feature",
+        text: "Agents with can_create_agents may now hire another agent inside the same gateway — child agent inherits the parent's gateway credentials and shows up under reports_to_agent_id.",
+      },
+      {
+        tag: "feature",
+        text: "Autonomy hire columns (drizzle 0025) and phase-1 closure migration (drizzle 0026) lock down the hire approval lifecycle.",
+      },
+    ],
+  },
+  {
+    version: "0.7.4",
+    date: "2026-04-24",
+    title: "Agent workspace files & skill sync",
+    items: [
+      {
+        tag: "feature",
+        text: "Agent workspace files table (drizzle 0018) — per-agent file tracking inside the gateway VPS.",
+      },
+      {
+        tag: "feature",
+        text: "Agent skill syncs (drizzle 0019) record which skills are deployed per agent and their sync state.",
+      },
+      {
+        tag: "improvement",
+        text: "Gateway run id (drizzle 0020), conversation id on traces (drizzle 0022), task→trace link (drizzle 0023).",
+      },
+      {
+        tag: "breaking",
+        text: "Removed wakeup_requests table (drizzle 0021) and notification_dismissals (drizzle 0024) — replaced by the trace-driven model.",
+      },
+    ],
+  },
+  {
     version: "0.7.1",
     date: "2026-04-23",
     title: "UI component system",

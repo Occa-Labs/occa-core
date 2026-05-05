@@ -33,7 +33,10 @@ interface NotificationCenterProps {
 // generous on the small "Connect Wallet" state but never collides.
 const BELL_OFFSET_PX = 140;
 
-export function NotificationCenter({ enabled, embedded = false }: NotificationCenterProps) {
+export function NotificationCenter({
+  enabled,
+  embedded = false,
+}: NotificationCenterProps) {
   const me = useMe(enabled);
   const { approvals, decide } = useApprovals(enabled && me.company !== null);
   const [bellOpen, setBellOpen] = useState(false);
@@ -160,7 +163,12 @@ interface NotificationBellProps {
   embedded?: boolean;
 }
 
-function NotificationBell({ count, open, onClick, embedded = false }: NotificationBellProps) {
+function NotificationBell({
+  count,
+  open,
+  onClick,
+  embedded = false,
+}: NotificationBellProps) {
   return (
     <button
       type="button"
@@ -170,7 +178,7 @@ function NotificationBell({ count, open, onClick, embedded = false }: Notificati
       className={cn(
         "relative inline-flex items-center justify-center transition-colors duration-200",
         embedded
-          ? "h-8 w-8 text-white/70 hover:text-white"
+          ? "h-8 w-8 rounded-full bg-white/10 text-white/70 hover:bg-white/15 hover:text-white"
           : "h-9 w-9 rounded-xl text-white/80 hover:bg-white/12 hover:text-white",
       )}
       style={embedded ? undefined : surface.base}
@@ -413,9 +421,7 @@ function NotificationDetail({
               <Button
                 variant="danger"
                 size="sm"
-                disabled={
-                  submitting || rejectReason.trim().length === 0
-                }
+                disabled={submitting || rejectReason.trim().length === 0}
                 onClick={handleSendReject}
               >
                 {submitting ? "Sending…" : "Send"}
@@ -581,9 +587,10 @@ function humanizeAction(
   if (actionType === "delegate") {
     const targetId =
       typeof payload.targetAgentId === "string" ? payload.targetAgentId : null;
-    const title =
-      typeof payload.title === "string" ? payload.title.trim() : "";
-    const targetName = targetId ? (agentById.get(targetId)?.name ?? null) : null;
+    const title = typeof payload.title === "string" ? payload.title.trim() : "";
+    const targetName = targetId
+      ? (agentById.get(targetId)?.name ?? null)
+      : null;
     if (targetName && title)
       return `Wants to delegate to ${targetName}: "${title}"`;
     if (targetName) return `Wants to delegate to ${targetName}`;
@@ -595,11 +602,8 @@ function humanizeAction(
     const targetRole =
       typeof payload.targetRole === "string" ? payload.targetRole : "";
     const targetName =
-      typeof payload.targetName === "string"
-        ? payload.targetName.trim()
-        : "";
-    const title =
-      typeof payload.title === "string" ? payload.title.trim() : "";
+      typeof payload.targetName === "string" ? payload.targetName.trim() : "";
+    const title = typeof payload.title === "string" ? payload.title.trim() : "";
     if (targetName && targetRole && title)
       return `Wants to hire ${targetName} (${targetRole}) for "${title}"`;
     if (targetName && targetRole)
@@ -615,9 +619,7 @@ function humanizeAction(
     .split(/[._-]+/)
     .filter(Boolean)
     .join(" ");
-  return pretty
-    ? `Wants to ${pretty.toLowerCase()}`
-    : "Awaiting your decision";
+  return pretty ? `Wants to ${pretty.toLowerCase()}` : "Awaiting your decision";
 }
 
 function relativeTime(iso: string): string {

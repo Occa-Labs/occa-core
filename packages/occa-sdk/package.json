@@ -1,0 +1,86 @@
+{
+  "name": "occa-sdk",
+  "version": "0.1.0",
+  "description": "OCCA on-chain protocol SDK — PDA helpers, instruction builders, sign-to-derive custody, and types for the OCCA Registry program on Solana.",
+  "license": "MIT",
+  "author": "OCCA",
+  "homepage": "https://github.com/occa-network/occa#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/occa-network/occa.git",
+    "directory": "occa/packages/occa-sdk"
+  },
+  "bugs": {
+    "url": "https://github.com/occa-network/occa/issues"
+  },
+  "keywords": [
+    "solana",
+    "anchor",
+    "occa",
+    "agent",
+    "agent-identity",
+    "ai-agents",
+    "registry",
+    "sign-to-derive",
+    "web3"
+  ],
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./pda": {
+      "types": "./dist/pda.d.ts",
+      "import": "./dist/pda.js",
+      "require": "./dist/pda.cjs"
+    },
+    "./constants": {
+      "types": "./dist/constants.d.ts",
+      "import": "./dist/constants.js",
+      "require": "./dist/constants.cjs"
+    },
+    "./derivation": {
+      "types": "./dist/derivation.d.ts",
+      "import": "./dist/derivation.js",
+      "require": "./dist/derivation.cjs"
+    },
+    "./instructions": {
+      "types": "./dist/instructions.d.ts",
+      "import": "./dist/instructions.js",
+      "require": "./dist/instructions.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "prepublishOnly": "pnpm build",
+    "devnet-smoke": "tsx scripts/devnet-smoke.ts"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.98.4",
+    "@noble/hashes": "^1.4.0"
+  },
+  "devDependencies": {
+    "@noble/ed25519": "^3.1.0",
+    "@types/node": "^20",
+    "tsup": "^8.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -24,6 +24,8 @@ import type {
 import { CEO_ROLE } from "@occa/shared/role-catalog";
 import {
   GUIDE_POSITION,
+  CEO_MEETING_POSITION,
+  CEO_MEETING_ROTATION_Y,
   buildAgentModelMap,
   getAgentLayout,
   getRoleLayout,
@@ -282,14 +284,25 @@ export function OfficeScene({
   // (who render at their desk) and force later meeting/idle agents to
   // collide on a seat that's already claimed by someone not even sitting
   // in it — visible as two characters stacked on the same chair.
+  // Tick that re-evaluates idle anchor assignments. Each agent has its
+  // own ~35s dwell window inside `buildIdleAssignments`; bumping this
+  // every 5s gives us enough resolution to catch each agent's epoch
+  // flip soon after it happens without re-rendering the whole scene
+  // every frame.
+  const [idleNow, setIdleNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setIdleNow(Date.now()), 5_000);
+    return () => clearInterval(t);
+  }, []);
   const idleAssignments = useMemo(
     () =>
       buildIdleAssignments(
         agents
           .filter((a) => a.status === "idle" && a.ready)
           .map((a) => ({ id: a.id, createdAt: a.createdAt })),
+        idleNow,
       ),
-    [agents],
+    [agents, idleNow],
   );
   const boardroomAssignments = useMemo(
     () =>
@@ -321,14 +334,28 @@ export function OfficeScene({
   }, [focusedAgentRole, focusedWorkstationId]);
 
   // During the kickoff "meeting" cinematic the focus target is implicitly
-  // the CEO. CameraController gets the CEO layout even though parent
-  // hasn't set focusedAgentRole.
+  // the CEO at the onboarding meeting spot (anchored to the walk path),
+  // NOT at her desk. CameraController gets a synthetic layout pointing
+  // at CEO_MEETING_POSITION even though parent hasn't set
+  // focusedAgentRole.
   const effectiveFocusLayout = useMemo(() => {
     if (cameraMode === "agent-focus" && !focusLayout) {
+      if (walkPhase !== null) {
+        const ceoModel = getRoleLayout(CEO_ROLE).modelUrl;
+        return {
+          position: {
+            x: CEO_MEETING_POSITION.x,
+            y: CEO_MEETING_POSITION.y,
+            z: CEO_MEETING_POSITION.z,
+          },
+          rotationY: CEO_MEETING_ROTATION_Y,
+          modelUrl: ceoModel,
+        };
+      }
       return getRoleLayout(CEO_ROLE);
     }
     return focusLayout;
-  }, [cameraMode, focusLayout]);
+  }, [cameraMode, focusLayout, walkPhase]);
 
   const webglFallback = (
     <div className="flex h-full w-full flex-col items-center justify-center gap-3 text-white">
@@ -411,68 +438,87 @@ export function OfficeScene({
                 // states stay at the assigned workstation. A workstation
                 // override from DevWindow always wins (lets a dev pin a
                 // specific seat regardless of status).
-                const layout = overrideWs
+                //
+                // Onboarding cinematic: while Jia is walking to / meeting
+                // the CEO, the CEO must stand at the meeting spot anchored
+                // to the walk path (not at her desk — desk position is
+                // server-driven and may have drifted from the recorded
+                // path). This override beats every other rule below.
+                const isOnboardingCeoMeeting =
+                  agent.role === CEO_ROLE && walkPhase !== null;
+                const layout = isOnboardingCeoMeeting
                   ? {
-                      position: overrideWs.position,
-                      rotationY: overrideWs.rotationY,
+                      position: {
+                        x: CEO_MEETING_POSITION.x,
+                        y: CEO_MEETING_POSITION.y,
+                        z: CEO_MEETING_POSITION.z,
+                      },
+                      rotationY: CEO_MEETING_ROTATION_Y,
                       modelUrl: baseLayout.modelUrl,
+                      posture: "stand" as const,
                     }
-                  : status === "idle" && agent.ready
-                    ? (() => {
-                        const a = idleAssignments.get(agent.id);
-                        if (!a) return baseLayout;
-                        // Sit anchors are painted at the cell center, but
-                        // the character's hips need a small bias forward
-                        // (deeper into the seat) and up (sofas/benches sit
-                        // a touch higher than the default chair). Stand
-                        // anchors stay where the user pinned them.
-                        const SIT_FORWARD = 0.2;
-                        const SIT_HEIGHT = -0.1;
-                        const isSit = a.posture === "sit";
-                        const fx = isSit
-                          ? Math.sin(a.rotationY) * SIT_FORWARD
-                          : 0;
-                        const fz = isSit
-                          ? Math.cos(a.rotationY) * SIT_FORWARD
-                          : 0;
-                        const dy = isSit ? SIT_HEIGHT : 0;
-                        return {
-                          position: {
-                            x: a.position.x + fx,
-                            y: a.position.y + dy,
-                            z: a.position.z + fz,
-                          },
-                          rotationY: a.rotationY,
-                          modelUrl: baseLayout.modelUrl,
-                          posture: a.posture,
-                        };
-                      })()
-                    : status === "meeting"
+                  : overrideWs
+                    ? {
+                        position: overrideWs.position,
+                        rotationY: overrideWs.rotationY,
+                        modelUrl: baseLayout.modelUrl,
+                      }
+                    : status === "idle" && agent.ready
                       ? (() => {
-                          // Honour an explicit boardroom workstationId on
-                          // the agent — that's how /demo pins exact seats.
-                          // Real-OS agents have a cubicle workstationId, so
-                          // they fall through to the round-robin map.
-                          const pinned =
-                            agent.workstationId &&
-                            agent.workstationId.startsWith("boardroom-")
-                              ? OFFICE_WORKSTATIONS[agent.workstationId]
-                              : null;
-                          const seat =
-                            pinned ??
-                            (() => {
-                              const id = boardroomAssignments.get(agent.id);
-                              return id ? OFFICE_WORKSTATIONS[id] : null;
-                            })();
-                          return seat
-                            ? {
-                                position: seat.position,
-                                rotationY: seat.rotationY,
-                                modelUrl: baseLayout.modelUrl,
-                              }
-                            : baseLayout;
+                          const a = idleAssignments.get(agent.id);
+                          if (!a) return baseLayout;
+                          // Sit anchors are painted at the cell center, but
+                          // the character's hips need a small bias forward
+                          // (deeper into the seat) and up (sofas/benches sit
+                          // a touch higher than the default chair). Stand
+                          // anchors stay where the user pinned them.
+                          const SIT_FORWARD = 0.2;
+                          const SIT_HEIGHT = -0.1;
+                          const isSit = a.posture === "sit";
+                          const fx = isSit
+                            ? Math.sin(a.rotationY) * SIT_FORWARD
+                            : 0;
+                          const fz = isSit
+                            ? Math.cos(a.rotationY) * SIT_FORWARD
+                            : 0;
+                          const dy = isSit ? SIT_HEIGHT : 0;
+                          return {
+                            position: {
+                              x: a.position.x + fx,
+                              y: a.position.y + dy,
+                              z: a.position.z + fz,
+                            },
+                            rotationY: a.rotationY,
+                            modelUrl: baseLayout.modelUrl,
+                            posture: a.posture,
+                          };
                         })()
-                      : baseLayout;
+                      : status === "meeting"
+                        ? (() => {
+                            // Honour an explicit boardroom workstationId on
+                            // the agent — that's how /demo pins exact seats.
+                            // Real-OS agents have a cubicle workstationId, so
+                            // they fall through to the round-robin map.
+                            const pinned =
+                              agent.workstationId &&
+                              agent.workstationId.startsWith("boardroom-")
+                                ? OFFICE_WORKSTATIONS[agent.workstationId]
+                                : null;
+                            const seat =
+                              pinned ??
+                              (() => {
+                                const id = boardroomAssignments.get(agent.id);
+                                return id ? OFFICE_WORKSTATIONS[id] : null;
+                              })();
+                            return seat
+                              ? {
+                                  position: seat.position,
+                                  rotationY: seat.rotationY,
+                                  modelUrl: baseLayout.modelUrl,
+                                }
+                              : baseLayout;
+                          })()
+                        : baseLayout;
                 // Only ready agents with a real id are clickable. The
                 // synthesized placeholder CEO and pre-`ready` agents have
                 // no AgentsWindow row to surface.

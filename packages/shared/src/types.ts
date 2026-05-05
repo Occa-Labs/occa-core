@@ -128,6 +128,15 @@ export interface CompanyDTO {
   kickoffState: KickoffState;
   kickoffStartedAt: string | null;
   kickoffCompletedAt: string | null;
+
+  // ── On-chain Registry mirror ───────────────────────────────────────
+  // Populated after `create_company` confirms on Solana. NULL until the
+  // company has been anchored. The PDA address is the durable identity —
+  // controllingAuthority can rotate without changing it.
+  companyPda: string | null;
+  controllingAuthority: string | null;
+  chainNonce: number | null;
+  chainTxSignature: string | null;
 }
 
 export type KickoffState = "not_started" | "provisioning" | "completed";
@@ -215,6 +224,17 @@ export interface AgentDTO {
   // Optional override for the 3D character model. NULL = auto-pick via
   // claim-and-skip. Non-NULL = pinned GLB url.
   modelOverride: string | null;
+
+  // ── On-chain Registry mirror ───────────────────────────────────────
+  // Populated after `register_agent` confirms on Solana. Custody model
+  // 'sign_to_derive' (MVP default) means OCCA never holds the privkey —
+  // `agentAddress` is the pubkey derived FE-side via wallet.signMessage.
+  agentPda: string | null;
+  agentAddress: string | null;
+  agentIndex: number | null;
+  custodyModel: string;
+  derivationMsgVersion: number;
+  agentChainTxSignature: string | null;
 }
 
 export type AgentProvisioningState = "pending" | "ready" | "failed";
@@ -583,7 +603,13 @@ export interface SkillResponse {
 }
 
 // ── Wake + Trace primitives ───────────────────────────────────────────
-export type WakeSource = "timer" | "assignment" | "on_demand" | "automation" | "chat" | "skill_sync";
+export type WakeSource =
+  | "timer"
+  | "assignment"
+  | "on_demand"
+  | "automation"
+  | "chat"
+  | "skill_sync";
 
 export type TraceStatus =
   | "queued"
@@ -601,7 +627,6 @@ export interface WakeActor {
   type: WakeActorType;
   id: string | null;
 }
-
 
 export interface TraceUsage {
   tokensIn: number;
@@ -915,5 +940,9 @@ export const KICKOFF_PRESETS = ["bootstrap", "standard", "full"] as const;
 export type KickoffPreset = (typeof KICKOFF_PRESETS)[number];
 
 // ── Skill sync actions ───────────────────────────────────────────────
-export const SKILL_SYNC_ACTIONS = ["install", "uninstall", "reinstall"] as const;
+export const SKILL_SYNC_ACTIONS = [
+  "install",
+  "uninstall",
+  "reinstall",
+] as const;
 export type SkillSyncAction = (typeof SKILL_SYNC_ACTIONS)[number];

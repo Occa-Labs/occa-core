@@ -1,23 +1,6 @@
 "use client";
 
-export function deriveControlUiUrl(gatewayUrl: string): string {
-  try {
-    const u = new URL(gatewayUrl);
-    const protocol = u.protocol === "wss:" ? "https:" : "http:";
-    return `${protocol}//${u.host}`;
-  } catch {
-    return gatewayUrl
-      .replace(/^wss:/, "https:")
-      .replace(/^ws:/, "http:")
-      .replace(/\/$/, "");
-  }
-}
-
-export function DevicePairingHelp({
-  controlUiUrl,
-}: {
-  controlUiUrl: string;
-}) {
+export function DevicePairingHelp() {
   return (
     <div className="px-4 py-4 space-y-3.5 text-[12px] text-white/75 leading-relaxed">
       <p className="text-white/65">
@@ -31,15 +14,35 @@ export function DevicePairingHelp({
           Option 1 — CLI (fastest, if you have SSH)
         </p>
         <p className="text-[11.5px] text-white/65 mb-1.5">
-          SSH to your gateway host and run:
+          OCCA pairs as an{" "}
+          <span className="text-white/85 font-medium">operator</span> device
+          (not a node), so use{" "}
+          <code className="font-mono text-white/85">openclaw devices</code>. SSH
+          to your gateway host and run:
         </p>
-        <pre className="bg-white/5 rounded-md px-2.5 py-2 font-mono text-[10.5px] text-white/80 overflow-x-auto leading-snug">{`# list pending pair requests
-openclaw nodes pending
+        <pre className="bg-white/[0.07] border border-white/10 rounded-md px-2.5 py-2 font-mono text-[10.5px] text-white overflow-x-auto leading-snug">{`# preview the most recent pending request
+openclaw devices approve --latest \\
+  --token <gateway-token> \\
+  --url ws://127.0.0.1:18789
 
-# approve by requestId from the list above
-openclaw nodes approve <requestId>`}</pre>
-        <p className="text-white/45 text-[10.5px] mt-1.5">
-          Pending requests expire after 5 minutes.
+# approve it (paste the requestId shown above)
+openclaw devices approve <requestId> \\
+  --token <gateway-token> \\
+  --url ws://127.0.0.1:18789`}</pre>
+        <p className="text-white/45 text-[10.5px] mt-1.5 leading-relaxed">
+          <span className="text-white/65">Where to find things:</span>{" "}
+          <code className="font-mono text-white/75">gateway-token</code> ={" "}
+          <code className="font-mono text-white/75">auth.token</code> in{" "}
+          <code className="font-mono text-white/75">
+            ~/.openclaw/openclaw.json
+          </code>
+          . If you need to enumerate pending requests directly, read{" "}
+          <code className="font-mono text-white/75">
+            ~/.openclaw/devices/pending.json
+          </code>{" "}
+          —{" "}
+          <code className="font-mono text-white/75">openclaw devices list</code>{" "}
+          currently only renders the Paired section.
         </p>
       </div>
 
@@ -49,23 +52,25 @@ openclaw nodes approve <requestId>`}</pre>
         </p>
         <ol className="space-y-1.5 list-decimal list-inside text-[11.5px]">
           <li>
-            Open the OpenClaw control UI:
-            <a
-              href={controlUiUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="ml-1 font-mono text-[10.5px] text-blue-300/85 hover:text-blue-200 underline-offset-2 hover:underline break-all"
-            >
-              {controlUiUrl}
-            </a>
+            Open the OpenClaw control UI on the machine running your gateway
+            (typically{" "}
+            <code className="font-mono text-white/85">
+              http://127.0.0.1:18789
+            </code>
+            , or whatever{" "}
+            <code className="font-mono text-white/85">gateway.bind</code> / port
+            you configured in{" "}
+            <code className="font-mono text-white/85">
+              ~/.openclaw/openclaw.json
+            </code>
+            ).
           </li>
           <li>
-            Go to the{" "}
-            <span className="text-white/85 font-medium">Nodes</span> section in
-            the left sidebar.
+            Go to the <span className="text-white/85 font-medium">Devices</span>{" "}
+            section (operator pairing requests live here, not under Nodes).
           </li>
           <li>
-            Find OCCA's pending pair request and click{" "}
+            Find OCCA's pending request and click{" "}
             <span className="text-white/85 font-medium">Approve</span>.
           </li>
           <li>
@@ -73,14 +78,6 @@ openclaw nodes approve <requestId>`}</pre>
             <span className="text-white/85 font-medium">I've approved</span>.
           </li>
         </ol>
-        <p className="text-white/45 text-[10.5px] mt-2 leading-relaxed">
-          The same{" "}
-          <span className="text-white/65 font-medium">Nodes</span> section also
-          lets you click{" "}
-          <span className="text-white/65 font-medium">Add Node</span> or{" "}
-          <span className="text-white/65 font-medium">Pair Device</span> for a
-          QR-code-based mobile pairing flow.
-        </p>
       </div>
 
       <div>
@@ -94,16 +91,17 @@ openclaw nodes approve <requestId>`}</pre>
           </code>
           :
         </p>
-        <pre className="bg-white/5 rounded-md px-2.5 py-2 font-mono text-[10.5px] text-white/80 overflow-x-auto leading-snug">{`"gateway": {
-  "nodes": {
+        <pre className="bg-white/[0.07] border border-white/10 rounded-md px-2.5 py-2 font-mono text-[10.5px] text-white overflow-x-auto leading-snug">{`"gateway": {
+  "devices": {
     "pairing": {
       "autoApproveCidrs": ["192.168.1.0/24"]
     }
   }
 }`}</pre>
         <p className="text-white/45 text-[10.5px] mt-1.5">
-          Replace with your network's CIDR. Only applies to fresh device pairing
-          without requested scopes.
+          Replace with your network's CIDR. Restart the gateway after editing.
+          Operator-role pairings still need the requested scopes to be allowed
+          by your gateway policy.
         </p>
       </div>
     </div>

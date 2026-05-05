@@ -1,10 +1,10 @@
 #!/usr/bin/env tsx
 /**
- * Library-level smoke test for @occa/protocol against devnet.
+ * Library-level smoke test for occa-sdk against devnet.
  *
  * NO server, NO database — just the SDK exports + Solana RPC. This
  * script is the closest analogue to "what a third-party FE consumer
- * would write" once @occa/protocol ships to npm.
+ * would write" once occa-sdk ships to npm.
  *
  * Validates:
  *   - createCompany instruction lands on-chain & PDA matches derivation
@@ -17,7 +17,7 @@
  *     (the same keypair used to deploy programs/registry)
  *   - SOLANA_RPC_URL env (optional, defaults to public devnet)
  *
- * Run from packages/protocol/:
+ * Run from packages/occa-sdk/:
  *   pnpm devnet-smoke
  */
 

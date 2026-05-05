@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { useAuth } from "@/features/auth/hooks/use-auth";
 import { Dock } from "@/components/ui/dock";
+import { FEATURES, IS_DEV_MODE } from "@/lib/env-flags";
 import { TaskManager } from "@/features/tasks/components/task-manager";
 import { AgentsWindow } from "@/features/agents/components/agents-window";
 import { CompanyWindow } from "@/features/companies/components/company-window";
@@ -43,11 +44,17 @@ interface OsShellProps {
   /** Dev-only per-role overrides + setter for the Agents tab. */
   agentDevOverrides?: Record<
     string,
-    { workstationId?: string | null; status?: "idle" | "working" | "talking" | "meeting" | null }
+    {
+      workstationId?: string | null;
+      status?: "idle" | "working" | "talking" | "meeting" | null;
+    }
   >;
   onUpdateAgentDevOverride?: (
     role: string,
-    patch: { workstationId?: string | null; status?: "idle" | "working" | "talking" | "meeting" | null },
+    patch: {
+      workstationId?: string | null;
+      status?: "idle" | "working" | "talking" | "meeting" | null;
+    },
   ) => void;
   /** Settings-window button calls this to launch Jia's room-tour cinematic. */
   onStartTour?: () => void;
@@ -137,6 +144,8 @@ export function OsShell({
             icon: <CheckSquare className="size-5" />,
             label: "Tasks",
             active: activeWindow === "tasks",
+            disabled: !FEATURES.tasks,
+            disabledHint: "coming soon",
             onClick: () => toggle("tasks"),
           },
           {
@@ -149,16 +158,20 @@ export function OsShell({
             icon: <Library className="size-5" />,
             label: "Skills",
             active: activeWindow === "skills",
+            disabled: !FEATURES.skills,
+            disabledHint: "coming soon",
             onClick: () => toggle("skills"),
           },
-          ...(process.env.NODE_ENV === "development"
+          {
+            icon: <Clock className="size-5" />,
+            label: "Routines",
+            active: activeWindow === "routines",
+            disabled: !FEATURES.routines,
+            disabledHint: "coming soon",
+            onClick: () => toggle("routines"),
+          },
+          ...(IS_DEV_MODE
             ? [
-                {
-                  icon: <Clock className="size-5" />,
-                  label: "Routines",
-                  active: activeWindow === "routines",
-                  onClick: () => toggle("routines"),
-                },
                 {
                   icon: <Wrench className="size-5" />,
                   label: "Dev Tools",
@@ -181,7 +194,7 @@ export function OsShell({
           },
         ]}
       />
-      {activeWindow === "tasks" && (
+      {activeWindow === "tasks" && FEATURES.tasks && (
         <TaskManager
           companyId={me.company.id}
           agentList={agentList}
@@ -200,10 +213,10 @@ export function OsShell({
       {activeWindow === "company" && (
         <CompanyWindow companyId={me.company.id} onClose={close} />
       )}
-      {activeWindow === "skills" && (
+      {activeWindow === "skills" && FEATURES.skills && (
         <SkillLibrary onClose={close} onReloadMe={me.reload} />
       )}
-      {activeWindow === "routines" && (
+      {activeWindow === "routines" && FEATURES.routines && (
         <RoutinesWindow agents={me.agents} onClose={close} />
       )}
       {activeWindow === "changelogs" && <ChangelogsWindow onClose={close} />}

@@ -83,3 +83,22 @@ export async function nextAgentIndex(companyId: string): Promise<number> {
   const max = row?.max;
   return max === null || max === undefined ? 0 : Number(max) + 1;
 }
+
+/**
+ * Reserve an `agent_index` on a row that does not yet have one. Used by
+ * the batch prepare flow so the FE can sign a derivation message that
+ * embeds the exact indexes server will register on-chain.
+ *
+ * The (company_id, agent_index) unique index in the DB will throw if
+ * two callers race for the same slot — caller should treat that as a
+ * collision signal and pick the next one.
+ */
+export async function reserveAgentIndex(args: {
+  agentId: string;
+  agentIndex: number;
+}): Promise<void> {
+  await db
+    .update(agents)
+    .set({ agentIndex: args.agentIndex, updatedAt: new Date() })
+    .where(eq(agents.id, args.agentId));
+}

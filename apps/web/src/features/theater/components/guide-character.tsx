@@ -6,7 +6,7 @@ import * as THREE from "three";
 import { useCharacterAssets } from "../hooks/use-character-assets";
 import {
   ARRIVE_THRESHOLD,
-  CEO_POSITION,
+  CEO_MEETING_POSITION,
   GUIDE_MODEL,
   GUIDE_POSITION,
   GUIDE_ROTATION_Y,
@@ -21,15 +21,20 @@ interface GuideCharacterProps {
   visible: boolean;
   walking: boolean;
   onArrived?: () => void;
-  posRef:     React.RefObject<THREE.Vector3>;
+  posRef: React.RefObject<THREE.Vector3>;
   forwardRef: React.RefObject<THREE.Vector3>;
   manualPosRef?: React.RefObject<THREE.Vector3> | null;
 }
 
 export function GuideCharacter({
-  visible, walking, onArrived, posRef, forwardRef, manualPosRef,
+  visible,
+  walking,
+  onArrived,
+  posRef,
+  forwardRef,
+  manualPosRef,
 }: GuideCharacterProps) {
-  const groupRef   = useRef<THREE.Group>(null);
+  const groupRef = useRef<THREE.Group>(null);
   const visibleRef = useRef(visible);
   const walkingRef = useRef(walking);
   const arrivedRef = useRef(false);
@@ -39,17 +44,24 @@ export function GuideCharacter({
 
   // Standing guide — Jia walks across the office. Talk slot is unused, we
   // reuse the idle URL so useLoader cache only fetches 2 distinct FBX.
-  const { model, mixer, idleClip, actionClip: walkClip } = useCharacterAssets({
-    modelUrl:      GUIDE_MODEL,
-    idleAnimUrl:   STANDING_IDLE_ANIM,
+  const {
+    model,
+    mixer,
+    idleClip,
+    actionClip: walkClip,
+  } = useCharacterAssets({
+    modelUrl: GUIDE_MODEL,
+    idleAnimUrl: STANDING_IDLE_ANIM,
     actionAnimUrl: WALKING_ANIM,
-    talkAnimUrl:   STANDING_IDLE_ANIM,
+    talkAnimUrl: STANDING_IDLE_ANIM,
   });
 
   useEffect(() => {
     mixer.stopAllAction();
     if (idleClip) mixer.clipAction(idleClip).reset().fadeIn(0.3).play();
-    return () => { mixer.stopAllAction(); };
+    return () => {
+      mixer.stopAllAction();
+    };
   }, [mixer, idleClip]);
 
   useEffect(() => {
@@ -67,8 +79,8 @@ export function GuideCharacter({
 
   useEffect(() => {
     if (walking) {
-      arrivedRef.current  = false;
-      wpIndexRef.current  = 0;
+      arrivedRef.current = false;
+      wpIndexRef.current = 0;
     }
   }, [walking]);
 
@@ -82,12 +94,16 @@ export function GuideCharacter({
 
     // Dev recording: position driven externally by WaypointRecorder
     if (manualPosRef) {
-      group.position.set(manualPosRef.current.x, GUIDE_POSITION.y, manualPosRef.current.z);
+      group.position.set(
+        manualPosRef.current.x,
+        GUIDE_POSITION.y,
+        manualPosRef.current.z,
+      );
       group.getWorldPosition(posRef.current);
       const { x: fx, z: fz } = forwardRef.current;
       if (Math.abs(fx) + Math.abs(fz) > 0.01) {
         let diff = Math.atan2(fx, fz) - group.rotation.y;
-        if (diff >  Math.PI) diff -= 2 * Math.PI;
+        if (diff > Math.PI) diff -= 2 * Math.PI;
         if (diff < -Math.PI) diff += 2 * Math.PI;
         group.rotation.y += diff / 5;
       }
@@ -98,15 +114,20 @@ export function GuideCharacter({
 
     if (!walkingRef.current || arrivedRef.current) return;
 
-    const isLast  = wpIndexRef.current >= WALK_WAYPOINTS.length - 1;
-    const wp      = WALK_WAYPOINTS[Math.min(wpIndexRef.current, WALK_WAYPOINTS.length - 1)];
-    const dist    = group.position.distanceTo(wp.position);
-    const thresh  = isLast ? ARRIVE_THRESHOLD : WP_THRESHOLD;
+    const isLast = wpIndexRef.current >= WALK_WAYPOINTS.length - 1;
+    const wp =
+      WALK_WAYPOINTS[Math.min(wpIndexRef.current, WALK_WAYPOINTS.length - 1)];
+    const dist = group.position.distanceTo(wp.position);
+    const thresh = isLast ? ARRIVE_THRESHOLD : WP_THRESHOLD;
 
     if (dist < thresh) {
       if (isLast) {
         arrivedRef.current = true;
-        tmpDir.copy(CEO_POSITION).sub(group.position).setY(0).normalize();
+        tmpDir
+          .copy(CEO_MEETING_POSITION)
+          .sub(group.position)
+          .setY(0)
+          .normalize();
         group.rotation.y = Math.atan2(tmpDir.x, tmpDir.z);
         forwardRef.current.copy(tmpDir).negate();
         onArrived?.();

@@ -58,7 +58,6 @@ const NICHE_OPTIONS = [
   { id: "ai_crypto", label: "AI × Crypto" },
   { id: "depin", label: "DePIN + infrastructure" },
   { id: "defi", label: "DeFi + on-chain markets" },
-  { id: "memecoin", label: "Memecoin + attention" },
   { id: "custom", label: "Custom — let me describe" },
 ] as const;
 
@@ -99,7 +98,7 @@ export function KickoffDialog({
     enabled: step === "team",
   });
   const availableRoles: KickoffRoleEntry[] = rolesQuery.data?.roles ?? [];
-  const maxHires = rolesQuery.data?.maxHires ?? 5;
+  const maxHires = rolesQuery.data?.maxHires ?? 3;
   const rolesLoading = rolesQuery.isPending;
 
   // Surface fetch error onto the dialog's existing error state.
@@ -198,9 +197,7 @@ export function KickoffDialog({
     if (isTyping) return null;
     switch (step) {
       case "intro":
-        return (
-          <Continue label="Tell me more" onClick={advance} />
-        );
+        return <Continue label="Tell me more" onClick={advance} />;
       case "description":
         return (
           <>
@@ -228,11 +225,12 @@ export function KickoffDialog({
               onSelect={setNicheChoice}
             />
             {nicheChoice === "custom" && (
-              <input
+              <textarea
                 value={nicheCustom}
                 onChange={(e) => setNicheCustom(e.target.value)}
                 placeholder="Describe the niche…"
-                className={inputCls}
+                className={textareaCls}
+                rows={3}
               />
             )}
             <Continue
@@ -272,11 +270,12 @@ export function KickoffDialog({
               onSelect={setVoiceChoice}
             />
             {voiceChoice === "custom" && (
-              <input
+              <textarea
                 value={voiceCustom}
                 onChange={(e) => setVoiceCustom(e.target.value)}
                 placeholder="Describe the brand voice…"
-                className={inputCls}
+                className={textareaCls}
+                rows={3}
               />
             )}
             <Continue
@@ -390,7 +389,8 @@ const STEP_PROMPTS: Record<StepKey, (ceoName: string) => string> = {
   description: () => "What are we building? Just one or two sentences.",
   niche: () => "Got it. What space are we operating in?",
   audience: () => "Who are we serving?",
-  voice: () => "How should we sound? Editorial voice across everything we ship.",
+  voice: () =>
+    "How should we sound? Editorial voice across everything we ship.",
   team: () =>
     "Last thing — how aggressive should we hire? You can grow the team later.",
   confirm: () =>

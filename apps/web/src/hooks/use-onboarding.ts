@@ -18,6 +18,14 @@ export type SubmitStage =
   | "provisioning-agent"
   | "gateway-restarting";
 
+// Sub-stage of the on-chain anchoring phase. Drives the cinematic copy in
+// the wizard's anchor-identity step.
+export type AnchorStage =
+  | "registering-company"
+  | "awaiting-signature"
+  | "deriving-keypair"
+  | "registering-agent";
+
 // Where the setup-error UI should send the user when they click "Back to
 // edit". Lets us return to the right step instead of always the top.
 export type ResumeTarget = "review" | "gateway-credentials";
@@ -37,6 +45,15 @@ export type OnboardingStatus =
       resume?: ResumeTarget;
     }
   | { kind: "submitting"; stage: SubmitStage }
+  // After a successful Phase A (company + agent in DB + adapter
+  // provisioned), the wizard transitions to `anchoring` to register the
+  // pair on Solana. Only after Phase B succeeds do we reach `complete`.
+  | {
+      kind: "anchoring";
+      stage: AnchorStage;
+      company: CompanyDTO;
+      agentId: string;
+    }
   | { kind: "complete"; company: CompanyDTO }
   | {
       kind: "error";
@@ -48,6 +65,17 @@ export type OnboardingStatus =
       // "gateway-credentials"; everything else lands on the review step so
       // they can inspect all inputs.
       resume: ResumeTarget;
+    }
+  // Phase B (on-chain anchor) failed. Distinct from the generic `error`
+  // state because retry semantics differ — the user must run the anchor
+  // again, not edit the form. `agentId` lets the retry button drive the
+  // hook with the right ids.
+  | {
+      kind: "anchor-error";
+      message: string;
+      stage: AnchorStage;
+      company: CompanyDTO;
+      agentId: string;
     };
 
 export interface OnboardingForm {
@@ -86,6 +114,15 @@ export interface UseOnboardingResult {
   launch: () => Promise<void>;
   /** Transition from error back into the form at the given step. */
   backToEdit: (target: ResumeTarget) => void;
+  /** Push a stage transition while in `anchoring`. Driven by the
+   *  `useAnchorIdentity` hook used in the wizard step. */
+  setAnchorStage: (stage: AnchorStage) => void;
+  /** Phase B succeeded — flip onboarding to `complete`. */
+  markAnchored: (company: CompanyDTO) => void;
+  /** Phase B failed — surface the retry UI. */
+  markAnchorError: (input: { stage: AnchorStage; message: string }) => void;
+  /** From `anchor-error` back to `anchoring` so the user can retry. */
+  retryAnchor: () => void;
   /** Enabled only when authenticated is true. Parent drives this. */
   refresh: () => Promise<void>;
 }
@@ -169,6 +206,25 @@ export function useOnboarding(authenticated: boolean): UseOnboardingResult {
       setPendingAgentId(null);
 
       if (res.company && res.agents.length > 0) {
+        // Phase A complete. Now check Phase B (on-chain anchor). The CEO
+        // agent is the onboarding agent; if it (or the company) is not
+        // anchored, surface the anchoring state so the wizard can resume
+        // there instead of dismissing onto the desktop. This handles
+        // browser refresh after Phase A but before Phase B confirmation.
+        const ceo = res.agents.find((a) => a.role === CEO_ROLE) ?? null;
+        const needsAnchor =
+          !res.company.companyPda || (ceo != null && !ceo.agentPda);
+        if (needsAnchor && ceo) {
+          setStatus({
+            kind: "anchoring",
+            stage: res.company.companyPda
+              ? "awaiting-signature"
+              : "registering-company",
+            company: res.company,
+            agentId: ceo.id,
+          });
+          return;
+        }
         setStatus({ kind: "not_needed", company: res.company });
         return;
       }
@@ -237,6 +293,44 @@ export function useOnboarding(authenticated: boolean): UseOnboardingResult {
       setProbing(false);
     }
   }, [form.adapterConfig]);
+
+  const setAnchorStage = useCallback((stage: AnchorStage) => {
+    setStatus((s) => (s.kind === "anchoring" ? { ...s, stage } : s));
+  }, []);
+
+  const markAnchored = useCallback((company: CompanyDTO) => {
+    setStatus({ kind: "complete", company });
+  }, []);
+
+  const markAnchorError = useCallback(
+    ({ stage, message }: { stage: AnchorStage; message: string }) => {
+      setStatus((s) =>
+        s.kind === "anchoring"
+          ? {
+              kind: "anchor-error",
+              stage,
+              message,
+              company: s.company,
+              agentId: s.agentId,
+            }
+          : s,
+      );
+    },
+    [],
+  );
+
+  const retryAnchor = useCallback(() => {
+    setStatus((s) =>
+      s.kind === "anchor-error"
+        ? {
+            kind: "anchoring",
+            stage: s.stage,
+            company: s.company,
+            agentId: s.agentId,
+          }
+        : s,
+    );
+  }, []);
 
   const backToEdit = useCallback((target: ResumeTarget) => {
     // Pull the user back into the form from an error state. We preserve the
@@ -338,7 +432,15 @@ export function useOnboarding(authenticated: boolean): UseOnboardingResult {
         company = me.company;
       }
       setPendingAgentId(null); // clear — the agent is fully provisioned now.
-      setStatus({ kind: "complete", company });
+      // Phase A done. Hand off to Phase B (on-chain anchor) — UI mounts
+      // the anchor-identity step which calls `useAnchorIdentity().run`
+      // and reports stage transitions back via `setAnchorStage`.
+      setStatus({
+        kind: "anchoring",
+        stage: "registering-company",
+        company,
+        agentId: res.agent.id,
+      });
     } catch (err) {
       let message = "launch_failed";
       let reason: string | undefined;
@@ -347,7 +449,12 @@ export function useOnboarding(authenticated: boolean): UseOnboardingResult {
       if (err instanceof ApiError) {
         httpStatus = err.status;
         const body = err.body as
-          | { error?: string; message?: string; reason?: string; agentId?: string }
+          | {
+              error?: string;
+              message?: string;
+              reason?: string;
+              agentId?: string;
+            }
           | undefined;
         // SSE stream rejects use the error frame's payload — the server
         // includes the agent row id whenever the failure happens after the
@@ -409,6 +516,10 @@ export function useOnboarding(authenticated: boolean): UseOnboardingResult {
     probeAdapter,
     launch,
     backToEdit,
+    setAnchorStage,
+    markAnchored,
+    markAnchorError,
+    retryAnchor,
     refresh,
   };
 }

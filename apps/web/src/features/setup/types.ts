@@ -7,6 +7,7 @@
 //   idle             — nothing (auth still hydrating or me still loading)
 //   onboarding-form  — <OnboardingFormDialog>
 //   provisioning-ceo — <SetupProgressDialog>
+//   anchoring-ceo    — <AnchorIdentityDialog>  (Phase B — on-chain anchor)
 //   ceo-ready        — <CeoReadyDialog>      (Jia at the door)
 //   walking          — nothing visible; OfficeScene runs the walk
 //   ceo-intro        — <CeoIntroDialog>      (Jia + CEO scripted intro)
@@ -18,6 +19,7 @@ export type SetupPhase =
   | "idle"
   | "onboarding-form"
   | "provisioning-ceo"
+  | "anchoring-ceo"
   | "ceo-ready"
   | "walking"
   | "ceo-intro"

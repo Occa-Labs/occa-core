@@ -23,6 +23,8 @@ export const ERROR_CODES = {
   INVALID_TOKEN: "invalid_token",
   MISSING_TOKEN: "missing_token",
   INVALID_AGENT_TOKEN: "invalid_agent_token",
+  FORBIDDEN: "forbidden",
+  DEV_WALLET_NOT_CONFIGURED: "dev_wallet_not_configured",
   PRIVY_TOKEN_INVALID: "privy_token_invalid",
   PRIVY_NO_SOLANA_WALLET: "privy_no_solana_wallet",
   PRIVY_NOT_CONFIGURED: "privy_not_configured",

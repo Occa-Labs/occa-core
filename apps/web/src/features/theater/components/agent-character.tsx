@@ -106,11 +106,23 @@ export function AgentCharacter({
   //   chair anchor, stand at a stand anchor).
   type AnimState = "idle" | "working" | "talking" | "meeting";
   const animStateRef = useRef<AnimState | null>(null);
+  // Track the actual clip we're driving — AnimState name alone can't
+  // detect a posture flip (both "sit-idle" and "stand-idle" share the
+  // "idle" name but use different clips). Without this, a freshly-
+  // spawned agent who first renders at the seated baseLayout during
+  // provisioning and then re-routes to a standing idle anchor stays
+  // stuck on the seated clip.
+  const currentClipRef = useRef<THREE.AnimationClip | null>(null);
   useEffect(() => {
     if (!idleClip && !actionClip && !talkClip) return;
 
-    const target: AnimState =
-      status === "working" && actionClip
+    const target: AnimState = isStanding
+      ? "idle" // standing anchors only have a standing-idle clip; the
+      : // working/talking clips are seated (Typing /
+        // SittingTalking) and would look broken if played on a
+        // standing character (e.g. CEO at the onboarding meeting
+        // spot).
+        status === "working" && actionClip
         ? "working"
         : status === "talking" && talkClip
           ? "talking"
@@ -124,29 +136,39 @@ export function AgentCharacter({
       return idleClip;
     };
 
+    const toClip = clipFor(target);
+
     if (animStateRef.current === null) {
-      const clip = clipFor(target);
-      if (clip) mixer.clipAction(clip).reset().fadeIn(0.3).play();
+      if (toClip) mixer.clipAction(toClip).reset().fadeIn(0.3).play();
       animStateRef.current = target;
+      currentClipRef.current = toClip;
       return;
     }
 
-    if (animStateRef.current === target) return;
+    // Skip only when BOTH the AnimState and the underlying clip identity
+    // are unchanged. Posture flips (sit ↔ stand) keep AnimState="idle"
+    // but swap the clip — without the second check we'd never crossfade
+    // and the agent would stay seated at a standing anchor.
+    if (animStateRef.current === target && currentClipRef.current === toClip) {
+      return;
+    }
 
     const FADE = 0.25;
-    const fromClip = clipFor(animStateRef.current);
-    const toClip = clipFor(target);
+    const fromClip = currentClipRef.current;
     if (toClip) {
       const to = mixer.clipAction(toClip).reset();
       to.play();
-      if (fromClip) mixer.clipAction(fromClip).crossFadeTo(to, FADE, true);
+      if (fromClip && fromClip !== toClip) {
+        mixer.clipAction(fromClip).crossFadeTo(to, FADE, true);
+      }
     }
     animStateRef.current = target;
+    currentClipRef.current = toClip;
 
     return () => {
       mixer.stopAllAction();
     };
-  }, [status, mixer, idleClip, actionClip, talkClip]);
+  }, [status, mixer, idleClip, actionClip, talkClip, isStanding]);
 
   // Re-calibrate whenever model or target changes
   useEffect(() => {

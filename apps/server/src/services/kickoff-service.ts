@@ -88,10 +88,9 @@ export const KICKOFF_ROLE_CATALOG: Record<AgentRole, RoleTemplate> =
     ]),
   );
 
-
 /** Cap on how many hires the kickoff dialog can pick at once. The user can
  *  always grow the team afterwards via the Agents window. */
-export const KICKOFF_MAX_HIRES = 5;
+export const KICKOFF_MAX_HIRES = 3;
 
 // Legacy presets kept as a fallback — the new tag picker UI sends `roles[]`
 // directly. If a caller passes `preset` instead, it resolves to one of these.
@@ -164,7 +163,10 @@ export async function startKickoff(
   // but we don't want to double-hire if a previous run already created
   // the agents.
   if (company.kickoffState === "provisioning") {
-    log.warn({ kickoffState: company.kickoffState }, "kickoff already in flight");
+    log.warn(
+      { kickoffState: company.kickoffState },
+      "kickoff already in flight",
+    );
     throw new Error(`kickoff_already_${company.kickoffState}`);
   }
 

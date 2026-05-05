@@ -20,6 +20,7 @@ import { Card, CardDivider } from "@/components/ui/card";
 import { SectionLabel } from "@/components/ui/section-label";
 import { useAuth } from "@/features/auth/hooks/use-auth";
 import { ApiError, devApi } from "@/lib/api";
+import { IS_DEV_MODE } from "@/lib/env-flags";
 
 interface SettingsWindowProps {
   onClose?: () => void;
@@ -36,7 +37,10 @@ type ResetState =
   | { kind: "idle" }
   | { kind: "confirming" }
   | { kind: "running" }
-  | { kind: "done"; deleted: { companies: number; otherUsers: number; nonces: number } }
+  | {
+      kind: "done";
+      deleted: { companies: number; otherUsers: number; nonces: number };
+    }
   | { kind: "error"; message: string };
 
 type GatewayResetState =
@@ -74,7 +78,7 @@ export function SettingsWindow({
   });
 
   const walletAddress = user?.walletAddress ?? "—";
-  const isDev = process.env.NODE_ENV === "development";
+  const isDev = IS_DEV_MODE;
 
   const onCopy = async () => {
     if (walletAddress === "—") return;
@@ -82,7 +86,9 @@ export function SettingsWindow({
       await navigator.clipboard.writeText(walletAddress);
       setCopied(true);
       setTimeout(() => setCopied(false), 1200);
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   };
 
   const runReset = async () => {
@@ -94,9 +100,11 @@ export function SettingsWindow({
       setTimeout(() => window.location.reload(), 1500);
     } catch (err) {
       const message =
-        err instanceof ApiError ? `api_${err.status}`
-        : err instanceof Error  ? err.message
-        : "reset_failed";
+        err instanceof ApiError
+          ? `api_${err.status}`
+          : err instanceof Error
+            ? err.message
+            : "reset_failed";
       setReset({ kind: "error", message });
     }
   };
@@ -152,14 +160,13 @@ export function SettingsWindow({
       subtitle={user ? "Account & developer tools" : "Not signed in"}
       onClose={onClose}
       defaultSize={{
-        w: Math.min(560, Math.round(window.innerWidth * 0.50)),
+        w: Math.min(560, Math.round(window.innerWidth * 0.5)),
         h: Math.min(580, Math.round(window.innerHeight * 0.75)),
       }}
       minWidth={400}
       minHeight={320}
     >
       <div className="flex flex-col gap-7 px-5 py-5">
-
         {/* ── Account ───────────────────────────────────────────────────────── */}
         <section>
           <div className="flex items-center gap-1.5 mb-3">
@@ -179,10 +186,11 @@ export function SettingsWindow({
                   className="shrink-0 p-1 rounded-md text-white/40 hover:text-white/80 hover:bg-white/6 transition disabled:opacity-30"
                   title="Copy wallet address"
                 >
-                  {copied
-                    ? <Check className="size-3.5 text-emerald-400" />
-                    : <Copy className="size-3.5" />
-                  }
+                  {copied ? (
+                    <Check className="size-3.5 text-emerald-400" />
+                  ) : (
+                    <Copy className="size-3.5" />
+                  )}
                 </button>
               </div>
             </Row>
@@ -198,11 +206,7 @@ export function SettingsWindow({
             <CardDivider />
 
             <Row label="Session">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => signOut()}
-              >
+              <Button variant="ghost" size="sm" onClick={() => signOut()}>
                 <LogOut className="size-3" />
                 Sign out
               </Button>
@@ -210,55 +214,59 @@ export function SettingsWindow({
           </Card>
 
           <p className="mt-2.5 text-[11px] text-white/35 leading-relaxed px-1">
-            Signing out clears your local session token. The wallet stays connected —
-            sign in again to continue.
+            Signing out clears your local session token. The wallet stays
+            connected — sign in again to continue.
           </p>
         </section>
 
-        {/* ── Office cinematics ─────────────────────────────────────────────── */}
-        <section>
-          <div className="flex items-center gap-1.5 mb-3">
-            <PlayCircle className="size-3 text-white/35" />
-            <SectionLabel>Office</SectionLabel>
-          </div>
+        {/* ── Office cinematics (dev only) ──────────────────────────────────── */}
+        {isDev && (
+          <section>
+            <div className="flex items-center gap-1.5 mb-3">
+              <PlayCircle className="size-3 text-white/35" />
+              <SectionLabel>Office</SectionLabel>
+            </div>
 
-          <Card variant="recessed" padding="none">
-            <Row label="Room tour">
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={
-                  !onStartTour ||
-                  tourActive ||
-                  ROOM_TOUR_WAYPOINTS.length === 0
-                }
-                onClick={() => onStartTour?.()}
-                title={
-                  ROOM_TOUR_WAYPOINTS.length === 0
-                    ? "No tour path recorded yet"
-                    : tourActive
-                      ? "Tour already running"
-                      : "Jia will walk you around the office"
-                }
-              >
-                <PlayCircle className="size-3" />
-                {tourActive ? "Touring…" : "Start tour"}
-              </Button>
-            </Row>
-          </Card>
+            <Card variant="recessed" padding="none">
+              <Row label="Room tour">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={
+                    !onStartTour ||
+                    tourActive ||
+                    ROOM_TOUR_WAYPOINTS.length === 0
+                  }
+                  onClick={() => onStartTour?.()}
+                  title={
+                    ROOM_TOUR_WAYPOINTS.length === 0
+                      ? "No tour path recorded yet"
+                      : tourActive
+                        ? "Tour already running"
+                        : "Jia will walk you around the office"
+                  }
+                >
+                  <PlayCircle className="size-3" />
+                  {tourActive ? "Touring…" : "Start tour"}
+                </Button>
+              </Row>
+            </Card>
 
-          <p className="mt-2.5 text-[11px] text-white/35 leading-relaxed px-1">
-            Jia walks a guided path through the office, then returns to her
-            spawn and disappears.
-          </p>
-        </section>
+            <p className="mt-2.5 text-[11px] text-white/35 leading-relaxed px-1">
+              Jia walks a guided path through the office, then returns to her
+              spawn and disappears.
+            </p>
+          </section>
+        )}
 
         {/* ── Dev tools (dev only) ──────────────────────────────────────────── */}
         {isDev && (
           <section>
             <div className="flex items-center gap-1.5 mb-3">
               <AlertTriangle className="size-3 text-amber-400/70" />
-              <SectionLabel className="text-amber-400/60">Dev tools</SectionLabel>
+              <SectionLabel className="text-amber-400/60">
+                Dev tools
+              </SectionLabel>
             </div>
 
             <Card variant="recessed" padding="none">
@@ -266,12 +274,14 @@ export function SettingsWindow({
                 <RotateCcw className="size-4 text-amber-300/60 shrink-0 mt-0.5" />
                 <div className="flex-1 min-w-0 space-y-3">
                   <div>
-                    <p className="text-[13px] font-medium text-white/80">Reset database</p>
+                    <p className="text-[13px] font-medium text-white/80">
+                      Reset database
+                    </p>
                     <p className="mt-1 text-[11px] text-white/45 leading-relaxed">
-                      Wipes companies, agents, tasks, traces, routines, and other
-                      users (cascade-deletes their downstream rows). Your wallet,
-                      user account, and the built-in skill catalog are preserved
-                      so you can re-onboard.
+                      Wipes companies, agents, tasks, traces, routines, and
+                      other users (cascade-deletes their downstream rows). Your
+                      wallet, user account, and the built-in skill catalog are
+                      preserved so you can re-onboard.
                     </p>
                   </div>
 
@@ -307,13 +317,15 @@ export function SettingsWindow({
                   )}
 
                   {reset.kind === "running" && (
-                    <p className="text-[11px] text-white/45">Wiping database…</p>
+                    <p className="text-[11px] text-white/45">
+                      Wiping database…
+                    </p>
                   )}
 
                   {reset.kind === "done" && (
                     <Alert variant="success">
-                      Done. Removed {reset.deleted.companies}{" "}
-                      compan{reset.deleted.companies === 1 ? "y" : "ies"},{" "}
+                      Done. Removed {reset.deleted.companies} compan
+                      {reset.deleted.companies === 1 ? "y" : "ies"},{" "}
                       {reset.deleted.otherUsers} other user
                       {reset.deleted.otherUsers === 1 ? "" : "s"}, and{" "}
                       {reset.deleted.nonces} auth nonce
@@ -341,13 +353,16 @@ export function SettingsWindow({
                 <Server className="size-4 text-amber-300/60 shrink-0 mt-0.5" />
                 <div className="flex-1 min-w-0 space-y-3">
                   <div>
-                    <p className="text-[13px] font-medium text-white/80">Reset gateway</p>
+                    <p className="text-[13px] font-medium text-white/80">
+                      Reset gateway
+                    </p>
                     <p className="mt-1 text-[11px] text-white/45 leading-relaxed">
                       SSH into the OpenClaw gateway VPS and remove every agent
-                      whose id starts with <span className="font-mono">occa-</span>.
-                      The <span className="font-mono">main</span> agent is
-                      protected by OpenClaw and cannot be deleted. Removed agents
-                      go to the VPS Trash, not hard-deleted.
+                      whose id starts with{" "}
+                      <span className="font-mono">occa-</span>. The{" "}
+                      <span className="font-mono">main</span> agent is protected
+                      by OpenClaw and cannot be deleted. Removed agents go to
+                      the VPS Trash, not hard-deleted.
                     </p>
                   </div>
 
@@ -476,7 +491,6 @@ export function SettingsWindow({
             </Card>
           </section>
         )}
-
       </div>
     </AppWindow>
   );
@@ -484,10 +498,18 @@ export function SettingsWindow({
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function Row({ label, children }: { label: string; children: React.ReactNode }) {
+function Row({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
   return (
     <div className="flex items-center justify-between gap-3 px-4 py-3">
-      <span className="text-[11px] text-white/40 font-medium shrink-0">{label}</span>
+      <span className="text-[11px] text-white/40 font-medium shrink-0">
+        {label}
+      </span>
       <div className="flex items-center min-w-0 justify-end">{children}</div>
     </div>
   );

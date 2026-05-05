@@ -1,6 +1,8 @@
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { db, pool } from "./client";
 import path from "node:path";
+import crypto from "node:crypto";
+import fs from "node:fs";
 import { childLogger } from "../../lib/logger";
 import { PG_ERROR_CODES } from "../../lib/pg-errors";
 
@@ -17,6 +19,19 @@ export async function ensureSchema(): Promise<void> {
   // From apps/server/src/infra/database/ → apps/server/src/ (3 levels) →
   // apps/server/ (4) → apps/ (5) → occa/ (5) → occa/drizzle/.
   const migrationsFolder = path.resolve(__dirname, "../../../../../drizzle");
+
+  // Self-heal pass FIRST. If a previous run somehow left the journal table
+  // out of sync with the migrations folder (e.g. journal `when` timestamps
+  // backdated below already-recorded `created_at`, drizzle-kit silent
+  // no-op, partially-applied chain via psql), stamp the missing rows so
+  // drizzle's migrator sees an accurate picture before deciding what to
+  // re-run. Only stamps when the underlying schema actually has the
+  // expected tables — i.e. a sentinel-guarded heuristic identical to the
+  // post-DUPLICATE_TABLE catch path, but proactive.
+  if (await hasAppSentinel()) {
+    await syncMigrationJournal(migrationsFolder);
+  }
+
   try {
     await migrate(db, { migrationsFolder });
     log.info("Migrations applied");
@@ -58,36 +73,68 @@ async function hasAppSentinel(): Promise<boolean> {
   }
 }
 
+/**
+ * Idempotent stamp of `drizzle.__drizzle_migrations` against the SQL files
+ * on disk. Two correctness invariants:
+ *
+ *  1. **Schema** — drizzle-orm's node-postgres migrator stores its journal
+ *     in the `drizzle` schema, NOT `public`. Earlier versions of this
+ *     helper wrote to `public.__drizzle_migrations`, which the migrator
+ *     never reads, so subsequent boots kept silently re-attempting (or
+ *     worse, silently skipping) migrations.
+ *  2. **Hash format** — the migrator compares SHA256 of the SQL file
+ *     content. Storing `entry.tag` would never match.
+ *
+ * Why this exists at all: drizzle-kit's `migrate` command sometimes
+ * silently no-ops when journal `when` values are backdated below the
+ * latest `created_at` in the table (it interprets the entries as already
+ * applied). The recovery path applies the SQL via psql and stamps here.
+ */
 async function syncMigrationJournal(migrationsFolder: string): Promise<void> {
+  const journalPath = path.resolve(migrationsFolder, "meta/_journal.json");
+  if (!fs.existsSync(journalPath)) {
+    log.info("No migration journal found, skipping sync.");
+    return;
+  }
+  const journal = JSON.parse(fs.readFileSync(journalPath, "utf-8")) as {
+    entries: Array<{ idx: number; tag: string; when: number }>;
+  };
+
   const client = await pool.connect();
   try {
+    await client.query(`CREATE SCHEMA IF NOT EXISTS "drizzle"`);
     await client.query(`
-      CREATE TABLE IF NOT EXISTS "__drizzle_migrations" (
+      CREATE TABLE IF NOT EXISTS "drizzle"."__drizzle_migrations" (
         id serial PRIMARY KEY,
         hash text NOT NULL,
         created_at bigint
       )
     `);
-    const fs = await import("fs");
-    const journalPath = path.resolve(migrationsFolder, "meta/_journal.json");
-    if (!fs.existsSync(journalPath)) {
-      log.info("No migration journal found, skipping sync.");
-      return;
-    }
-    const journal = JSON.parse(fs.readFileSync(journalPath, "utf-8"));
+
+    let stamped = 0;
     for (const entry of journal.entries) {
+      const sqlPath = path.resolve(migrationsFolder, `${entry.tag}.sql`);
+      if (!fs.existsSync(sqlPath)) {
+        log.warn({ tag: entry.tag }, "journal entry has no SQL file, skipping");
+        continue;
+      }
+      const sql = fs.readFileSync(sqlPath, "utf-8");
+      const hash = crypto.createHash("sha256").update(sql).digest("hex");
       const exists = await client.query(
-        `SELECT 1 FROM "__drizzle_migrations" WHERE hash = $1`,
-        [entry.tag],
+        `SELECT 1 FROM "drizzle"."__drizzle_migrations" WHERE hash = $1`,
+        [hash],
       );
       if (exists.rows.length === 0) {
         await client.query(
-          `INSERT INTO "__drizzle_migrations" (hash, created_at) VALUES ($1, $2)`,
-          [entry.tag, entry.when ?? Date.now()],
+          `INSERT INTO "drizzle"."__drizzle_migrations" (hash, created_at) VALUES ($1, $2)`,
+          [hash, entry.when ?? Date.now()],
         );
+        stamped++;
       }
     }
-    log.info("Migration journal synced");
+    if (stamped > 0) {
+      log.info({ stamped }, "Migration journal stamped missing entries");
+    }
   } finally {
     client.release();
   }

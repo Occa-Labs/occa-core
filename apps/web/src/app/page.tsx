@@ -55,6 +55,24 @@ export default function HomePage() {
   const [cameraReady, setCameraReady] = useState(false);
   const handleCameraReady = useCallback(() => setCameraReady(true), []);
 
+  // CameraController only fires `onReady` while the camera lerps into the
+  // onboarding pose (`mode === "onboarding"`). On a browser reload,
+  // returning users with completed onboarding skip the cinematic and land
+  // directly on a post-onboarding SetupWorkflow phase
+  // (kickoff-form / hiring / kickoff-complete) where the camera goes into
+  // agent-focus — so `onReady` never fires and the dialog never shows.
+  // Unblock the gate as soon as we see one of those reload-only phases.
+  useEffect(() => {
+    if (cameraReady) return;
+    if (
+      phase === "kickoff-form" ||
+      phase === "hiring" ||
+      phase === "kickoff-complete"
+    ) {
+      setCameraReady(true);
+    }
+  }, [phase, cameraReady]);
+
   // 3D office vs flat background. Setup phases need the scene to fire
   // walk + camera-ready events. In `live` we honor the user's view-mode
   // toggle; everywhere else the scene stays mounted.
@@ -264,7 +282,7 @@ export default function HomePage() {
         <div
           className="absolute inset-0"
           style={{
-            backgroundImage: "url(/images/background.png)",
+            backgroundImage: "url(/images/background.jpg)",
             backgroundSize: "cover",
             backgroundPosition: "center",
             backgroundRepeat: "no-repeat",

@@ -90,10 +90,19 @@ export function startConnectionProbeLoop(): () => void {
     try {
       await tick();
     } catch (err) {
+      const cause =
+        err instanceof Error && "cause" in err
+          ? (err as { cause: unknown }).cause
+          : undefined;
       console.error(
         "[connection-probe] tick error:",
-        err instanceof Error ? err.stack ?? err.message : err,
+        err instanceof Error ? (err.stack ?? err.message) : err,
       );
+      if (cause) {
+        const causeMsg =
+          cause instanceof Error ? (cause.stack ?? cause.message) : cause;
+        console.error("[connection-probe] caused by:", causeMsg);
+      }
     } finally {
       running = false;
     }

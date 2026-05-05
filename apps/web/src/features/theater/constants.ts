@@ -262,6 +262,35 @@ export const WALK_SPEED = 1.8; // world units/s
 export const ARRIVE_THRESHOLD = 0.7; // final waypoint
 export const WP_THRESHOLD = 1.2; // intermediate waypoints
 
+// ── CEO meeting spot (onboarding "meeting" cinematic) ─────────────────
+// During the onboarding intro Jia walks WALK_WAYPOINTS and stops at the
+// last waypoint. The CEO must stand a short distance further along the
+// walk direction, facing back toward Jia, so the two characters end up
+// face-to-face regardless of where the CEO's actual desk sits in the
+// office layout (CEO desk position is server-driven via seating and can
+// drift; the meeting spot stays anchored to the recorded walk path).
+//
+// Derived from the last two waypoints:
+//   - dir       = normalize(last - prev) — Jia's incoming forward
+//   - position  = last + dir * GAP — CEO stands GAP units past Jia
+//   - rotationY = atan2(-dx, -dz) — CEO faces Jia (opposite of dir)
+const _CEO_MEETING_GAP = 1.4;
+const _wpLast = WALK_WAYPOINTS[WALK_WAYPOINTS.length - 1].position;
+const _wpPrev = WALK_WAYPOINTS[WALK_WAYPOINTS.length - 2].position;
+const _approachDir = new THREE.Vector3()
+  .subVectors(_wpLast, _wpPrev)
+  .setY(0)
+  .normalize();
+export const CEO_MEETING_POSITION = new THREE.Vector3(
+  _wpLast.x + _approachDir.x * _CEO_MEETING_GAP,
+  0,
+  _wpLast.z + _approachDir.z * _CEO_MEETING_GAP,
+);
+export const CEO_MEETING_ROTATION_Y = Math.atan2(
+  -_approachDir.x,
+  -_approachDir.z,
+);
+
 // Camera positions & lerp factors
 export const ONBOARDING_CAM_POS = new THREE.Vector3(-10, 2.5, 24);
 export const ONBOARDING_CAM_TARGET = new THREE.Vector3(

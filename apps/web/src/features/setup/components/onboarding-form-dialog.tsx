@@ -9,10 +9,7 @@ import { Card } from "@/components/ui/card";
 import { FloatingPanel } from "@/components/ui/floating-panel";
 import { SpeakerBadge } from "@/components/ui/speaker-badge";
 import { usePairingTimer } from "@/hooks/use-pairing-timer";
-import {
-  DevicePairingHelp,
-  deriveControlUiUrl,
-} from "./device-pairing-help";
+import { DevicePairingHelp } from "./device-pairing-help";
 
 interface OnboardingFormDialogProps {
   onboarding: UseOnboardingResult;
@@ -72,7 +69,11 @@ function buildSteps(): Step[] {
       text: "We'll start with the name. What is it?",
       stepType: "input",
       inputs: [
-        { key: "companyName", placeholder: "Enter company name…", maxLength: 64 },
+        {
+          key: "companyName",
+          placeholder: "Enter company name…",
+          maxLength: 64,
+        },
       ],
     },
     {
@@ -188,8 +189,7 @@ export function OnboardingFormDialog({
   }, [steps]);
 
   const status = onboarding.status;
-  const companyExists =
-    status.kind === "needed" ? status.companyExists : false;
+  const companyExists = status.kind === "needed" ? status.companyExists : false;
   const resumeTarget = status.kind === "needed" ? status.resume : undefined;
 
   // Compute the initial step index based on the current onboarding state:
@@ -237,8 +237,15 @@ export function OnboardingFormDialog({
     setPairingHelpRect(null);
   }, [stepIndex]);
 
-  const { form, probeResult, probing, probeAdapter, setCompanyName, setAgentName, setAdapterConfig } =
-    onboarding;
+  const {
+    form,
+    probeResult,
+    probing,
+    probeAdapter,
+    setCompanyName,
+    setAgentName,
+    setAdapterConfig,
+  } = onboarding;
 
   const snapshot: FormSnapshot = {
     companyName: form.companyName,
@@ -451,7 +458,14 @@ export function OnboardingFormDialog({
         confirmLaunch();
       }
     },
-    [advance, canLaunch, commitInput, confirmLaunch, currentStep?.stepType, isTyping],
+    [
+      advance,
+      canLaunch,
+      commitInput,
+      confirmLaunch,
+      currentStep?.stepType,
+      isTyping,
+    ],
   );
 
   if (!currentStep) return null;
@@ -480,144 +494,198 @@ export function OnboardingFormDialog({
         }}
       >
         {visible && (
-        <Card
-          spotlight
-          padding="lg"
-          className="relative animate-in fade-in duration-500"
-        >
-          <div className="absolute top-0 left-6 -translate-y-1/2 z-10">
-            <SpeakerBadge name="Jia" />
-          </div>
+          <Card
+            spotlight
+            padding="lg"
+            className="relative animate-in fade-in duration-500"
+          >
+            <div className="absolute top-0 left-6 -translate-y-1/2 z-10">
+              <SpeakerBadge name="Jia" />
+            </div>
 
-          <div className="mt-2 min-h-12 flex items-start">
-            <p className="text-sm text-white/90 leading-relaxed">
-              {displayedText}
-              {isTyping && (
-                <span className="inline-block w-0.5 h-4 bg-white/60 ml-0.5 animate-pulse align-middle" />
-              )}
-            </p>
-          </div>
+            <div className="mt-2 min-h-12 flex items-start">
+              <p className="text-sm text-white/90 leading-relaxed">
+                {displayedText}
+                {isTyping && (
+                  <span className="inline-block w-0.5 h-4 bg-white/60 ml-0.5 animate-pulse align-middle" />
+                )}
+              </p>
+            </div>
 
-          {currentStep.stepType === "input" && !isTyping && (
-            <div className="mt-4 flex flex-col gap-2">
-              {(currentStepKey === "gateway-input" ||
-                currentStepKey === "api-key-input") && (
+            {currentStep.stepType === "input" && !isTyping && (
+              <div className="mt-4 flex flex-col gap-2">
+                {(currentStepKey === "gateway-input" ||
+                  currentStepKey === "api-key-input") && (
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setHelpTriggerRect(
+                          e.currentTarget.getBoundingClientRect(),
+                        );
+                        setHelpPanelKey(currentStepKey);
+                      }}
+                      className="flex items-center gap-1.5 rounded-full bg-white/5 border border-white/10 px-2.5 py-1 text-[11px] text-white/65 hover:text-white hover:bg-white/15 hover:border-white/25 transition-all"
+                      aria-label={
+                        currentStepKey === "gateway-input"
+                          ? "Gateway URL setup help"
+                          : "API token help"
+                      }
+                    >
+                      <Info className="size-3" />
+                      {currentStepKey === "gateway-input"
+                        ? "Where to find URL?"
+                        : "Where to find token?"}
+                    </button>
+                  </div>
+                )}
+                {currentStep.inputs?.map((inp, i) => (
+                  <input
+                    key={inp.key}
+                    ref={i === 0 ? firstInputRef : undefined}
+                    value={inputValues[inp.key] ?? ""}
+                    onChange={(e) =>
+                      setInputValues((prev) => ({
+                        ...prev,
+                        [inp.key]: e.target.value,
+                      }))
+                    }
+                    onClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.stopPropagation();
+                        commitInput();
+                      }
+                    }}
+                    placeholder={inp.placeholder}
+                    type={inp.type ?? "text"}
+                    maxLength={inp.maxLength}
+                    className="w-full rounded-xl bg-white/5 border border-white/10 px-4 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/20 transition-colors"
+                  />
+                ))}
                 <div className="flex justify-end">
                   <button
-                    type="button"
                     onClick={(e) => {
                       e.stopPropagation();
-                      setHelpTriggerRect(
-                        e.currentTarget.getBoundingClientRect(),
-                      );
-                      setHelpPanelKey(currentStepKey);
+                      commitInput();
                     }}
-                    className="flex items-center gap-1.5 rounded-full bg-white/5 border border-white/10 px-2.5 py-1 text-[11px] text-white/65 hover:text-white hover:bg-white/15 hover:border-white/25 transition-all"
-                    aria-label={
-                      currentStepKey === "gateway-input"
-                        ? "Gateway URL setup help"
-                        : "API token help"
-                    }
+                    disabled={!allInputsFilled}
+                    className="rounded-xl bg-white text-black px-4 py-2 text-sm font-medium hover:bg-white/90 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
                   >
-                    <Info className="size-3" />
-                    {currentStepKey === "gateway-input"
-                      ? "Where to find URL?"
-                      : "Where to find token?"}
+                    {returnToKey ? "Save" : "Confirm"}
                   </button>
                 </div>
-              )}
-              {currentStep.inputs?.map((inp, i) => (
-                <input
-                  key={inp.key}
-                  ref={i === 0 ? firstInputRef : undefined}
-                  value={inputValues[inp.key] ?? ""}
-                  onChange={(e) =>
-                    setInputValues((prev) => ({
-                      ...prev,
-                      [inp.key]: e.target.value,
-                    }))
-                  }
-                  onClick={(e) => e.stopPropagation()}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.stopPropagation();
-                      commitInput();
-                    }
-                  }}
-                  placeholder={inp.placeholder}
-                  type={inp.type ?? "text"}
-                  maxLength={inp.maxLength}
-                  className="w-full rounded-xl bg-white/5 border border-white/10 px-4 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/20 transition-colors"
-                />
-              ))}
-              <div className="flex justify-end">
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    commitInput();
-                  }}
-                  disabled={!allInputsFilled}
-                  className="rounded-xl bg-white text-black px-4 py-2 text-sm font-medium hover:bg-white/90 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
-                >
-                  {returnToKey ? "Save" : "Confirm"}
-                </button>
               </div>
-            </div>
-          )}
+            )}
 
-          {currentStep.stepType === "probing" && !isTyping && (
-            <div className="mt-4">
-              {probeFailed ? (
-                probeResult?.error === "pairing_required" ? (
-                  <div className="flex flex-col gap-2">
-                    {pairingTimer.expired ? (
-                      <Alert variant="warning" icon={null}>
-                        <p className="text-xs font-semibold text-amber-300 leading-snug">
-                          Pair request expired
-                        </p>
-                        <p className="mt-1.5 text-[11px] leading-relaxed">
-                          OpenClaw cleared the pending request after 5 minutes.
-                          Click below to send a fresh one.
-                        </p>
-                      </Alert>
-                    ) : (
-                      <Alert variant="warning" icon={null}>
-                        <p className="text-xs font-semibold text-amber-300 leading-snug">
-                          Approve OCCA in OpenClaw
-                        </p>
-                        <p className="mt-1.5 text-[11px] leading-relaxed">
-                          First time only. Pick a method below, then click
-                          "I've approved" to continue.
-                        </p>
-                        <p
-                          className="mt-1.5 inline-flex items-center gap-1 text-[10.5px] font-mono"
-                          style={{
-                            color:
-                              pairingTimer.remaining < 60
-                                ? "rgba(248,113,113,0.85)"
-                                : "rgba(253,224,71,0.85)",
-                          }}
-                        >
-                          <Clock className="size-3" />
-                          Expires in {pairingTimer.formatted}
-                        </p>
-                      </Alert>
-                    )}
-                    <div className="flex items-center gap-2 flex-wrap">
+            {currentStep.stepType === "probing" && !isTyping && (
+              <div className="mt-4">
+                {probeFailed ? (
+                  probeResult?.error === "pairing_required" ? (
+                    <div className="flex flex-col gap-2">
                       {pairingTimer.expired ? (
-                        <Button
-                          variant="primary"
-                          size="sm"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setPairingRetryNonce((n) => n + 1);
-                            retryProbe();
-                          }}
-                          disabled={probing}
-                        >
-                          Send new request
-                        </Button>
+                        <Alert variant="warning" icon={null}>
+                          <p className="text-xs font-semibold text-amber-300 leading-snug">
+                            Pair request expired
+                          </p>
+                          <p className="mt-1.5 text-[11px] leading-relaxed">
+                            OpenClaw cleared the pending request after 5
+                            minutes. Click below to send a fresh one.
+                          </p>
+                        </Alert>
                       ) : (
+                        <Alert variant="warning" icon={null}>
+                          <p className="text-xs font-semibold text-amber-300 leading-snug">
+                            Approve OCCA in OpenClaw
+                          </p>
+                          <p className="mt-1.5 text-[11px] leading-relaxed">
+                            First time only. Pick a method below, then click
+                            "I've approved" to continue.
+                          </p>
+                          <p
+                            className="mt-1.5 inline-flex items-center gap-1 text-[10.5px] font-mono"
+                            style={{
+                              color:
+                                pairingTimer.remaining < 60
+                                  ? "rgba(248,113,113,0.85)"
+                                  : "rgba(253,224,71,0.85)",
+                            }}
+                          >
+                            <Clock className="size-3" />
+                            Expires in {pairingTimer.formatted}
+                          </p>
+                        </Alert>
+                      )}
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {pairingTimer.expired ? (
+                          <Button
+                            variant="primary"
+                            size="sm"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setPairingRetryNonce((n) => n + 1);
+                              retryProbe();
+                            }}
+                            disabled={probing}
+                          >
+                            Send new request
+                          </Button>
+                        ) : (
+                          <Button
+                            variant="primary"
+                            size="sm"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              retryProbe();
+                            }}
+                            disabled={probing}
+                          >
+                            I've approved
+                          </Button>
+                        )}
+                        <Button
+                          variant="warning"
+                          size="sm"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setPairingHelpRect(
+                              e.currentTarget.getBoundingClientRect(),
+                            );
+                            setPairingHelpOpen(true);
+                          }}
+                        >
+                          <Info className="size-3" />
+                          How?
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            backToGatewayInputs();
+                          }}
+                        >
+                          Edit gateway / key
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col gap-2">
+                      <Alert variant="error" icon={null}>
+                        <div className="flex items-start gap-2">
+                          <p className="text-xs font-semibold text-red-300 flex-1 min-w-0 leading-snug">
+                            {prettifyProbeError(probeResult?.error).headline}
+                          </p>
+                          <span className="font-mono text-[10px] text-red-400/70 bg-red-500/10 px-1.5 py-0.5 rounded shrink-0">
+                            {probeResult?.error ?? "unknown"}
+                          </span>
+                        </div>
+                        <p className="mt-1.5 text-[11px] leading-relaxed">
+                          {prettifyProbeError(probeResult?.error).hint}
+                        </p>
+                      </Alert>
+                      <div className="flex items-center gap-2 flex-wrap">
                         <Button
                           variant="primary"
                           size="sm"
@@ -627,204 +695,150 @@ export function OnboardingFormDialog({
                           }}
                           disabled={probing}
                         >
-                          I've approved
+                          Retry
                         </Button>
-                      )}
-                      <Button
-                        variant="warning"
-                        size="sm"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setPairingHelpRect(
-                            e.currentTarget.getBoundingClientRect(),
-                          );
-                          setPairingHelpOpen(true);
-                        }}
-                      >
-                        <Info className="size-3" />
-                        How?
-                      </Button>
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          backToGatewayInputs();
-                        }}
-                      >
-                        Edit gateway / key
-                      </Button>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            backToGatewayInputs();
+                          }}
+                        >
+                          Change URL / key
+                        </Button>
+                      </div>
                     </div>
+                  )
+                ) : probeResult?.ok ? (
+                  <div className="flex items-center gap-2">
+                    <div className="h-2 w-2 rounded-full bg-emerald-400" />
+                    <span className="text-xs text-emerald-300">
+                      Gateway online · {probeResult.latencyMs}ms
+                    </span>
                   </div>
                 ) : (
-                  <div className="flex flex-col gap-2">
-                    <Alert variant="error" icon={null}>
-                      <div className="flex items-start gap-2">
-                        <p className="text-xs font-semibold text-red-300 flex-1 min-w-0 leading-snug">
-                          {prettifyProbeError(probeResult?.error).headline}
-                        </p>
-                        <span className="font-mono text-[10px] text-red-400/70 bg-red-500/10 px-1.5 py-0.5 rounded shrink-0">
-                          {probeResult?.error ?? "unknown"}
-                        </span>
-                      </div>
-                      <p className="mt-1.5 text-[11px] leading-relaxed">
-                        {prettifyProbeError(probeResult?.error).hint}
-                      </p>
-                    </Alert>
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <Button
-                        variant="primary"
-                        size="sm"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          retryProbe();
-                        }}
-                        disabled={probing}
-                      >
-                        Retry
-                      </Button>
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          backToGatewayInputs();
-                        }}
-                      >
-                        Change URL / key
-                      </Button>
-                    </div>
+                  <div className="flex items-center gap-2">
+                    <div className="h-3 w-3 rounded-full border-2 border-white/30 border-t-white/80 animate-spin" />
+                    <span className="text-xs text-white/40">
+                      {probing ? "Connecting…" : "Waiting for connection…"}
+                    </span>
                   </div>
-                )
-              ) : probeResult?.ok ? (
-                <div className="flex items-center gap-2">
-                  <div className="h-2 w-2 rounded-full bg-emerald-400" />
-                  <span className="text-xs text-emerald-300">
-                    Gateway online · {probeResult.latencyMs}ms
-                  </span>
-                </div>
-              ) : (
-                <div className="flex items-center gap-2">
-                  <div className="h-3 w-3 rounded-full border-2 border-white/30 border-t-white/80 animate-spin" />
-                  <span className="text-xs text-white/40">
-                    {probing ? "Connecting…" : "Waiting for connection…"}
-                  </span>
-                </div>
-              )}
-            </div>
-          )}
-
-          {currentStep.stepType === "review" && !isTyping && (
-            <div
-              className="mt-4 flex flex-col gap-3"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="rounded-xl border border-white/10 bg-white/3 divide-y divide-white/5">
-                <ReviewRow
-                  label="Company"
-                  value={form.companyName || "—"}
-                  onEdit={
-                    companyExists
-                      ? undefined
-                      : () => jumpToEdit("company-input")
-                  }
-                  lockedHint={
-                    companyExists
-                      ? "Already created — rename later in settings."
-                      : undefined
-                  }
-                />
-                <ReviewRow
-                  label="Agent"
-                  value={`${form.agentName || "—"}${form.agentRole ? ` (${form.agentRole})` : ""}`}
-                  onEdit={() => jumpToEdit("agent-input")}
-                />
-                <ReviewRow
-                  label="Gateway URL"
-                  value={form.adapterConfig.gatewayUrl || "—"}
-                  mono
-                  onEdit={() => jumpToEdit("gateway-input")}
-                />
-                <ReviewRow
-                  label="API Key"
-                  value={maskApiKey(form.adapterConfig.apiKey)}
-                  mono
-                  onEdit={() => jumpToEdit("api-key-input")}
-                />
+                )}
               </div>
+            )}
 
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 min-w-0">
-                  {isResume && !probeResult?.ok ? (
-                    <>
-                      <div className="h-2 w-2 rounded-full bg-blue-400 shrink-0" />
-                      <span className="text-[11px] text-blue-300/90 truncate">
-                        Resuming previous setup — credentials stored
-                      </span>
-                    </>
-                  ) : canLaunch ? (
-                    <>
-                      <div className="h-2 w-2 rounded-full bg-emerald-400 shrink-0" />
-                      <span className="text-[11px] text-emerald-300/90 truncate">
-                        Gateway verified · {probeResult?.latencyMs}ms
-                      </span>
-                    </>
-                  ) : (
-                    <>
-                      <div className="h-2 w-2 rounded-full bg-amber-400 shrink-0" />
-                      <span className="text-[11px] text-amber-300/90 truncate">
-                        Re-verify gateway before launch
-                      </span>
-                    </>
-                  )}
-                </div>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    confirmLaunch();
-                  }}
-                  disabled={!canLaunch}
-                  className="rounded-xl bg-white text-black px-4 py-2 text-sm font-medium hover:bg-white/90 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
-                >
-                  Launch
-                </button>
-              </div>
-            </div>
-          )}
-
-          {!isTyping && currentStep.stepType === "dialog" && (
-            <div className="mt-3 flex justify-end">
-              <span className="rounded-full border border-white/20 bg-white/8 px-3 py-1 text-[11px] text-white/70 hover:bg-white/15 hover:text-white transition-colors cursor-pointer select-none">
-                Continue ›
-              </span>
-            </div>
-          )}
-
-          <div className="mt-4 flex items-center justify-center gap-1.5">
-            {steps.map((_, i) => (
+            {currentStep.stepType === "review" && !isTyping && (
               <div
-                key={i}
-                className="h-1 rounded-full transition-all duration-300"
-                style={{
-                  width: i === stepIndex ? 16 : 6,
-                  backgroundColor:
-                    i === stepIndex
-                      ? "rgba(255,255,255,0.6)"
-                      : i < stepIndex
-                        ? "rgba(255,255,255,0.3)"
-                        : "rgba(255,255,255,0.1)",
-                }}
-              />
-            ))}
-          </div>
+                className="mt-4 flex flex-col gap-3"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="rounded-xl border border-white/10 bg-white/3 divide-y divide-white/5">
+                  <ReviewRow
+                    label="Company"
+                    value={form.companyName || "—"}
+                    onEdit={
+                      companyExists
+                        ? undefined
+                        : () => jumpToEdit("company-input")
+                    }
+                    lockedHint={
+                      companyExists
+                        ? "Already created — rename later in settings."
+                        : undefined
+                    }
+                  />
+                  <ReviewRow
+                    label="Agent"
+                    value={`${form.agentName || "—"}${form.agentRole ? ` (${form.agentRole})` : ""}`}
+                    onEdit={() => jumpToEdit("agent-input")}
+                  />
+                  <ReviewRow
+                    label="Gateway URL"
+                    value={form.adapterConfig.gatewayUrl || "—"}
+                    mono
+                    onEdit={() => jumpToEdit("gateway-input")}
+                  />
+                  <ReviewRow
+                    label="API Key"
+                    value={maskApiKey(form.adapterConfig.apiKey)}
+                    mono
+                    onEdit={() => jumpToEdit("api-key-input")}
+                  />
+                </div>
 
-          {currentStepKey === "review" && (
-            <p className="mt-2 text-center text-[10px] text-white/35">
-              Double-check before launch — once Jia starts provisioning, the
-              gateway will restart to add the new agent.
-            </p>
-          )}
-        </Card>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    {isResume && !probeResult?.ok ? (
+                      <>
+                        <div className="h-2 w-2 rounded-full bg-blue-400 shrink-0" />
+                        <span className="text-[11px] text-blue-300/90 truncate">
+                          Resuming previous setup — credentials stored
+                        </span>
+                      </>
+                    ) : canLaunch ? (
+                      <>
+                        <div className="h-2 w-2 rounded-full bg-emerald-400 shrink-0" />
+                        <span className="text-[11px] text-emerald-300/90 truncate">
+                          Gateway verified · {probeResult?.latencyMs}ms
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <div className="h-2 w-2 rounded-full bg-amber-400 shrink-0" />
+                        <span className="text-[11px] text-amber-300/90 truncate">
+                          Re-verify gateway before launch
+                        </span>
+                      </>
+                    )}
+                  </div>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      confirmLaunch();
+                    }}
+                    disabled={!canLaunch}
+                    className="rounded-xl bg-white text-black px-4 py-2 text-sm font-medium hover:bg-white/90 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+                  >
+                    Launch
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {!isTyping && currentStep.stepType === "dialog" && (
+              <div className="mt-3 flex justify-end">
+                <span className="rounded-full border border-white/20 bg-white/8 px-3 py-1 text-[11px] text-white/70 hover:bg-white/15 hover:text-white transition-colors cursor-pointer select-none">
+                  Continue ›
+                </span>
+              </div>
+            )}
+
+            <div className="mt-4 flex items-center justify-center gap-1.5">
+              {steps.map((_, i) => (
+                <div
+                  key={i}
+                  className="h-1 rounded-full transition-all duration-300"
+                  style={{
+                    width: i === stepIndex ? 16 : 6,
+                    backgroundColor:
+                      i === stepIndex
+                        ? "rgba(255,255,255,0.6)"
+                        : i < stepIndex
+                          ? "rgba(255,255,255,0.3)"
+                          : "rgba(255,255,255,0.1)",
+                  }}
+                />
+              ))}
+            </div>
+
+            {currentStepKey === "review" && (
+              <p className="mt-2 text-center text-[10px] text-white/35">
+                Double-check before launch — once Jia starts provisioning, the
+                gateway will restart to add the new agent.
+              </p>
+            )}
+          </Card>
         )}
       </div>
 
@@ -854,9 +868,7 @@ export function OnboardingFormDialog({
           triggerRect={pairingHelpRect}
           onClose={() => setPairingHelpOpen(false)}
         >
-          <DevicePairingHelp
-            controlUiUrl={deriveControlUiUrl(form.adapterConfig.gatewayUrl)}
-          />
+          <DevicePairingHelp />
         </FloatingPanel>
       )}
     </div>

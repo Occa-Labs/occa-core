@@ -8,6 +8,11 @@ export interface DockItem {
   label: string;
   active?: boolean;
   badge?: number;
+  /** Greys out the button + blocks click. Tooltip still shows so users
+   *  can see what the disabled feature is (and an optional `disabledHint`
+   *  appended to the label, e.g. "Tasks — coming soon"). */
+  disabled?: boolean;
+  disabledHint?: string;
   onClick: () => void;
 }
 
@@ -33,18 +38,22 @@ function DockButton({ item }: { item: DockItem }) {
 
   return (
     <div className="relative" onMouseEnter={onEnter} onMouseLeave={onLeave}>
-      {item.active && (
+      {item.active && !item.disabled && (
         <span className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 rounded-full bg-white/80" />
       )}
 
       <button
-        onClick={item.onClick}
+        onClick={item.disabled ? undefined : item.onClick}
+        disabled={item.disabled}
+        aria-disabled={item.disabled || undefined}
         className={`relative size-11 flex items-center justify-center rounded-xl transition-all duration-150 ${
-          item.active
-            ? "bg-white/12 text-white"
-            : hovered
-              ? "bg-white/10 text-white scale-110"
-              : "text-white/50 hover:text-white"
+          item.disabled
+            ? "text-white/25 cursor-not-allowed"
+            : item.active
+              ? "bg-white/12 text-white"
+              : hovered
+                ? "bg-white/10 text-white scale-110"
+                : "text-white/50 hover:text-white"
         }`}
       >
         {item.icon}
@@ -60,9 +69,7 @@ function DockButton({ item }: { item: DockItem }) {
 
       <div
         className={`absolute left-full top-1/2 -translate-y-1/2 ml-2.5 pointer-events-none transition-all duration-150 ${
-          showTooltip
-            ? "opacity-100 translate-x-0"
-            : "opacity-0 -translate-x-1"
+          showTooltip ? "opacity-100 translate-x-0" : "opacity-0 -translate-x-1"
         }`}
       >
         <span
@@ -70,6 +77,9 @@ function DockButton({ item }: { item: DockItem }) {
           style={{ ...surface.elevated, border: border.subtle }}
         >
           {item.label}
+          {item.disabled && item.disabledHint ? (
+            <span className="text-white/50"> · {item.disabledHint}</span>
+          ) : null}
         </span>
       </div>
     </div>

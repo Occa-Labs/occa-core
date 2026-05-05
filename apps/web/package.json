@@ -12,6 +12,7 @@
     "@floating-ui/dom": "^1.7.6",
     "@occa/shared": "workspace:*",
     "@privy-io/react-auth": "^3.22.2",
+    "occa-sdk": "workspace:*",
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.5.0",
     "@solana-program/memo": "^0.11.0",

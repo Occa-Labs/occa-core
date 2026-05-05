@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
-import { LogOut, Wallet as WalletIcon } from "lucide-react";
+import { useCallback, useRef, useState } from "react";
+import { Check, Copy, LogOut, Wallet as WalletIcon } from "lucide-react";
 import { useAuth } from "@/features/auth/hooks/use-auth";
+import { FloatingPanel } from "@/components/ui/floating-panel";
 import { cn } from "@/lib/utils";
 
 function truncate(addr: string): string {
@@ -12,22 +13,49 @@ function truncate(addr: string): string {
 interface WalletConnectOverlayProps {
   /** When true, render the trigger button as an inline cell (no fixed
    *  positioning, no own glass surface) for embedding inside the
-   *  TopMenuBar. The dropdown still anchors to the trigger via
-   *  `position: relative`. */
+   *  TopMenuBar. The dropdown still anchors to the trigger via a
+   *  FloatingPanel portal. */
   embedded?: boolean;
 }
 
-export function WalletConnectOverlay({ embedded = false }: WalletConnectOverlayProps = {}) {
+export function WalletConnectOverlay({
+  embedded = false,
+}: WalletConnectOverlayProps = {}) {
   const { status, user, error, signIn, signOut } = useAuth();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [triggerRect, setTriggerRect] = useState<DOMRect | null>(null);
+  const [copied, setCopied] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+
+  const openMenu = useCallback(() => {
+    const rect = triggerRef.current?.getBoundingClientRect() ?? null;
+    setTriggerRect(rect);
+    setMenuOpen(true);
+  }, []);
+
+  const closeMenu = useCallback(() => {
+    setMenuOpen(false);
+    setTriggerRect(null);
+  }, []);
+
+  const onCopy = useCallback(async () => {
+    if (!user?.walletAddress) return;
+    try {
+      await navigator.clipboard.writeText(user.walletAddress);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    } catch {
+      /* noop */
+    }
+  }, [user?.walletAddress]);
 
   // Render nothing while auth is still hydrating — prevents a "Sign in"
   // flash on reload for users with a valid prior OCCA session.
   if (status === "hydrating") return null;
 
-  // Embedded mode: pill (rounded-full bg, no border) with green dot +
-  // truncated address inline — only this item in the top bar carries a
-  // bg, the rest sit plain on the page.
+  // Embedded mode: pill (rounded-full bg, no border) with truncated
+  // address inline — only this item in the top bar carries a bg, the
+  // rest sit plain on the page.
   // Standalone mode: own glass pill (legacy fallback when not in TopMenuBar).
   const triggerBase = embedded
     ? "flex items-center gap-2 rounded-full bg-white/10 px-3 h-8 text-sm font-medium transition hover:bg-white/15"
@@ -35,35 +63,71 @@ export function WalletConnectOverlay({ embedded = false }: WalletConnectOverlayP
 
   const trigger =
     status === "authenticated" && user ? (
-      <div className="relative">
+      <>
         <button
+          ref={triggerRef}
           type="button"
-          onClick={() => setMenuOpen((v) => !v)}
-          className={cn(triggerBase, "text-white/90")}
+          onClick={() => (menuOpen ? closeMenu() : openMenu())}
+          aria-expanded={menuOpen}
+          className={cn(
+            triggerBase,
+            "text-white/90",
+            menuOpen && "bg-white/15",
+          )}
         >
-          <span
-            aria-hidden
-            className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_6px_2px_rgba(52,211,153,0.5)]"
-          />
           {truncate(user.walletAddress)}
         </button>
 
         {menuOpen && (
-          <div className="glass-heavy absolute right-0 mt-2 w-48 overflow-hidden rounded-xl text-sm">
-            <button
-              type="button"
-              onClick={() => {
-                setMenuOpen(false);
-                signOut();
-              }}
-              className="flex w-full items-center gap-2 px-3 py-2 text-left text-white/80 transition hover:bg-white/8"
-            >
-              <LogOut className="h-4 w-4" />
-              Disconnect
-            </button>
-          </div>
+          <FloatingPanel
+            title="Wallet"
+            subtitle="Solana"
+            width={300}
+            triggerRect={triggerRect}
+            onClose={closeMenu}
+          >
+            <div className="p-3 space-y-3">
+              {/* Address row — full address, click to copy */}
+              <div className="rounded-xl bg-white/5 px-3 py-2.5">
+                <p className="text-[10px] uppercase tracking-wider text-white/35 font-medium">
+                  Address
+                </p>
+                <div className="mt-1 flex items-center gap-2">
+                  <code className="flex-1 min-w-0 text-[11px] font-mono text-white/85 break-all leading-relaxed">
+                    {user.walletAddress}
+                  </code>
+                  <button
+                    type="button"
+                    onClick={onCopy}
+                    className="size-7 shrink-0 rounded-md flex items-center justify-center text-white/50 hover:text-white hover:bg-white/10 transition-colors"
+                    aria-label="Copy address"
+                    title={copied ? "Copied" : "Copy address"}
+                  >
+                    {copied ? (
+                      <Check className="size-3.5 text-emerald-400" />
+                    ) : (
+                      <Copy className="size-3.5" />
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              {/* Actions */}
+              <button
+                type="button"
+                onClick={() => {
+                  closeMenu();
+                  signOut();
+                }}
+                className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-red-300/90 hover:bg-red-500/10 hover:text-red-300 transition-colors"
+              >
+                <LogOut className="size-4" />
+                Disconnect wallet
+              </button>
+            </div>
+          </FloatingPanel>
         )}
-      </div>
+      </>
     ) : status === "exchanging" ? (
       <button
         type="button"

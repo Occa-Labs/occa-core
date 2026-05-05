@@ -4,8 +4,14 @@ import { type ButtonHTMLAttributes, forwardRef } from "react";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-export type ButtonVariant = "primary" | "secondary" | "ghost" | "danger" | "warning" | "success";
-export type ButtonSize    = "sm" | "md" | "lg";
+export type ButtonVariant =
+  | "primary"
+  | "secondary"
+  | "ghost"
+  | "danger"
+  | "warning"
+  | "success";
+export type ButtonSize = "sm" | "md" | "lg";
 
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: ButtonVariant;
@@ -18,9 +24,9 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 
 const variantStyles: Record<ButtonVariant, React.CSSProperties> = {
   primary: {
-    background: "rgba(255,255,255,0.12)",
-    border: "1px solid rgba(255,255,255,0.14)",
-    color: "rgba(255,255,255,0.90)",
+    background: "#ffffff",
+    border: "1px solid transparent",
+    color: "#000000",
   },
   secondary: {
     background: "rgba(255,255,255,0.06)",
@@ -81,7 +87,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
           disabled:opacity-35 disabled:cursor-not-allowed
           ${sizeClasses[size]}
           ${block ? "w-full" : ""}
-          ${variant === "ghost" ? "hover:bg-white/8" : "hover:brightness-110 active:brightness-95"}
+          ${variant === "ghost" ? "hover:bg-white/8" : variant === "primary" ? "hover:brightness-90 active:brightness-80" : "hover:brightness-110 active:brightness-95"}
           ${className}
         `}
         style={{ ...variantStyles[variant], ...style }}

@@ -5,10 +5,7 @@
 // schema-default values in that case so the client contract stays stable.
 
 import type { CompanyDTO } from "@occa/shared/types";
-import type {
-  CompanyRow,
-  CompanyProfileRow,
-} from "../repositories/companies";
+import type { CompanyRow, CompanyProfileRow } from "../repositories/companies";
 
 export function toCompanyDTO(
   company: CompanyRow,
@@ -63,5 +60,10 @@ export function toCompanyDTO(
     kickoffCompletedAt: company.kickoffCompletedAt
       ? company.kickoffCompletedAt.toISOString()
       : null,
+
+    companyPda: company.companyPda ?? null,
+    controllingAuthority: company.controllingAuthority ?? null,
+    chainNonce: company.chainNonce ?? null,
+    chainTxSignature: company.chainTxSignature ?? null,
   };
 }

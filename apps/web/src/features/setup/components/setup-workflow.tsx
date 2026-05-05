@@ -2,6 +2,7 @@
 
 import { OnboardingFormDialog } from "./onboarding-form-dialog";
 import { SetupProgressDialog } from "./setup-progress-dialog";
+import { AnchorIdentityDialog } from "./anchor-identity-dialog";
 import { CeoReadyDialog } from "./ceo-ready-dialog";
 import { CeoIntroDialog } from "./ceo-intro-dialog";
 import { KickoffDialog } from "./kickoff-dialog";
@@ -45,17 +46,21 @@ export function SetupWorkflow({ setup }: SetupWorkflowProps) {
 
   if (phase === "onboarding-form") {
     return (
-      <OnboardingFormDialog
-        onboarding={onboarding}
-        onReady={handleFormReady}
-      />
+      <OnboardingFormDialog onboarding={onboarding} onReady={handleFormReady} />
     );
   }
 
   if (phase === "provisioning-ceo") {
     return (
-      <SetupProgressDialog onboarding={onboarding} onRetry={handleRetryLaunch} />
+      <SetupProgressDialog
+        onboarding={onboarding}
+        onRetry={handleRetryLaunch}
+      />
     );
+  }
+
+  if (phase === "anchoring-ceo") {
+    return <AnchorIdentityDialog onboarding={onboarding} />;
   }
 
   // Cinematic dialogs need the CEO name; pull from the form during

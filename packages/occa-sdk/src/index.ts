@@ -1,4 +1,4 @@
-// @occa/protocol — OCCA on-chain protocol SDK.
+// occa-sdk — OCCA on-chain protocol SDK.
 //
 // MVP scope: Registry program (`create_company`, `register_agent`).
 // Future: Treasury, Trace Anchor, Marketplace, Reputation programs.

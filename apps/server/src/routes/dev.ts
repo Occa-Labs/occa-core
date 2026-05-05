@@ -21,7 +21,7 @@ import {
   companySkills,
   users,
 } from "@occa/shared/schema";
-import { requireAuth } from "../middleware/auth";
+import { requireAuth, requireDevWallet } from "../middleware/auth";
 
 const router: Router = Router();
 const execFileAsync = promisify(execFile);
@@ -45,32 +45,52 @@ const OCCA_AGENT_PREFIX = "occa-";
 // would skip the GitHub fetch (rows still cached) and reuse pre-reset
 // commit SHAs, which is exactly the inconsistency dev reset is meant to
 // flush.
-router.post("/reset", requireAuth, async (req: Request, res: Response) => {
-  const userId = req.user!.userId;
-  const counts = await db.transaction(async (tx) => {
-    const companiesDeleted = await tx
-      .delete(companies)
-      .returning({ id: companies.id });
-    const skillsDeleted = await tx
-      .delete(companySkills)
-      .returning({ id: companySkills.id });
-    const usersDeleted = await tx
-      .delete(users)
-      .where(ne(users.id, userId))
-      .returning({ id: users.id });
-    const noncesDeleted = await tx
-      .delete(authNonces)
-      .returning({ id: authNonces.id });
-    await tx.execute(sql`SELECT 1`);
-    return {
-      companies: companiesDeleted.length,
-      platformSkills: skillsDeleted.length,
-      otherUsers: usersDeleted.length,
-      nonces: noncesDeleted.length,
-    };
-  });
-  res.json({ ok: true, deleted: counts });
-});
+router.post(
+  "/reset",
+  requireAuth,
+  requireDevWallet,
+  async (req: Request, res: Response) => {
+    const userId = req.user!.userId;
+    const counts = await db.transaction(async (tx) => {
+      const companiesDeleted = await tx
+        .delete(companies)
+        .returning({ id: companies.id });
+      const skillsDeleted = await tx
+        .delete(companySkills)
+        .returning({ id: companySkills.id });
+      const usersDeleted = await tx
+        .delete(users)
+        .where(ne(users.id, userId))
+        .returning({ id: users.id });
+      const noncesDeleted = await tx
+        .delete(authNonces)
+        .returning({ id: authNonces.id });
+      // Clear the persisted OpenClaw device keypair from the surviving user.
+      // After reset the gateway no longer has the previously-paired agent,
+      // so reusing this keypair on next onboarding would fail probe. Force
+      // a fresh pairing flow on next provision.
+      const pendingCleared = await tx
+        .update(users)
+        .set({ pendingDeviceKeypair: null })
+        .where(
+          and(
+            eq(users.id, userId),
+            sql`${users.pendingDeviceKeypair} IS NOT NULL`,
+          ),
+        )
+        .returning({ id: users.id });
+      await tx.execute(sql`SELECT 1`);
+      return {
+        companies: companiesDeleted.length,
+        platformSkills: skillsDeleted.length,
+        otherUsers: usersDeleted.length,
+        nonces: noncesDeleted.length,
+        pendingDeviceKeypairCleared: pendingCleared.length,
+      };
+    });
+    res.json({ ok: true, deleted: counts });
+  },
+);
 
 // POST /api/dev/gc-orphan-openclaw-agents
 // Dev-only: delete OpenClaw agents prefixed `occa-` that no longer have a
@@ -85,6 +105,7 @@ router.post("/reset", requireAuth, async (req: Request, res: Response) => {
 router.post(
   "/gc-orphan-openclaw-agents",
   requireAuth,
+  requireDevWallet,
   async (req: Request, res: Response) => {
     const userId = req.user!.userId;
     const dryRun = req.query.dryRun === "true" || req.query.dryRun === "1";
@@ -103,7 +124,9 @@ router.post(
       )
       .limit(1);
     if (!company) {
-      res.status(StatusCodes.BAD_REQUEST).json({ error: ERROR_CODES.NO_COMPANY });
+      res
+        .status(StatusCodes.BAD_REQUEST)
+        .json({ error: ERROR_CODES.NO_COMPANY });
       return;
     }
 
@@ -112,7 +135,9 @@ router.post(
       .from(agents)
       .where(eq(agents.companyId, company.id));
     if (allAgents.length === 0) {
-      res.status(StatusCodes.BAD_REQUEST).json({ error: ERROR_CODES.NO_AGENT_CREDS_AVAILABLE });
+      res
+        .status(StatusCodes.BAD_REQUEST)
+        .json({ error: ERROR_CODES.NO_AGENT_CREDS_AVAILABLE });
       return;
     }
 
@@ -128,7 +153,9 @@ router.post(
       );
     });
     if (!credSource) {
-      res.status(StatusCodes.BAD_REQUEST).json({ error: ERROR_CODES.NO_AGENT_CREDS_AVAILABLE });
+      res
+        .status(StatusCodes.BAD_REQUEST)
+        .json({ error: ERROR_CODES.NO_AGENT_CREDS_AVAILABLE });
       return;
     }
     const cfg = credSource.adapterConfig as Record<string, unknown>;
@@ -223,8 +250,7 @@ function expandHome(p: string): string {
 // Defensive jq path covers both possible CLI JSON shapes (`[{id}]` vs
 // `{agents:[{id}]}`); first run on a real gateway will tell us which one
 // `openclaw agents list --json` actually emits.
-const REMOTE_JQ_IDS =
-  `jq -r '(if type==\"array\" then . else .agents // [] end) | .[].id // empty'`;
+const REMOTE_JQ_IDS = `jq -r '(if type==\"array\" then . else .agents // [] end) | .[].id // empty'`;
 
 // `openclaw` is installed under root's nvm (the gateway runs `openclaw
 // gateway` as root). The SSH user is non-root (`ubuntu`) by default and
@@ -306,6 +332,7 @@ const RESET_REMOTE_CMD = buildRemoteCmd(RESET_INNER);
 router.post(
   "/reset-gateway",
   requireAuth,
+  requireDevWallet,
   async (req: Request, res: Response) => {
     const dryRun = req.query.dryRun === "true" || req.query.dryRun === "1";
 
@@ -495,7 +522,9 @@ router.post(
       )
       .limit(1);
     if (!company) {
-      res.status(StatusCodes.BAD_REQUEST).json({ error: ERROR_CODES.NO_COMPANY });
+      res
+        .status(StatusCodes.BAD_REQUEST)
+        .json({ error: ERROR_CODES.NO_COMPANY });
       return;
     }
 

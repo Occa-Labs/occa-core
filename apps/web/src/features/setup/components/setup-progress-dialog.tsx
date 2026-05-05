@@ -9,10 +9,7 @@ import { Card } from "@/components/ui/card";
 import { FloatingPanel } from "@/components/ui/floating-panel";
 import { SpeakerBadge } from "@/components/ui/speaker-badge";
 import { usePairingTimer } from "@/hooks/use-pairing-timer";
-import {
-  DevicePairingHelp,
-  deriveControlUiUrl,
-} from "./device-pairing-help";
+import { DevicePairingHelp } from "./device-pairing-help";
 
 interface SetupProgressDialogProps {
   onboarding: UseOnboardingResult;
@@ -151,8 +148,7 @@ export function SetupProgressDialog({
   }, [narrationText]);
   const errorHttpStatus =
     status.kind === "error" ? status.httpStatus : undefined;
-  const errorResume =
-    status.kind === "error" ? status.resume : undefined;
+  const errorResume = status.kind === "error" ? status.resume : undefined;
   const isError = !!errorMessage;
 
   const ceoName = onboarding.form.agentName || "Your CEO";
@@ -188,222 +184,228 @@ export function SetupProgressDialog({
       />
       <div className="relative w-full max-w-2xl mx-4 mb-8 pointer-events-auto">
         {visible && (
-        <Card
-          spotlight
-          padding="lg"
-          className="relative animate-in fade-in duration-500"
-        >
-          <div className="absolute top-0 left-6 -translate-y-1/2 z-10">
-            <SpeakerBadge name="Jia" />
-          </div>
-
-          <div className="mt-2 min-h-12 flex items-start">
-            <p className="text-sm text-white/90 leading-relaxed">
-              {displayedText}
-              {isTyping && (
-                <span className="inline-block w-0.5 h-4 bg-white/60 ml-0.5 animate-pulse align-middle" />
-              )}
-            </p>
-          </div>
-
-          <div className="mt-4 space-y-1.5">
-            <div className="flex items-center gap-2">
-              {isComplete ? (
-                <CheckIcon />
-              ) : isPairingStep ? (
-                <span className="w-3.5 h-3.5 rounded-full bg-amber-400/80 shrink-0" />
-              ) : isError ? (
-                <span className="w-3.5 h-3.5 text-red-400 text-xs shrink-0">✕</span>
-              ) : (
-                <SpinnerIcon />
-              )}
-              <span
-                className="text-xs"
-                style={{
-                  color: isComplete
-                    ? "rgba(255,255,255,0.7)"
-                    : isPairingStep
-                      ? "rgba(253,224,71,0.9)"
-                      : isError
-                        ? "rgba(248,113,113,0.9)"
-                        : submitStage === "gateway-restarting"
-                          ? "rgba(253,224,71,0.9)"
-                          : "rgba(255,255,255,0.55)",
-                }}
-              >
-                {isPairingStep
-                  ? "Waiting for you — approve OCCA"
-                  : isError
-                    ? prettifyError(errorMessage!).headline
-                    : isComplete
-                      ? `${companyName} is all set. ${ceoName} is standing by.`
-                      : submittingLabel}
-              </span>
+          <Card
+            spotlight
+            padding="lg"
+            className="relative animate-in fade-in duration-500"
+          >
+            <div className="absolute top-0 left-6 -translate-y-1/2 z-10">
+              <SpeakerBadge name="Jia" />
             </div>
 
-            {submitStage === "gateway-restarting" && !isError && !isComplete && (
-              <div className="mt-2 rounded-xl border border-amber-400/25 bg-amber-950/20 px-3 py-2">
-                <div className="flex items-center gap-2">
-                  <div className="w-3 h-3 rounded-full border-2 border-amber-300/30 border-t-amber-300/90 animate-spin shrink-0" />
-                  <span className="text-xs text-amber-200/90 font-medium">
-                    Waiting for OpenClaw to come back online…
-                  </span>
-                </div>
-                <p className="mt-1.5 text-[11px] text-amber-100/70 leading-relaxed">
-                  Adding an agent to the gateway restarts OpenClaw. We're holding the connection and will resume as soon as it's healthy again — usually 5–15s.
-                </p>
-              </div>
-            )}
+            <div className="mt-2 min-h-12 flex items-start">
+              <p className="text-sm text-white/90 leading-relaxed">
+                {displayedText}
+                {isTyping && (
+                  <span className="inline-block w-0.5 h-4 bg-white/60 ml-0.5 animate-pulse align-middle" />
+                )}
+              </p>
+            </div>
 
-            {isError && isPairingStep && (
-              <Alert variant="warning" className="mt-2" icon={null}>
-                {pairingTimer.expired ? (
-                  <>
-                    <p className="text-xs font-semibold text-amber-300 leading-snug">
-                      Pair request expired
-                    </p>
-                    <p className="mt-1.5 text-[11px] leading-relaxed">
-                      OpenClaw cleared the pending request after 5 minutes.
-                      Click below to send a fresh one.
-                    </p>
-                  </>
+            <div className="mt-4 space-y-1.5">
+              <div className="flex items-center gap-2">
+                {isComplete ? (
+                  <CheckIcon />
+                ) : isPairingStep ? (
+                  <span className="w-3.5 h-3.5 rounded-full bg-amber-400/80 shrink-0" />
+                ) : isError ? (
+                  <span className="w-3.5 h-3.5 text-red-400 text-xs shrink-0">
+                    ✕
+                  </span>
                 ) : (
-                  <>
-                    <p className="text-xs font-semibold text-amber-300 leading-snug">
-                      Approve OCCA in OpenClaw
+                  <SpinnerIcon />
+                )}
+                <span
+                  className="text-xs"
+                  style={{
+                    color: isComplete
+                      ? "rgba(255,255,255,0.7)"
+                      : isPairingStep
+                        ? "rgba(253,224,71,0.9)"
+                        : isError
+                          ? "rgba(248,113,113,0.9)"
+                          : submitStage === "gateway-restarting"
+                            ? "rgba(253,224,71,0.9)"
+                            : "rgba(255,255,255,0.55)",
+                  }}
+                >
+                  {isPairingStep
+                    ? "Waiting for you — approve OCCA"
+                    : isError
+                      ? prettifyError(errorMessage!).headline
+                      : isComplete
+                        ? `${companyName} is all set. ${ceoName} is standing by.`
+                        : submittingLabel}
+                </span>
+              </div>
+
+              {submitStage === "gateway-restarting" &&
+                !isError &&
+                !isComplete && (
+                  <div className="mt-2 rounded-xl border border-amber-400/25 bg-amber-950/20 px-3 py-2">
+                    <div className="flex items-center gap-2">
+                      <div className="w-3 h-3 rounded-full border-2 border-amber-300/30 border-t-amber-300/90 animate-spin shrink-0" />
+                      <span className="text-xs text-amber-200/90 font-medium">
+                        Waiting for OpenClaw to come back online…
+                      </span>
+                    </div>
+                    <p className="mt-1.5 text-[11px] text-amber-100/70 leading-relaxed">
+                      Adding an agent to the gateway restarts OpenClaw. We're
+                      holding the connection and will resume as soon as it's
+                      healthy again — usually 5–15s.
                     </p>
-                    <p className="mt-1.5 text-[11px] leading-relaxed">
-                      First time only. Pick a method below, then click "I've
-                      approved" to continue.
-                    </p>
-                    <p
-                      className="mt-1.5 inline-flex items-center gap-1 text-[10.5px] font-mono"
-                      style={{
-                        color:
-                          pairingTimer.remaining < 60
-                            ? "rgba(248,113,113,0.85)"
-                            : "rgba(253,224,71,0.85)",
+                  </div>
+                )}
+
+              {isError && isPairingStep && (
+                <Alert variant="warning" className="mt-2" icon={null}>
+                  {pairingTimer.expired ? (
+                    <>
+                      <p className="text-xs font-semibold text-amber-300 leading-snug">
+                        Pair request expired
+                      </p>
+                      <p className="mt-1.5 text-[11px] leading-relaxed">
+                        OpenClaw cleared the pending request after 5 minutes.
+                        Click below to send a fresh one.
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-xs font-semibold text-amber-300 leading-snug">
+                        Approve OCCA in OpenClaw
+                      </p>
+                      <p className="mt-1.5 text-[11px] leading-relaxed">
+                        First time only. Pick a method below, then click "I've
+                        approved" to continue.
+                      </p>
+                      <p
+                        className="mt-1.5 inline-flex items-center gap-1 text-[10.5px] font-mono"
+                        style={{
+                          color:
+                            pairingTimer.remaining < 60
+                              ? "rgba(248,113,113,0.85)"
+                              : "rgba(253,224,71,0.85)",
+                        }}
+                      >
+                        <Clock className="size-3" />
+                        Expires in {pairingTimer.formatted}
+                      </p>
+                    </>
+                  )}
+                  <div className="mt-2 flex items-center gap-2 flex-wrap">
+                    {pairingTimer.expired ? (
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        onClick={() => {
+                          setPairingRetryNonce((n) => n + 1);
+                          onRetry();
+                        }}
+                        disabled={isSubmitting}
+                      >
+                        Send new request
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        onClick={onRetry}
+                        disabled={isSubmitting}
+                      >
+                        I've approved
+                      </Button>
+                    )}
+                    <Button
+                      variant="warning"
+                      size="sm"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setHelpTriggerRect(
+                          e.currentTarget.getBoundingClientRect(),
+                        );
+                        setHelpOpen(true);
                       }}
                     >
-                      <Clock className="size-3" />
-                      Expires in {pairingTimer.formatted}
-                    </p>
-                  </>
-                )}
-                <div className="mt-2 flex items-center gap-2 flex-wrap">
-                  {pairingTimer.expired ? (
+                      <Info className="size-3" />
+                      How?
+                    </Button>
                     <Button
-                      variant="primary"
+                      variant="secondary"
                       size="sm"
-                      onClick={() => {
-                        setPairingRetryNonce((n) => n + 1);
-                        onRetry();
-                      }}
+                      onClick={() =>
+                        onboarding.backToEdit(errorResume ?? "review")
+                      }
                       disabled={isSubmitting}
                     >
-                      Send new request
+                      <Pencil className="size-3" />
+                      Edit gateway / key
                     </Button>
-                  ) : (
+                  </div>
+                </Alert>
+              )}
+
+              {isError && !isPairingStep && (
+                <Alert variant="error" className="mt-2" icon={null}>
+                  <div className="flex items-start gap-2">
+                    <p className="text-xs font-semibold text-red-300 flex-1 min-w-0 leading-snug">
+                      {prettifyError(errorMessage!).headline}
+                    </p>
+                    <span className="font-mono text-[10px] text-red-400/70 bg-red-500/10 px-1.5 py-0.5 rounded shrink-0">
+                      {errorHttpStatus ? `${errorHttpStatus} · ` : ""}
+                      {errorMessage}
+                    </span>
+                  </div>
+                  <p className="mt-1.5 text-[11px] leading-relaxed">
+                    {prettifyError(errorMessage!).hint}
+                  </p>
+                  {errorReason && (
+                    <p className="mt-1.5 font-mono text-[10px] text-red-400/70 break-all leading-relaxed">
+                      reason: {errorReason}
+                    </p>
+                  )}
+                  <div className="mt-2 flex items-center gap-2 flex-wrap">
                     <Button
                       variant="primary"
                       size="sm"
                       onClick={onRetry}
                       disabled={isSubmitting}
                     >
-                      I've approved
+                      <RefreshCw className="size-3" />
+                      Retry
                     </Button>
-                  )}
-                  <Button
-                    variant="warning"
-                    size="sm"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setHelpTriggerRect(
-                        e.currentTarget.getBoundingClientRect(),
-                      );
-                      setHelpOpen(true);
-                    }}
-                  >
-                    <Info className="size-3" />
-                    How?
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() =>
-                      onboarding.backToEdit(errorResume ?? "review")
-                    }
-                    disabled={isSubmitting}
-                  >
-                    <Pencil className="size-3" />
-                    Edit gateway / key
-                  </Button>
-                </div>
-              </Alert>
-            )}
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() =>
+                        onboarding.backToEdit(errorResume ?? "review")
+                      }
+                      disabled={isSubmitting}
+                    >
+                      <Pencil className="size-3" />
+                      {errorResume === "gateway-credentials"
+                        ? "Edit gateway / key"
+                        : "Back to review"}
+                    </Button>
+                  </div>
+                </Alert>
+              )}
 
-            {isError && !isPairingStep && (
-              <Alert variant="error" className="mt-2" icon={null}>
-                <div className="flex items-start gap-2">
-                  <p className="text-xs font-semibold text-red-300 flex-1 min-w-0 leading-snug">
-                    {prettifyError(errorMessage!).headline}
-                  </p>
-                  <span className="font-mono text-[10px] text-red-400/70 bg-red-500/10 px-1.5 py-0.5 rounded shrink-0">
-                    {errorHttpStatus ? `${errorHttpStatus} · ` : ""}
-                    {errorMessage}
+              {isComplete && (
+                <div className="flex items-center gap-2">
+                  <CheckIcon />
+                  <span className="text-xs text-emerald-400/80">
+                    {ceoName} is awake. Let's go meet them.
                   </span>
                 </div>
-                <p className="mt-1.5 text-[11px] leading-relaxed">
-                  {prettifyError(errorMessage!).hint}
-                </p>
-                {errorReason && (
-                  <p className="mt-1.5 font-mono text-[10px] text-red-400/70 break-all leading-relaxed">
-                    reason: {errorReason}
-                  </p>
-                )}
-                <div className="mt-2 flex items-center gap-2 flex-wrap">
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    onClick={onRetry}
-                    disabled={isSubmitting}
-                  >
-                    <RefreshCw className="size-3" />
-                    Retry
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() =>
-                      onboarding.backToEdit(errorResume ?? "review")
-                    }
-                    disabled={isSubmitting}
-                  >
-                    <Pencil className="size-3" />
-                    {errorResume === "gateway-credentials"
-                      ? "Edit gateway / key"
-                      : "Back to review"}
-                  </Button>
-                </div>
-              </Alert>
-            )}
+              )}
+            </div>
 
             {isComplete && (
-              <div className="flex items-center gap-2">
-                <CheckIcon />
-                <span className="text-xs text-emerald-400/80">
-                  {ceoName} is awake. Let's go meet them.
-                </span>
+              <div className="mt-4 flex justify-center">
+                <div className="h-1 w-16 rounded-full bg-emerald-400/50 animate-pulse" />
               </div>
             )}
-          </div>
-
-          {isComplete && (
-            <div className="mt-4 flex justify-center">
-              <div className="h-1 w-16 rounded-full bg-emerald-400/50 animate-pulse" />
-            </div>
-          )}
-        </Card>
+          </Card>
         )}
       </div>
 
@@ -416,12 +418,9 @@ export function SetupProgressDialog({
           triggerRect={helpTriggerRect}
           onClose={() => setHelpOpen(false)}
         >
-          <DevicePairingHelp
-            controlUiUrl={deriveControlUiUrl(onboarding.form.adapterConfig.gatewayUrl)}
-          />
+          <DevicePairingHelp />
         </FloatingPanel>
       )}
     </div>
   );
 }
-

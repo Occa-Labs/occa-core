@@ -2,7 +2,10 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { WalkPhase } from "@/features/theater/types";
-import { useOnboarding, type UseOnboardingResult } from "@/hooks/use-onboarding";
+import {
+  useOnboarding,
+  type UseOnboardingResult,
+} from "@/hooks/use-onboarding";
 import { useMe, type UseMeResult } from "@/hooks/use-me";
 import type { SetupPhase } from "../types";
 
@@ -160,6 +163,9 @@ export function useSetupWorkflow({
     if (onboardingKind === "submitting" || onboardingKind === "error") {
       return "provisioning-ceo";
     }
+    if (onboardingKind === "anchoring" || onboardingKind === "anchor-error") {
+      return "anchoring-ceo";
+    }
     // onboardingKind is "complete" or "not_needed" beyond this point.
 
     // Cinematic in flight (only valid right after launch-success edge).
@@ -218,6 +224,7 @@ export function useSetupWorkflow({
   const onboardingActive =
     phase === "onboarding-form" ||
     phase === "provisioning-ceo" ||
+    phase === "anchoring-ceo" ||
     phase === "ceo-ready";
 
   return {
