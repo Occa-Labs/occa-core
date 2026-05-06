@@ -14,7 +14,8 @@ import {
 } from "@occa/adapter-openclaw";
 import { traces, traceEvents } from "@occa/shared/schema";
 import { db } from "../../../infra/database/client";
-import { findOwnedByUserId } from "../repositories/agents";
+import { findOwnedByUserId } from "../repositories/deployments";
+import { findByDeploymentId as findRuntimeProfile } from "../repositories/agent-runtime-profile";
 import { requireAuth } from "../../../middleware/auth";
 import { agentChatBody } from "../domain/schemas";
 import { AGENT_WAIT_TIMEOUT_MS, TRACE_EVENT_FLUSH_MS } from "../../../lib/timing";
@@ -25,7 +26,7 @@ const router: Router = Router();
 router.post("/:id/chat", requireAuth, async (req: Request, res: Response) => {
   const existing = await findOwnedByUserId({
     userId: req.user!.userId,
-    agentId: req.params.id,
+    deploymentId: req.params.id,
   });
   if (!existing) {
     res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.NOT_FOUND });
@@ -41,7 +42,15 @@ router.post("/:id/chat", requireAuth, async (req: Request, res: Response) => {
     return;
   }
 
-  const cfg = (existing.adapterConfig ?? {}) as Record<string, unknown>;
+  const profile = await findRuntimeProfile(existing.id);
+  if (!profile) {
+    res
+      .status(StatusCodes.BAD_REQUEST)
+      .json({ error: ERROR_CODES.AGENT_NOT_CONFIGURED });
+    return;
+  }
+
+  const cfg = (profile.adapterConfig ?? {}) as Record<string, unknown>;
   if (
     typeof cfg.gatewayUrl !== "string" ||
     typeof cfg.apiKey !== "string" ||
@@ -53,7 +62,7 @@ router.post("/:id/chat", requireAuth, async (req: Request, res: Response) => {
     return;
   }
 
-  if (!existing.externalAgentId) {
+  if (!profile.externalAgentId) {
     res
       .status(StatusCodes.BAD_REQUEST)
       .json({ error: ERROR_CODES.AGENT_NOT_PROVISIONED });
@@ -64,7 +73,7 @@ router.post("/:id/chat", requireAuth, async (req: Request, res: Response) => {
   const openclawAgentId =
     typeof cfg.openclawAgentId === "string"
       ? cfg.openclawAgentId
-      : existing.externalAgentId;
+      : profile.externalAgentId;
 
   // Create a trace row to record this chat turn.
   const now = new Date();
@@ -72,7 +81,7 @@ router.post("/:id/chat", requireAuth, async (req: Request, res: Response) => {
     .insert(traces)
     .values({
       companyId: existing.companyId,
-      agentId: existing.id,
+      deploymentId: existing.id,
       invocationSource: "chat",
       conversationId: parsed.data.conversationId,
       actorType: "user",
@@ -120,7 +129,7 @@ router.post("/:id/chat", requireAuth, async (req: Request, res: Response) => {
     pendingEvents.push({
       companyId: existing.companyId,
       traceId,
-      agentId: existing.id,
+      deploymentId: existing.id,
       seq: seq++,
       eventType: "stream",
       stream,

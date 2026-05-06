@@ -109,7 +109,7 @@ async function fireTrigger(trigger: DueTrigger): Promise<void> {
     .where(eq(routines.id, trigger.routineId))
     .limit(1);
   if (!routine) return;
-  if (!routine.assigneeAgentId) {
+  if (!routine.assigneeDeploymentId) {
     // No assignee — record as failed so we don't retry in a hot loop.
     await db.insert(routineRuns).values({
       routineId: routine.id,
@@ -130,7 +130,7 @@ async function fireTrigger(trigger: DueTrigger): Promise<void> {
 
   try {
     const wake = await wakeup({
-      agentId: routine.assigneeAgentId,
+      agentId: routine.assigneeDeploymentId,
       source: "timer",
       triggerDetail: `routine:${routine.id}`,
       reason: `Routine: ${routine.title}`,

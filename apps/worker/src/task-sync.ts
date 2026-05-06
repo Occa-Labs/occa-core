@@ -1,5 +1,5 @@
 import { and, eq, inArray } from "drizzle-orm";
-import { agents, tasks } from "@occa/shared/schema";
+import { agentIdentities, deployments, tasks } from "@occa/shared/schema";
 import type {
   ContentBlock,
   LivenessState,
@@ -92,11 +92,15 @@ function buildPreview(text: string): string {
   return `${safe}…`;
 }
 
-async function loadAgentName(agentId: string): Promise<string> {
+async function loadAgentName(deploymentId: string): Promise<string> {
   const [row] = await db
-    .select({ name: agents.name })
-    .from(agents)
-    .where(eq(agents.id, agentId))
+    .select({ name: agentIdentities.name })
+    .from(deployments)
+    .innerJoin(
+      agentIdentities,
+      eq(deployments.agentIdentityId, agentIdentities.id),
+    )
+    .where(eq(deployments.id, deploymentId))
     .limit(1);
   return row?.name ?? "agent";
 }

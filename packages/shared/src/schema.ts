@@ -90,6 +90,13 @@ export const companies = pgTable(
     ownerWallet: text("owner_wallet"),
     chainNonce: integer("chain_nonce"),
     chainTxSignature: text("chain_tx_signature"),
+    // Tier 1 mirror — match `CompanyAccount` fields not yet covered above.
+    locale: text("locale"),
+    // Tier 2 — pointer to canonical metadata JSON + sha256 hex of payload.
+    metadataUri: text("metadata_uri"),
+    metadataHash: text("metadata_hash"),
+    // On-chain status: "active" | "paused". NULL until first chain sync.
+    chainStatus: text("chain_status"),
 
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -187,75 +194,73 @@ export const companyProfile = pgTable("company_profile", {
     .defaultNow(),
 });
 
-// ── Agents — one row per hired agent, per-adapter config (§4, §7.1) ──
-// adapter_config stored as plaintext JSONB for now. TODO encrypt at rest
-// per arsitektur §4.1 before any real gateway credentials land here.
-// desired_skills = array of skill keys ("owner/repo/slug") that this agent
-// should have access to. Delivery is HTTP-on-demand, not pre-pushed to
-// the runtime.
-export const agents = pgTable(
-  "agents",
+// ── AgentIdentity — Truth tier mirror of on-chain `AgentIdentity` ─────
+// Portable identity, owner-scoped, independent of any company. Same
+// identity may be deployed to multiple companies owned by the same
+// wallet. PDA seeds = ["agent_identity", agent_pubkey].
+export const agentIdentities = pgTable(
+  "agent_identities",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    // Stable identity key used as PDA seed (NOT the user wallet).
+    agentPubkey: text("agent_pubkey").notNull().unique(),
+    identityPda: text("identity_pda").notNull().unique(),
+    // Mirrors on-chain `owner` — same wallet as `companies.owner_wallet`.
+    ownerWallet: text("owner_wallet").notNull(),
+    // Tier 1 on-chain field.
+    name: text("name").notNull(),
+    // Tier 2 metadata pointer + integrity hash (sha256 hex).
+    metadataUri: text("metadata_uri"),
+    metadataHash: text("metadata_hash"),
+    chainTxSignature: text("chain_tx_signature"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [index("idx_agent_identities_owner").on(t.ownerUserId)],
+);
+
+// ── Deployment — Truth tier mirror of on-chain `Deployment` ───────────
+// Per-company relation account between an AgentIdentity and a Company.
+// PDA seeds = ["deployment", company_pda, deployment_index_le_u32].
+// `deployment_index` is a per-company u32 counter chosen by the caller.
+export const deployments = pgTable(
+  "deployments",
   {
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id")
       .notNull()
       .references(() => companies.id, { onDelete: "cascade" }),
-    name: text("name").notNull(),
-    role: text("role").notNull(),
-    adapterType: text("adapter_type").notNull(),
-    adapterConfig: jsonb("adapter_config").notNull(),
-    externalAgentId: text("external_agent_id"),
-    desiredSkills: text("desired_skills")
-      .array()
+    agentIdentityId: uuid("agent_identity_id")
       .notNull()
-      .default(sql`ARRAY[]::text[]`),
-    // Manager / reports-to link. NULL = top-level agent (typically the CEO,
-    // who reports directly to the human owner). Used by the hire-approval
-    // gate: an agent may only delegate to agents inside its own subtree
-    // (direct or transitive reports). Top-level agents can hire any agent
-    // in the company.
-    parentAgentId: uuid("parent_agent_id").references(
-      (): AnyPgColumn => agents.id,
-      { onDelete: "set null" },
-    ),
-    // Set on first auto-assign (onboarding or one-shot backfill). Non-null
-    // marks the agent as "initialized" — subsequent boots skip backfill so
-    // user disables are preserved.
-    skillsInitializedAt: timestamp("skills_initialized_at", {
-      withTimezone: true,
-    }),
-    // Background provisioning state for the kickoff async flow. 'pending'
-    // until OpenClaw provisioning finishes; 'ready' once the agent is
-    // registered + workspace seeded; 'failed' on terminal error. Pre-existing
-    // agents (created via direct hire flow) start at 'ready' immediately.
-    provisioningState: text("provisioning_state").notNull().default("ready"),
-    provisioningError: text("provisioning_error"),
-    // Stable 3D office anchor ID where this agent sits. Assigned once at
-    // hire time by `seating.assignSeat` and persisted forever — frontend
-    // looks this up against `office-anchors.ts` to place the avatar. NULL
-    // for legacy rows pre-migration; lazy-backfilled on first agent load.
-    workstationId: text("workstation_id"),
-    // Optional override for the 3D character model. NULL = derive via
-    // `buildAgentModelMap` claim-and-skip. Non-NULL = pin this agent to
-    // the chosen GLB regardless of role / claim order.
-    modelOverride: text("model_override"),
-
-    // ── On-chain Registry mirror (drizzle 0033 + 0034) ──────────────
-    // Populated after `register_agent` is confirmed on Solana.
-    //
-    // `owner_wallet` = user wallet (same as company.owner_wallet) — sole
-    // signer for state-changing ix on this AgentAccount.
-    //
-    // `operating_wallet` = optional user-supplied transactional wallet
-    // (the agent's "checking account" for routing real funds). NULL =
-    // not yet set; on-chain it shows as `Pubkey::default()` until the
-    // user invokes `set_operating_wallet`.
-    agentPda: text("agent_pda").unique(),
-    agentIndex: integer("agent_index"),
-    ownerWallet: text("owner_wallet"),
+      .references(() => agentIdentities.id, { onDelete: "cascade" }),
+    deploymentPda: text("deployment_pda").notNull().unique(),
+    // Per-company u32 counter — mirrors PDA seed.
+    deploymentIndex: integer("deployment_index").notNull(),
+    // Capability persona (e.g. "ceo", "sdr"). NOT a job title — see §15.7.
+    role: text("role").notNull(),
+    // Reporting parent within this company (NULL = top-level). On-chain
+    // this is `Option<u32>` keyed by deployment_index; in DB we mirror
+    // the index for portability across reseed.
+    parentDeploymentIndex: integer("parent_deployment_index"),
+    // Pinned adapter pubkey. `Pubkey::default()` on-chain → NULL here.
+    adapterId: text("adapter_id"),
+    // Optional user-supplied transactional wallet. NULL = unset
+    // (on-chain shows `Pubkey::default()`).
     operatingWallet: text("operating_wallet"),
-    agentChainTxSignature: text("agent_chain_tx_signature"),
-
+    // On-chain status: "active" | "paused" | "retired" (text encoding of
+    // the u8 enum 0/1/2). Retired is terminal.
+    status: text("status").notNull().default("active"),
+    // Tier 2 metadata.
+    metadataUri: text("metadata_uri"),
+    metadataHash: text("metadata_hash"),
+    chainTxSignature: text("chain_tx_signature"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -264,16 +269,65 @@ export const agents = pgTable(
       .defaultNow(),
   },
   (t) => [
-    index("idx_agents_company").on(t.companyId),
-    // Per-company: at most one agent per desk. NULL workstationId allowed
-    // for unmigrated rows; partial unique below excludes nulls.
-    uniqueIndex("uniq_agents_company_workstation")
+    index("idx_deployments_company").on(t.companyId),
+    index("idx_deployments_identity").on(t.agentIdentityId),
+    // Mirrors PDA seed uniqueness.
+    uniqueIndex("uniq_deployments_company_index").on(
+      t.companyId,
+      t.deploymentIndex,
+    ),
+  ],
+);
+
+// ── Agent runtime profile — Ephemeral tier (1:1 with deployments) ─────
+// Adapter config, provisioning state, 3D seating — none of these live
+// on-chain. Recovery flow regenerates these from defaults; on-chain
+// recovery only restores `deployments` + `agent_identities`.
+//
+// adapter_config stored as plaintext JSONB for now. TODO encrypt at
+// rest per arsitektur §4.1 before real gateway credentials land here.
+export const agentRuntimeProfile = pgTable(
+  "agent_runtime_profile",
+  {
+    deploymentId: uuid("deployment_id")
+      .primaryKey()
+      .references(() => deployments.id, { onDelete: "cascade" }),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    // Derived from `deployments.adapter_id` (resolved to adapter package
+    // type at provision time). Cached for fast lookups in worker.
+    adapterType: text("adapter_type").notNull(),
+    adapterConfig: jsonb("adapter_config").notNull(),
+    externalAgentId: text("external_agent_id"),
+    desiredSkills: text("desired_skills")
+      .array()
+      .notNull()
+      .default(sql`ARRAY[]::text[]`),
+    skillsInitializedAt: timestamp("skills_initialized_at", {
+      withTimezone: true,
+    }),
+    // Background provisioning state for the kickoff async flow.
+    // 'pending' → 'ready' | 'failed'.
+    provisioningState: text("provisioning_state").notNull().default("ready"),
+    provisioningError: text("provisioning_error"),
+    // Stable 3D office anchor ID. Assigned once at deploy time and
+    // persisted forever — frontend looks this up against `office-anchors.ts`.
+    workstationId: text("workstation_id"),
+    // Optional override for the 3D character model.
+    modelOverride: text("model_override"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("idx_agent_runtime_profile_company").on(t.companyId),
+    uniqueIndex("uniq_agent_runtime_profile_workstation")
       .on(t.companyId, t.workstationId)
       .where(sql`${t.workstationId} IS NOT NULL`),
-    // Per-company: agent_index unique (mirrors PDA seed uniqueness).
-    uniqueIndex("uniq_agents_company_agent_index")
-      .on(t.companyId, t.agentIndex)
-      .where(sql`${t.agentIndex} IS NOT NULL`),
   ],
 );
 
@@ -346,9 +400,10 @@ export const tasks = pgTable(
     // Per-company monotonically increasing ID shown in UI (e.g. #12).
     // Uuid stays the authoritative key; number is the human-readable handle.
     taskNumber: integer("task_number").notNull(),
-    assignedAgentId: uuid("assigned_agent_id").references(() => agents.id, {
-      onDelete: "set null",
-    }),
+    assignedDeploymentId: uuid("assigned_deployment_id").references(
+      () => deployments.id,
+      { onDelete: "set null" },
+    ),
     // Self-FK for parent/child task graph (autonomy L2 — child completion
     // wakes the parent). Null for top-level / user-created tasks.
     parentTaskId: uuid("parent_task_id").references(
@@ -365,9 +420,10 @@ export const tasks = pgTable(
     // Set when a task is born from an agent action (currently: an approved
     // delegate request). Null for user-created tasks. `createdByUserId` and
     // `createdByAgentId` are mutually exclusive — exactly one should be set.
-    createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, {
-      onDelete: "set null",
-    }),
+    createdByDeploymentId: uuid("created_by_deployment_id").references(
+      () => deployments.id,
+      { onDelete: "set null" },
+    ),
     // Delegation contract — what "done" means for this task. Set when the
     // task was created via DELEGATE so the assignee knows the bar.
     acceptanceCriteria: text("acceptance_criteria"),
@@ -414,9 +470,9 @@ export const traces = pgTable(
     companyId: uuid("company_id")
       .notNull()
       .references(() => companies.id, { onDelete: "cascade" }),
-    agentId: uuid("agent_id")
+    deploymentId: uuid("deployment_id")
       .notNull()
-      .references(() => agents.id, { onDelete: "cascade" }),
+      .references(() => deployments.id, { onDelete: "cascade" }),
     taskId: uuid("task_id").references((): AnyPgColumn => tasks.id, {
       onDelete: "set null",
     }),
@@ -477,9 +533,9 @@ export const traces = pgTable(
   },
   (t) => [
     index("traces_conversation_id_idx").on(t.conversationId),
-    index("traces_company_agent_started_idx").on(
+    index("traces_company_deployment_started_idx").on(
       t.companyId,
-      t.agentId,
+      t.deploymentId,
       t.startedAt,
     ),
     index("traces_company_liveness_idx").on(
@@ -502,9 +558,9 @@ export const traceEvents = pgTable(
     traceId: uuid("trace_id")
       .notNull()
       .references(() => traces.id, { onDelete: "cascade" }),
-    agentId: uuid("agent_id")
+    deploymentId: uuid("deployment_id")
       .notNull()
-      .references(() => agents.id, { onDelete: "cascade" }),
+      .references(() => deployments.id, { onDelete: "cascade" }),
     seq: integer("seq").notNull(),
     eventType: text("event_type").notNull(),
     stream: text("stream"),
@@ -523,19 +579,19 @@ export const traceEvents = pgTable(
   ],
 );
 
-// ── Agent task sessions — adapter resume handles per (agent, task) ───
+// ── Deployment task sessions — adapter resume handles per (deployment, task) ──
 // Stores opaque sessionParams so an adapter can resume a prior
 // conversation/session rather than starting fresh on each run.
-export const agentTaskSessions = pgTable(
-  "agent_task_sessions",
+export const deploymentTaskSessions = pgTable(
+  "deployment_task_sessions",
   {
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id")
       .notNull()
       .references(() => companies.id, { onDelete: "cascade" }),
-    agentId: uuid("agent_id")
+    deploymentId: uuid("deployment_id")
       .notNull()
-      .references(() => agents.id, { onDelete: "cascade" }),
+      .references(() => deployments.id, { onDelete: "cascade" }),
     adapterType: text("adapter_type").notNull(),
     taskKey: text("task_key").notNull(), // "task:<uuid>"
     sessionParamsJson: jsonb("session_params_json"),
@@ -552,18 +608,15 @@ export const agentTaskSessions = pgTable(
       .defaultNow(),
   },
   (t) => [
-    uniqueIndex("agent_task_sessions_company_agent_adapter_task_uniq").on(
+    uniqueIndex(
+      "deployment_task_sessions_company_deployment_adapter_task_uniq",
+    ).on(t.companyId, t.deploymentId, t.adapterType, t.taskKey),
+    index("deployment_task_sessions_company_deployment_updated_idx").on(
       t.companyId,
-      t.agentId,
-      t.adapterType,
-      t.taskKey,
-    ),
-    index("agent_task_sessions_company_agent_updated_idx").on(
-      t.companyId,
-      t.agentId,
+      t.deploymentId,
       t.updatedAt,
     ),
-    index("agent_task_sessions_company_task_updated_idx").on(
+    index("deployment_task_sessions_company_task_updated_idx").on(
       t.companyId,
       t.taskKey,
       t.updatedAt,
@@ -571,11 +624,11 @@ export const agentTaskSessions = pgTable(
   ],
 );
 
-// ── Agent runtime state — per-agent counters + last run pointer ──────
-export const agentRuntimeState = pgTable("agent_runtime_state", {
-  agentId: uuid("agent_id")
+// ── Deployment runtime state — per-deployment counters + last run pointer ──
+export const deploymentRuntimeState = pgTable("deployment_runtime_state", {
+  deploymentId: uuid("deployment_id")
     .primaryKey()
-    .references(() => agents.id, { onDelete: "cascade" }),
+    .references(() => deployments.id, { onDelete: "cascade" }),
   companyId: uuid("company_id")
     .notNull()
     .references(() => companies.id, { onDelete: "cascade" }),
@@ -625,9 +678,10 @@ export const routines = pgTable(
     parentIssueId: uuid("parent_issue_id"),
     title: text("title").notNull(),
     description: text("description"),
-    assigneeAgentId: uuid("assignee_agent_id").references(() => agents.id, {
-      onDelete: "set null",
-    }),
+    assigneeDeploymentId: uuid("assignee_deployment_id").references(
+      () => deployments.id,
+      { onDelete: "set null" },
+    ),
     priority: text("priority").notNull().default("medium"),
     status: text("status").notNull().default("active"),
     concurrencyPolicy: text("concurrency_policy")
@@ -646,7 +700,7 @@ export const routines = pgTable(
   },
   (t) => [
     index("idx_routines_company").on(t.companyId),
-    index("idx_routines_assignee").on(t.assigneeAgentId),
+    index("idx_routines_assignee").on(t.assigneeDeploymentId),
   ],
 );
 
@@ -709,18 +763,17 @@ export const routineRuns = pgTable(
   ],
 );
 
-// ── Agent API keys — hashed, revocable, per-agent auth for runtime ──
+// ── Deployment API keys — hashed, revocable, per-deployment auth ─────
 // Raw key shown once at creation; stored hashed (sha256). The adapter
 // receives the raw key via AdapterExecutionContext.runtimeEnv.apiKey at
-// wake time and uses it to call OCCA server endpoints (e.g. /api/me/agent,
-// skills proxy).
-export const agentApiKeys = pgTable(
-  "agent_api_keys",
+// wake time and uses it to call OCCA server endpoints.
+export const deploymentApiKeys = pgTable(
+  "deployment_api_keys",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    agentId: uuid("agent_id")
+    deploymentId: uuid("deployment_id")
       .notNull()
-      .references(() => agents.id, { onDelete: "cascade" }),
+      .references(() => deployments.id, { onDelete: "cascade" }),
     companyId: uuid("company_id")
       .notNull()
       .references(() => companies.id, { onDelete: "cascade" }),
@@ -733,8 +786,8 @@ export const agentApiKeys = pgTable(
       .defaultNow(),
   },
   (t) => [
-    index("idx_agent_api_keys_agent").on(t.agentId),
-    index("idx_agent_api_keys_company").on(t.companyId),
+    index("idx_deployment_api_keys_deployment").on(t.deploymentId),
+    index("idx_deployment_api_keys_company").on(t.companyId),
   ],
 );
 
@@ -748,8 +801,8 @@ export const approvals = pgTable(
     companyId: uuid("company_id")
       .notNull()
       .references(() => companies.id, { onDelete: "cascade" }),
-    requestedByAgentId: uuid("requested_by_agent_id").references(
-      () => agents.id,
+    requestedByDeploymentId: uuid("requested_by_deployment_id").references(
+      () => deployments.id,
       { onDelete: "set null" },
     ),
     actionType: text("action_type").notNull(),
@@ -775,25 +828,21 @@ export const approvals = pgTable(
   },
   (t) => [
     index("idx_approvals_company_status").on(t.companyId, t.status),
-    index("idx_approvals_agent").on(t.requestedByAgentId),
+    index("idx_approvals_deployment").on(t.requestedByDeploymentId),
   ],
 );
 
-// ── Agent workspace files — OCCA-authored per-agent markdown ─────────
-// Files live here as source of truth; OpenClaw holds a projection pushed via
-// `agents.files.set`. On agent create, one row per file is inserted from
-// rendered templates (see apps/server/src/onboarding-assets/<role>/). Later
-// UI edits update `content` + push to gateway; `synced_at` tracks last
-// successful push. `source` distinguishes baseline (rendered from template)
-// from user overrides, so we can offer a "regenerate from template" action
-// without losing user edits elsewhere.
-export const agentWorkspaceFiles = pgTable(
-  "agent_workspace_files",
+// ── Deployment workspace files — OCCA-authored per-deployment markdown ─
+// Files live here as source of truth; OpenClaw holds a projection pushed
+// via `agents.files.set`. On deploy, one row per file is inserted from
+// rendered templates (see apps/server/src/onboarding-assets/<role>/).
+export const deploymentWorkspaceFiles = pgTable(
+  "deployment_workspace_files",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    agentId: uuid("agent_id")
+    deploymentId: uuid("deployment_id")
       .notNull()
-      .references(() => agents.id, { onDelete: "cascade" }),
+      .references(() => deployments.id, { onDelete: "cascade" }),
     companyId: uuid("company_id")
       .notNull()
       .references(() => companies.id, { onDelete: "cascade" }),
@@ -824,25 +873,25 @@ export const agentWorkspaceFiles = pgTable(
       .defaultNow(),
   },
   (t) => [
-    uniqueIndex("uniq_agent_workspace_file_name").on(t.agentId, t.filename),
-    index("idx_agent_workspace_files_company").on(t.companyId),
+    uniqueIndex("uniq_deployment_workspace_file_name").on(
+      t.deploymentId,
+      t.filename,
+    ),
+    index("idx_deployment_workspace_files_company").on(t.companyId),
   ],
 );
 
-// ── Agent skill syncs — per-agent-per-skill install tracking ─────────
+// ── Deployment skill syncs — per-deployment-per-skill install tracking ─
 // Background worker reads pending/failed rows and sends install/uninstall
-// prompts to the provisioned agent via the OpenClaw gateway. Status column
-// tracks the state machine: pending → installing → installed | failed.
-// action column records the intended operation: install | uninstall | reinstall.
-// skillRef stores the sourceRef (commit SHA) at time of install — used to
-// detect outdated skills when the library copy is updated.
-export const agentSkillSyncs = pgTable(
-  "agent_skill_syncs",
+// prompts via the OpenClaw gateway. State machine:
+//   pending → installing → installed | failed.
+export const deploymentSkillSyncs = pgTable(
+  "deployment_skill_syncs",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    agentId: uuid("agent_id")
+    deploymentId: uuid("deployment_id")
       .notNull()
-      .references(() => agents.id, { onDelete: "cascade" }),
+      .references(() => deployments.id, { onDelete: "cascade" }),
     companyId: uuid("company_id")
       .notNull()
       .references(() => companies.id, { onDelete: "cascade" }),
@@ -870,9 +919,9 @@ export const agentSkillSyncs = pgTable(
       .defaultNow(),
   },
   (t) => [
-    uniqueIndex("uniq_agent_skill_sync").on(t.agentId, t.skillKey),
-    index("idx_agent_skill_syncs_status").on(t.status),
-    index("idx_agent_skill_syncs_company").on(t.companyId),
+    uniqueIndex("uniq_deployment_skill_sync").on(t.deploymentId, t.skillKey),
+    index("idx_deployment_skill_syncs_status").on(t.status),
+    index("idx_deployment_skill_syncs_company").on(t.companyId),
   ],
 );
 
@@ -893,9 +942,10 @@ export const taskComments = pgTable(
     companyId: uuid("company_id")
       .notNull()
       .references(() => companies.id, { onDelete: "cascade" }),
-    authorAgentId: uuid("author_agent_id").references(() => agents.id, {
-      onDelete: "set null",
-    }),
+    authorDeploymentId: uuid("author_deployment_id").references(
+      () => deployments.id,
+      { onDelete: "set null" },
+    ),
     authorUserId: uuid("author_user_id").references(() => users.id, {
       onDelete: "set null",
     }),

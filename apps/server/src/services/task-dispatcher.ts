@@ -3,8 +3,10 @@ import { v4 as uuid } from "uuid";
 import { db } from "../infra/database/client";
 import { AGENT_WAIT_TIMEOUT_MS, TRACE_EVENT_FLUSH_MS } from "../lib/timing";
 import {
-  agents,
+  agentIdentities,
+  agentRuntimeProfile,
   approvals,
+  deployments,
   tasks,
   traces,
   traceEvents,
@@ -17,7 +19,24 @@ import {
   type OccaActionBlock,
 } from "@occa/shared/markers";
 import { publishTraceEvent } from "./trace-events-bus";
-import { canHire, listSubordinates } from "../features/agents/services/agent-hierarchy";
+import {
+  canDeploy,
+  listSubordinates,
+} from "../features/agents/services/deployment-hierarchy";
+
+// Denormalized view of a deployment + its identity name + its runtime
+// profile. Built once per dispatch via JOIN, then threaded through the
+// prompt builder + action-block handlers so each piece of code can read
+// `agent.name` / `agent.adapterConfig` without re-querying.
+interface AgentContext {
+  id: string;
+  companyId: string;
+  name: string;
+  role: string;
+  adapterType: string;
+  adapterConfig: unknown;
+  externalAgentId: string | null;
+}
 import { cascadeOnTaskDone } from "./task-cascade";
 import { createTaskComment } from "./task-comments";
 import { getAdapter } from "../lib/adapter-registry";
@@ -115,27 +134,31 @@ async function loadCompletedChildren(
       taskNumber: tasks.taskNumber,
       title: tasks.title,
       blocks: tasks.blocks,
-      assignedAgentId: tasks.assignedAgentId,
+      assignedDeploymentId: tasks.assignedDeploymentId,
     })
     .from(tasks)
     .where(and(eq(tasks.parentTaskId, parentTaskId), eq(tasks.status, "done")));
 
   if (rows.length === 0) return [];
 
-  const agentIds = Array.from(
+  const deploymentIds = Array.from(
     new Set(
       rows
-        .map((r) => r.assignedAgentId)
+        .map((r) => r.assignedDeploymentId)
         .filter((id): id is string => id !== null),
     ),
   );
-  const agentMap = new Map<string, string>();
-  if (agentIds.length > 0) {
+  const nameByDeployment = new Map<string, string>();
+  if (deploymentIds.length > 0) {
     const fetched = await db
-      .select({ id: agents.id, name: agents.name })
-      .from(agents)
-      .where(inArray(agents.id, agentIds));
-    for (const a of fetched) agentMap.set(a.id, a.name);
+      .select({ id: deployments.id, name: agentIdentities.name })
+      .from(deployments)
+      .innerJoin(
+        agentIdentities,
+        eq(deployments.agentIdentityId, agentIdentities.id),
+      )
+      .where(inArray(deployments.id, deploymentIds));
+    for (const a of fetched) nameByDeployment.set(a.id, a.name);
   }
 
   return rows.map((r) => {
@@ -146,8 +169,8 @@ async function loadCompletedChildren(
     return {
       taskNumber: r.taskNumber,
       title: r.title,
-      agentName: r.assignedAgentId
-        ? (agentMap.get(r.assignedAgentId) ?? null)
+      agentName: r.assignedDeploymentId
+        ? (nameByDeployment.get(r.assignedDeploymentId) ?? null)
         : null,
       resultPreview: preview,
     };
@@ -181,7 +204,7 @@ function renderCompletedChildrenBlock(children: CompletedChildRef[]): string {
 
 async function buildTaskPrompt(
   task: typeof tasks.$inferSelect,
-  agent: typeof agents.$inferSelect,
+  agent: AgentContext,
   traceId: string,
 ): Promise<string> {
   const cfg = (agent.adapterConfig ?? {}) as Record<string, unknown>;
@@ -282,7 +305,7 @@ export async function dispatchTask(taskId: string): Promise<void> {
     .where(eq(tasks.id, taskId))
     .limit(1);
 
-  if (!taskRow?.assignedAgentId) return;
+  if (!taskRow?.assignedDeploymentId) return;
 
   // Defense-in-depth: even if two queue jobs somehow slip past the
   // `exclusive` policy, refuse to launch a second dispatcher for a task
@@ -294,18 +317,38 @@ export async function dispatchTask(taskId: string): Promise<void> {
     return;
   }
 
-  const [agentRow] = await db
-    .select()
-    .from(agents)
+  // JOIN deployment + identity (name) + runtime profile (adapter wiring)
+  // into a single denormalized AgentContext so the prompt builder + the
+  // action-block handlers can read everything off one object.
+  const [joined] = await db
+    .select({
+      id: deployments.id,
+      companyId: deployments.companyId,
+      role: deployments.role,
+      name: agentIdentities.name,
+      adapterType: agentRuntimeProfile.adapterType,
+      adapterConfig: agentRuntimeProfile.adapterConfig,
+      externalAgentId: agentRuntimeProfile.externalAgentId,
+    })
+    .from(deployments)
+    .innerJoin(
+      agentIdentities,
+      eq(deployments.agentIdentityId, agentIdentities.id),
+    )
+    .innerJoin(
+      agentRuntimeProfile,
+      eq(agentRuntimeProfile.deploymentId, deployments.id),
+    )
     .where(
       and(
-        eq(agents.id, taskRow.assignedAgentId),
-        eq(agents.companyId, taskRow.companyId),
+        eq(deployments.id, taskRow.assignedDeploymentId),
+        eq(deployments.companyId, taskRow.companyId),
       ),
     )
     .limit(1);
 
-  if (!agentRow) return;
+  if (!joined) return;
+  const agentRow: AgentContext = joined;
 
   const adapter = getAdapter(agentRow.adapterType);
   if (!adapter) {
@@ -330,7 +373,7 @@ export async function dispatchTask(taskId: string): Promise<void> {
   await db.insert(traces).values({
     id: traceId,
     companyId: taskRow.companyId,
-    agentId: agentRow.id,
+    deploymentId: agentRow.id,
     taskId: taskRow.id,
     invocationSource: "task",
     conversationId: taskRow.id, // task id doubles as conversation anchor
@@ -385,7 +428,7 @@ export async function dispatchTask(taskId: string): Promise<void> {
     pending.push({
       companyId: taskRow.companyId,
       traceId,
-      agentId: agentRow.id,
+      deploymentId: agentRow.id,
       seq: mySeq,
       eventType: "stream",
       stream,
@@ -636,7 +679,7 @@ async function processActionBlock(
       .insert(approvals)
       .values({
         companyId,
-        requestedByAgentId: agentId,
+        requestedByDeploymentId: agentId,
         actionType: "hire",
         payload: {
           targetRole,
@@ -678,7 +721,7 @@ async function processActionBlock(
     }
 
     // Subtree validation — same rule the HTTP endpoint enforces.
-    const check = await canHire(agentId, targetAgentId);
+    const check = await canDeploy(agentId, targetAgentId);
     if (!check.ok) {
       log.warn(
         `[task-dispatcher] DELEGATE block rejected: scope ${check.reason}`,
@@ -690,7 +733,7 @@ async function processActionBlock(
       .insert(approvals)
       .values({
         companyId,
-        requestedByAgentId: agentId,
+        requestedByDeploymentId: agentId,
         actionType: "delegate",
         payload: {
           targetAgentId,
@@ -794,12 +837,16 @@ async function processActionBlock(
     if (mentionAgentId) {
       const [target] = await db
         .select({
-          id: agents.id,
-          name: agents.name,
-          companyId: agents.companyId,
+          id: deployments.id,
+          name: agentIdentities.name,
+          companyId: deployments.companyId,
         })
-        .from(agents)
-        .where(eq(agents.id, mentionAgentId))
+        .from(deployments)
+        .innerJoin(
+          agentIdentities,
+          eq(deployments.agentIdentityId, agentIdentities.id),
+        )
+        .where(eq(deployments.id, mentionAgentId))
         .limit(1);
       if (target && target.companyId === companyId) {
         composedBody = `@${target.name} ${question}`;

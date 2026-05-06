@@ -1,7 +1,7 @@
-// Agent API key management — mint / list / revoke. Keys are short-lived
-// bearer tokens used by an agent's runtime to call back into OCCA (e.g.
-// fetch its assigned skills, submit approvals). Owner-scoped: only the
-// agent's owner can mint/revoke.
+// Deployment API key management — mint / list / revoke. Keys are
+// short-lived bearer tokens used by an agent's runtime to call back into
+// OCCA (e.g. fetch its assigned skills, submit approvals). Owner-scoped:
+// only the deployment's owner can mint/revoke.
 
 import { Router, type Request, type Response } from "express";
 import { ERROR_CODES } from "@occa/shared/error-codes";
@@ -10,15 +10,15 @@ import type {
   CreateAgentTokenResponse,
   ListAgentTokensResponse,
 } from "@occa/shared/types";
-import { findOwnedByUserId } from "../repositories/agents";
+import { findOwnedByUserId } from "../repositories/deployments";
 import { requireAuth } from "../../../middleware/auth";
 import { createAgentTokenBody } from "../domain/schemas";
 import {
-  generateAgentKey,
-  listAgentKeys,
-  revokeAgentKey,
-  toAgentApiKeyDTO,
-} from "../services/agent-api-keys";
+  generateDeploymentKey,
+  listDeploymentKeys,
+  revokeDeploymentKey,
+  toDeploymentApiKeyDTO,
+} from "../services/deployment-api-keys";
 
 const router: Router = Router();
 
@@ -26,7 +26,7 @@ const router: Router = Router();
 router.post("/:id/tokens", requireAuth, async (req: Request, res: Response) => {
   const existing = await findOwnedByUserId({
     userId: req.user!.userId,
-    agentId: req.params.id,
+    deploymentId: req.params.id,
   });
   if (!existing) {
     res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.NOT_FOUND });
@@ -39,13 +39,13 @@ router.post("/:id/tokens", requireAuth, async (req: Request, res: Response) => {
       .json({ error: ERROR_CODES.INVALID_BODY, detail: parsed.error.flatten() });
     return;
   }
-  const { rawKey, row } = await generateAgentKey({
-    agentId: existing.id,
+  const { rawKey, row } = await generateDeploymentKey({
+    deploymentId: existing.id,
     companyId: existing.companyId,
     name: parsed.data.name,
   });
   const body: CreateAgentTokenResponse = {
-    key: toAgentApiKeyDTO(row),
+    key: toDeploymentApiKeyDTO(row),
     rawKey,
   };
   res.status(StatusCodes.CREATED).json(body);
@@ -55,15 +55,15 @@ router.post("/:id/tokens", requireAuth, async (req: Request, res: Response) => {
 router.get("/:id/tokens", requireAuth, async (req: Request, res: Response) => {
   const existing = await findOwnedByUserId({
     userId: req.user!.userId,
-    agentId: req.params.id,
+    deploymentId: req.params.id,
   });
   if (!existing) {
     res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.NOT_FOUND });
     return;
   }
-  const rows = await listAgentKeys(existing.id);
+  const rows = await listDeploymentKeys(existing.id);
   const body: ListAgentTokensResponse = {
-    keys: rows.map(toAgentApiKeyDTO),
+    keys: rows.map(toDeploymentApiKeyDTO),
   };
   res.json(body);
 });
@@ -75,14 +75,14 @@ router.delete(
   async (req: Request, res: Response) => {
     const existing = await findOwnedByUserId({
       userId: req.user!.userId,
-      agentId: req.params.id,
+      deploymentId: req.params.id,
     });
     if (!existing) {
       res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.NOT_FOUND });
       return;
     }
-    const ok = await revokeAgentKey({
-      agentId: existing.id,
+    const ok = await revokeDeploymentKey({
+      deploymentId: existing.id,
       keyId: req.params.tokenId,
     });
     if (!ok) {

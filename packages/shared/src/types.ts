@@ -1,42 +1,47 @@
 import type {
-  users,
+  agentIdentities,
+  agentRuntimeProfile,
+  approvals,
   authNonces,
   companies,
-  agents,
-  tasks,
-  taskComments,
-  companySkills,
-  traces,
-  traceEvents,
-  agentTaskSessions,
-  agentRuntimeState,
-  routines,
-  routineTriggers,
-  routineRuns,
-  agentApiKeys,
-  approvals,
-  agentSkillSyncs,
   companyProfile,
+  companySkills,
+  deploymentApiKeys,
+  deploymentRuntimeState,
+  deploymentSkillSyncs,
+  deploymentTaskSessions,
+  deployments,
+  routineRuns,
+  routineTriggers,
+  routines,
+  taskComments,
+  tasks,
+  traceEvents,
+  traces,
+  users,
 } from "./schema";
 
 export type User = typeof users.$inferSelect;
 export type AuthNonce = typeof authNonces.$inferSelect;
 export type Company = typeof companies.$inferSelect;
 export type CompanyProfile = typeof companyProfile.$inferSelect;
-export type Agent = typeof agents.$inferSelect;
+export type AgentIdentity = typeof agentIdentities.$inferSelect;
+export type Deployment = typeof deployments.$inferSelect;
+export type AgentRuntimeProfile = typeof agentRuntimeProfile.$inferSelect;
 export type Task = typeof tasks.$inferSelect;
 export type TaskComment = typeof taskComments.$inferSelect;
 export type CompanySkill = typeof companySkills.$inferSelect;
 export type Trace = typeof traces.$inferSelect;
 export type TraceEvent = typeof traceEvents.$inferSelect;
-export type AgentTaskSession = typeof agentTaskSessions.$inferSelect;
-export type AgentRuntimeStateRow = typeof agentRuntimeState.$inferSelect;
+export type DeploymentTaskSession = typeof deploymentTaskSessions.$inferSelect;
+export type DeploymentRuntimeStateRow =
+  typeof deploymentRuntimeState.$inferSelect;
 export type Routine = typeof routines.$inferSelect;
 export type RoutineTrigger = typeof routineTriggers.$inferSelect;
 export type RoutineRun = typeof routineRuns.$inferSelect;
-export type AgentApiKey = typeof agentApiKeys.$inferSelect;
+export type DeploymentApiKey = typeof deploymentApiKeys.$inferSelect;
 export type Approval = typeof approvals.$inferSelect;
-export type AgentSkillSync = typeof agentSkillSyncs.$inferSelect;
+export type DeploymentSkillSync = typeof deploymentSkillSyncs.$inferSelect;
 
 // ── Heartbeat policy — stored inside agents.runtimeConfig.heartbeat ──
 // Read with `runtimeConfig.heartbeat ?? defaults`.

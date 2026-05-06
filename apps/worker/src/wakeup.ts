@@ -1,5 +1,5 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
-import { agents, traces } from "@occa/shared/schema";
+import { deployments, traces } from "@occa/shared/schema";
 import type { WakeActor, WakeSource } from "@occa/shared/types";
 import { db } from "./db";
 
@@ -29,9 +29,9 @@ export interface WakeupResult {
 export async function wakeup(input: WakeupInput): Promise<WakeupResult> {
   return db.transaction(async (tx) => {
     const [agent] = await tx
-      .select({ id: agents.id, companyId: agents.companyId })
-      .from(agents)
-      .where(eq(agents.id, input.agentId))
+      .select({ id: deployments.id, companyId: deployments.companyId })
+      .from(deployments)
+      .where(eq(deployments.id, input.agentId))
       .limit(1);
     if (!agent) throw new Error("agent_not_found");
 
@@ -42,7 +42,7 @@ export async function wakeup(input: WakeupInput): Promise<WakeupResult> {
         .from(traces)
         .where(
           and(
-            eq(traces.agentId, input.agentId),
+            eq(traces.deploymentId, input.agentId),
             eq(traces.idempotencyKey, input.idempotencyKey),
             inArray(traces.status, ["queued", "running"]),
           ),
@@ -57,7 +57,7 @@ export async function wakeup(input: WakeupInput): Promise<WakeupResult> {
       .from(traces)
       .where(
         and(
-          eq(traces.agentId, input.agentId),
+          eq(traces.deploymentId, input.agentId),
           inArray(traces.status, ["queued", "running"]),
         ),
       )
@@ -81,7 +81,7 @@ export async function wakeup(input: WakeupInput): Promise<WakeupResult> {
       .insert(traces)
       .values({
         companyId: agent.companyId,
-        agentId: input.agentId,
+        deploymentId: input.agentId,
         invocationSource: input.source,
         triggerDetail: input.triggerDetail ?? null,
         taskId: input.taskId ?? null,

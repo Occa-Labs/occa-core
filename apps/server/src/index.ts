@@ -8,7 +8,7 @@ import { httpLogger } from "./middleware/http-logger";
 
 const log = childLogger("server");
 import { ensureSchema } from "./infra/database/ensure-schema";
-import { backfillAgentSeats } from "./features/agents/services/seat-backfill";
+import { backfillDeploymentSeats } from "./features/agents/services/seat-backfill";
 import { seedOccaDefaultSkills } from "./features/skills/services/seed-occa-defaults";
 import { enqueuePendingTasks, reapOrphans } from "./services/orphan-reaper";
 import { getBoss, stopBoss } from "./infra/queue/boss";
@@ -75,9 +75,10 @@ app.use(
 async function main() {
   await ensureSchema();
 
-  // Self-heal any agent rows from before the seat-assignment migration
-  // (workstation_id NULL). Idempotent no-op once every agent has a desk.
-  await backfillAgentSeats();
+  // Self-heal any runtime-profile rows from before the seat-assignment
+  // migration (workstation_id NULL). Idempotent no-op once every
+  // deployment has a desk.
+  await backfillDeploymentSeats();
 
   // Reset anything left "running" by a prior crash/restart BEFORE the worker
   // comes online — otherwise those traces sit in "running" forever.

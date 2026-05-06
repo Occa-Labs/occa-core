@@ -1,18 +1,17 @@
-// Seat assignment for newly hired agents. Wraps the pure algorithm in
-// `@occa/shared/seating` with a DB lookup of currently-occupied desks.
+// Seat assignment for newly deployed agents. Wraps the pure algorithm
+// in `@occa/shared/seating` with a DB lookup of currently-occupied
+// desks.
 //
 // Two callers:
-//   1. agent-create (one-shot hire from the Hire modal)
-//   2. kickoff-service (bulk hire during onboarding) — calls per agent in
-//      the same loop that inserts rows, so each call sees the prior hire
-//      already occupying its desk.
+//   1. deployment-create (one-shot deploy from the Deploy modal)
+//   2. kickoff-service (bulk deploy during onboarding)
 //
-// Returning `null` means the office is full (every assignable desk taken).
-// Callers either propagate the error or fall back to a sentinel — current
-// policy is to fail the hire so the user can free a seat first.
+// `null` means the office is full (every assignable desk taken).
+// Workstation now lives on `agent_runtime_profile`, scoped per company
+// via the JOIN through `deployments`.
 
 import { and, eq, isNotNull } from "drizzle-orm";
-import { agents } from "@occa/shared/schema";
+import { agentRuntimeProfile } from "@occa/shared/schema";
 import { assignSeat as pureAssignSeat } from "@occa/shared/seating";
 import type { AgentRole } from "@occa/shared/types";
 import { db } from "../../../infra/database/client";
@@ -29,12 +28,12 @@ async function loadOccupiedDesks(
   companyId: string,
 ): Promise<ReadonlySet<string>> {
   const rows = await db
-    .select({ workstationId: agents.workstationId })
-    .from(agents)
+    .select({ workstationId: agentRuntimeProfile.workstationId })
+    .from(agentRuntimeProfile)
     .where(
       and(
-        eq(agents.companyId, companyId),
-        isNotNull(agents.workstationId),
+        eq(agentRuntimeProfile.companyId, companyId),
+        isNotNull(agentRuntimeProfile.workstationId),
       ),
     );
   return new Set(

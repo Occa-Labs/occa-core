@@ -57,7 +57,7 @@ export async function enqueuePendingTasks(): Promise<void> {
     .where(
       and(
         eq(tasks.status, "todo"),
-        isNotNull(tasks.assignedAgentId),
+        isNotNull(tasks.assignedDeploymentId),
         isNull(tasks.linkedTraceId),
       ),
     );

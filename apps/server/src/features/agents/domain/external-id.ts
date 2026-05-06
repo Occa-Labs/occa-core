@@ -1,7 +1,7 @@
-// External-id derivation for agents on the gateway side. Pure helpers —
-// no DB, no network. Same logic used by routes/agents.ts,
-// services/agent-create.ts, and services/kickoff-service.ts so they
-// produce identical ids for the same OCCA agent.
+// External-id derivation for deployments on the gateway side. Pure
+// helpers — no DB, no network. Same logic used by routes/lifecycle.ts,
+// services/deployment-create.ts, and services/kickoff-service.ts so
+// they produce identical ids for the same OCCA deployment.
 //
 // Format: `occa-<role>-<firstname>` (e.g. `occa-ceo-alice`,
 // `occa-engineer-bob`). Human-readable id makes gateway-side ops

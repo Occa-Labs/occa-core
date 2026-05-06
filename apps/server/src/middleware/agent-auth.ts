@@ -1,8 +1,11 @@
 import type { Request, Response, NextFunction } from "express";
 import { ERROR_CODES } from "@occa/shared/error-codes";
 import { StatusCodes } from "http-status-codes";
-import { verifyAgentKey } from "../features/agents/services/agent-api-keys";
+import { verifyDeploymentKey } from "../features/agents/services/deployment-api-keys";
 
+// `agentId` here holds the deployment UUID — same identifier the wire
+// surfaces as `agentId` everywhere else, kept stable pending the
+// shared/types migration to `deploymentId`.
 export interface AgentAuthContext {
   agentId: string;
   companyId: string;
@@ -31,11 +34,15 @@ export async function requireAgentToken(
     res.status(StatusCodes.UNAUTHORIZED).json({ error: ERROR_CODES.MISSING_TOKEN });
     return;
   }
-  const verified = await verifyAgentKey(token);
+  const verified = await verifyDeploymentKey(token);
   if (!verified) {
     res.status(StatusCodes.UNAUTHORIZED).json({ error: ERROR_CODES.INVALID_AGENT_TOKEN });
     return;
   }
-  req.agent = verified;
+  req.agent = {
+    agentId: verified.deploymentId,
+    companyId: verified.companyId,
+    keyId: verified.keyId,
+  };
   next();
 }

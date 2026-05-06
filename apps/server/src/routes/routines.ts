@@ -6,8 +6,8 @@ import { z } from "zod";
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import { CronExpressionParser } from "cron-parser";
 import {
-  agents,
   companies,
+  deployments,
   routineTriggers,
   routines,
 } from "@occa/shared/schema";
@@ -65,7 +65,7 @@ function toRoutineDTO(
     companyId: row.companyId,
     title: row.title,
     description: row.description ?? null,
-    assigneeAgentId: row.assigneeAgentId ?? null,
+    assigneeAgentId: row.assigneeDeploymentId ?? null,
     priority: row.priority,
     status: row.status,
     concurrencyPolicy: row.concurrencyPolicy,
@@ -114,12 +114,17 @@ async function loadRoutine(
 
 async function verifyAssignee(
   companyId: string,
-  agentId: string,
+  deploymentId: string,
 ): Promise<boolean> {
   const [row] = await db
-    .select({ id: agents.id })
-    .from(agents)
-    .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)))
+    .select({ id: deployments.id })
+    .from(deployments)
+    .where(
+      and(
+        eq(deployments.id, deploymentId),
+        eq(deployments.companyId, companyId),
+      ),
+    )
     .limit(1);
   return !!row;
 }
@@ -232,7 +237,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
         companyId,
         title: parsed.data.title,
         description: parsed.data.description ?? null,
-        assigneeAgentId: parsed.data.assigneeAgentId,
+        assigneeDeploymentId: parsed.data.assigneeAgentId,
         priority: parsed.data.priority ?? "medium",
       })
       .returning({ id: routines.id });
@@ -302,7 +307,7 @@ router.patch("/:id", requireAuth, async (req: Request, res: Response) => {
       res.status(StatusCodes.BAD_REQUEST).json({ error: ERROR_CODES.AGENT_NOT_FOUND });
       return;
     }
-    update.assigneeAgentId = parsed.data.assigneeAgentId;
+    update.assigneeDeploymentId = parsed.data.assigneeAgentId;
   }
   const [row] = await db
     .update(routines)

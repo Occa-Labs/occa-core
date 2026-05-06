@@ -4,7 +4,7 @@ import { LIMITS } from "../../../lib/limits";
 import { StatusCodes } from "http-status-codes";
 import { z } from "zod";
 import { and, count, eq, sql } from "drizzle-orm";
-import { agents, companies, tasks } from "@occa/shared/schema";
+import { companies, deployments, tasks } from "@occa/shared/schema";
 import type {
   CompanyResponse,
   CompanyStats,
@@ -22,7 +22,7 @@ import {
   TEAM_SIZE_PRESETS,
   startKickoff,
 } from "../../../services/kickoff-service";
-import { hydrateAgentDTOs } from "../../agents/services/agent-status";
+import { hydrateDeploymentDTOs } from "../../agents/services/deployment-status";
 import { KICKOFF_PRESETS, type AgentDTO, type AgentRole } from "@occa/shared/types";
 import { CEO_ROLE } from "@occa/shared/role-catalog";
 import { childLogger } from "../../../lib/logger";
@@ -47,8 +47,8 @@ const router: Router = Router();
 async function buildStats(companyId: string): Promise<CompanyStats> {
   const [agentRow] = await db
     .select({ n: count() })
-    .from(agents)
-    .where(eq(agents.companyId, companyId));
+    .from(deployments)
+    .where(eq(deployments.companyId, companyId));
   const [taskRow] = await db
     .select({ n: count() })
     .from(tasks)
@@ -399,13 +399,13 @@ router.get(
     const buildFrame = async () => {
       const next = await findByIdWithProfile(companyId);
       if (!next) return null;
-      const agentRows = await db
+      const deploymentRows = await db
         .select()
-        .from(agents)
-        .where(eq(agents.companyId, companyId));
-      // hydrateAgentDTOs adds runtime state, but the kickoff stream only
-      // cares about provisioningState — keep it lean.
-      const agentDTOs: AgentDTO[] = await hydrateAgentDTOs(agentRows);
+        .from(deployments)
+        .where(eq(deployments.companyId, companyId));
+      // hydrateDeploymentDTOs adds runtime state, but the kickoff stream
+      // only cares about provisioningState — keep it lean.
+      const agentDTOs: AgentDTO[] = await hydrateDeploymentDTOs(deploymentRows);
       return {
         kickoffState: next.company.kickoffState,
         agents: agentDTOs.map((a) => ({
@@ -491,12 +491,19 @@ router.post(
       const { rowCount: tasksRow } = await tx.execute(sql`
         DELETE FROM tasks WHERE company_id = ${companyId} AND 'kickoff' = ANY(tags)
       `);
-      // Drop every non-CEO agent. CEO survives the reset; the user keeps
-      // their original gateway pairing.
+      // Drop every non-CEO deployment. CEO survives the reset; the user
+      // keeps their original gateway pairing. Cascade clears the runtime
+      // profile + workspace files + skill syncs via FK; identities
+      // survive (they may be redeployed elsewhere).
       const deletedAgents = await tx
-        .delete(agents)
-        .where(and(eq(agents.companyId, companyId), sql`role <> 'ceo'`))
-        .returning({ id: agents.id });
+        .delete(deployments)
+        .where(
+          and(
+            eq(deployments.companyId, companyId),
+            sql`role <> 'ceo'`,
+          ),
+        )
+        .returning({ id: deployments.id });
       await tx
         .update(companies)
         .set({

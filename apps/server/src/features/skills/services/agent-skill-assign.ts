@@ -1,13 +1,14 @@
 // Lazy skill-assignment service.
 //
-// On agent provision, resolve skill sources for the agent's role from
-// `domain/skills/catalog.ts`, ensure each one exists in `companySkills`
-// (fetching from GitHub if missing), and write the resulting keys into
-// `agents.desiredSkills`. The worker's skill-sync loop installs them.
+// On deployment provision, resolve skill sources for the agent's role
+// from `domain/skills/catalog.ts`, ensure each one exists in
+// `companySkills` (fetching from GitHub if missing), and write the
+// resulting keys into `agent_runtime_profile.desiredSkills`. The
+// worker's skill-sync loop installs them.
 //
 // No bulk pre-seeding — only OCCA platform defaults are seeded at boot
 // (services/seed-occa-defaults.ts). Per-role skills are fetched on
-// demand the first time an agent of that role is provisioned.
+// demand the first time a deployment of that role is provisioned.
 
 import type { AgentRole } from "@occa/shared/types";
 import {
@@ -24,18 +25,18 @@ import {
 } from "../repositories/company-skills";
 import {
   getDesiredSkills,
-  listAgentsAwaitingSkillInit,
+  listDeploymentsAwaitingSkillInit,
   setDesiredSkills,
-} from "../../agents/repositories/agents";
-import { enqueueInstalls } from "../../agents/repositories/agent-skill-syncs";
+} from "../../agents/repositories/agent-runtime-profile";
+import { enqueueInstalls } from "../../agents/repositories/deployment-skill-syncs";
 import { childLogger } from "../../../lib/logger";
 
 const log = childLogger("agent-skill-assign");
 
 // Idempotent fetch+insert. Returns the canonical skill key. Race-safe via
 // onConflictDoNothing on the unique (company_id, key) constraint — if two
-// agents provision at once for the same role, only one fetch wins, both
-// end up referencing the same row.
+// deployments provision at once for the same role, only one fetch wins,
+// both end up referencing the same row.
 //
 // Lookups go through the canonical `key` (owner/repo/slug), NOT
 // `sourceLocator`: the locator is rewritten to include the resolved
@@ -47,8 +48,6 @@ const log = childLogger("agent-skill-assign");
 export async function ensureCompanySkill(
   source: string,
 ): Promise<{ key: string }> {
-  // Parse first so we can compute the canonical key without a GitHub call
-  // — the cached/seeded path skips the network entirely.
   const parsed = parseSkillSource(source);
   const key = `${parsed.owner}/${parsed.repo}/${parsed.slug}`;
 
@@ -70,15 +69,10 @@ export async function ensureCompanySkill(
     sourceRepo: fetched.sourceRepo,
     sourcePath: fetched.sourcePath,
     fileInventory: fetched.fileInventory,
-    // allowedRoles is no longer load-bearing for assignment (the role
-    // mapping in domain/skills/catalog.ts is the source of truth).
-    // Kept as [] so existing UI badges stay neutral.
     allowedRoles: [],
     metadata: { ...fetched.metadata, builtin: true },
   });
 
-  // Re-read by canonical key (handles race where another caller inserted
-  // between our existence check and our insert).
   const after = await findBuiltinByKey(fetched.key);
   if (!after) {
     throw new Error(`ensure_skill_failed: ${source}`);
@@ -86,14 +80,15 @@ export async function ensureCompanySkill(
   return { key: after.key };
 }
 
-// Called once at agent birth. Resolves skill sources for the role,
-// ensures each is fetched + cached, writes keys into agent.desiredSkills.
+// Called once at deployment birth. Resolves skill sources for the role,
+// ensures each is fetched + cached, writes keys into the runtime
+// profile's desiredSkills.
 //
 // Soft-skip on per-skill fetch failure: missing one skill doesn't block
 // the rest. The worker's install loop will retry the queued sync; user
 // can also retry from the skills panel.
 export async function autoAssignSkillsToNewAgent(
-  agentId: string,
+  deploymentId: string,
   role: AgentRole,
   _companyId: string,
 ): Promise<string[]> {
@@ -109,36 +104,37 @@ export async function autoAssignSkillsToNewAgent(
     }
   }
 
-  // Merge with existing desiredSkills (idempotent — agent may already
-  // have entries from a previous reprovision).
-  const current = await getDesiredSkills(agentId);
+  // Merge with existing desiredSkills (idempotent — deployment may
+  // already have entries from a previous reprovision).
+  const current = await getDesiredSkills(deploymentId);
   if (current === undefined) return [];
 
   const merged = Array.from(new Set([...current, ...keys]));
-  await setDesiredSkills({ agentId, desiredSkills: merged });
+  await setDesiredSkills({ deploymentId, desiredSkills: merged });
 
   return keys;
 }
 
-// Inserts pending agent_skill_syncs rows so the worker installs them on
-// its next tick. Pass-through to the repository — kept here to preserve
-// the current public API (callers don't need to know it's now a repo
-// call).
+// Inserts pending deployment_skill_syncs rows so the worker installs
+// them on its next tick. Pass-through to the repository — kept here to
+// preserve the current public API (callers don't need to know it's now
+// a repo call).
 export async function enqueueSkillSyncs(input: {
-  agentId: string;
+  deploymentId: string;
   companyId: string;
   skillKeys: string[];
 }): Promise<void> {
   return enqueueInstalls(input);
 }
 
-// One-shot catch-up for agents that never completed initial auto-assign.
-// Mostly defensive — new agents always init via createAgentInternal.
+// One-shot catch-up for deployments that never completed initial
+// auto-assign. Mostly defensive — new deployments always init via
+// createDeploymentInternal.
 export async function backfillSkillsForAllAgents(): Promise<{
   scanned: number;
   updated: number;
 }> {
-  const rows = await listAgentsAwaitingSkillInit();
+  const rows = await listDeploymentsAwaitingSkillInit();
   let updated = 0;
   for (const row of rows) {
     const keys = await autoAssignSkillsToNewAgent(

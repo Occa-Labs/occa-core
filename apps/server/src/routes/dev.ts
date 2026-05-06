@@ -14,11 +14,13 @@ import {
 } from "@occa/adapter-openclaw";
 import { db } from "../infra/database/client";
 import {
-  agents,
+  agentIdentities,
+  agentRuntimeProfile,
   approvals,
   authNonces,
   companies,
   companySkills,
+  deployments,
   users,
 } from "@occa/shared/schema";
 import { requireAuth, requireDevWallet } from "../middleware/auth";
@@ -130,21 +132,24 @@ router.post(
       return;
     }
 
-    const allAgents = await db
-      .select()
-      .from(agents)
-      .where(eq(agents.companyId, company.id));
-    if (allAgents.length === 0) {
+    // Pull every runtime profile in this company (paired with its
+    // deployment for the externalAgentId used by the orphan diff). All
+    // entries for the same company currently share gateway + apiKey;
+    // keypairs differ. We just need one valid set to connect.
+    const allProfiles = await db
+      .select({
+        externalAgentId: agentRuntimeProfile.externalAgentId,
+        adapterConfig: agentRuntimeProfile.adapterConfig,
+      })
+      .from(agentRuntimeProfile)
+      .where(eq(agentRuntimeProfile.companyId, company.id));
+    if (allProfiles.length === 0) {
       res
         .status(StatusCodes.BAD_REQUEST)
         .json({ error: ERROR_CODES.NO_AGENT_CREDS_AVAILABLE });
       return;
     }
-
-    // Pick any agent that has complete adapter creds; all entries for the
-    // same company currently share gateway + apiKey, but keypair differs.
-    // We just need one valid set to connect.
-    const credSource = allAgents.find((a) => {
+    const credSource = allProfiles.find((a) => {
       const c = (a.adapterConfig ?? {}) as Record<string, unknown>;
       return (
         typeof c.gatewayUrl === "string" &&
@@ -173,7 +178,7 @@ router.post(
     }
 
     const knownExternalIds = new Set(
-      allAgents
+      allProfiles
         .map((a) => a.externalAgentId)
         .filter((id): id is string => typeof id === "string" && id.length > 0),
     );
@@ -528,13 +533,22 @@ router.post(
       return;
     }
 
-    // Pull the first two agents. If we have at least two, the requester is
-    // agentRows[0] (typically the CEO / first-onboarded) and the delegate
-    // target is agentRows[1] — gives the "CTO hires Engineer" flavour.
+    // Pull the first two deployments. If we have at least two, the
+    // requester is agentRows[0] (typically the CEO / first-onboarded)
+    // and the delegate target is agentRows[1] — gives the "CTO hires
+    // Engineer" flavour. Names come from `agent_identities` via JOIN.
     const agentRows = await db
-      .select({ id: agents.id, name: agents.name, role: agents.role })
-      .from(agents)
-      .where(eq(agents.companyId, company.id))
+      .select({
+        id: deployments.id,
+        name: agentIdentities.name,
+        role: deployments.role,
+      })
+      .from(deployments)
+      .innerJoin(
+        agentIdentities,
+        eq(deployments.agentIdentityId, agentIdentities.id),
+      )
+      .where(eq(deployments.companyId, company.id))
       .limit(5);
 
     const delegate = buildDelegateFixture(agentRows);
@@ -552,7 +566,7 @@ router.post(
       .insert(approvals)
       .values({
         companyId: company.id,
-        requestedByAgentId: requesterId,
+        requestedByDeploymentId: requesterId,
         actionType: fixture.actionType,
         payload: fixture.payload,
       })

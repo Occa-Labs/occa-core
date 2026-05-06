@@ -5,15 +5,16 @@ import { PublicKey } from "@solana/web3.js";
 import { ERROR_CODES } from "@occa/shared/error-codes";
 import {
   buildCreateCompanyInstruction,
-  buildRegisterAgentInstruction,
+  buildCreateDeploymentInstruction,
   buildSetOperatingWalletInstruction,
-  deriveAgentPda,
   deriveCompanyPda,
+  deriveDeploymentPda,
 } from "occa-sdk";
+import { findById as findIdentityById } from "../../agents/repositories/agent-identities";
 import { childLogger } from "../../../lib/logger";
 import { requireAuth } from "../../../middleware/auth";
 import { findOwnedById as findOwnedCompanyById } from "../../companies/repositories/companies";
-import { findOwnedByUserId as findOwnedAgentByUserId } from "../../agents/repositories/agents";
+import { findOwnedByUserId as findOwnedDeploymentByUserId } from "../../agents/repositories/deployments";
 import { findById as findCompanyById } from "../../companies/repositories/companies";
 import { getOperatorKeypair } from "../../../infra/solana/operator-signer";
 import {
@@ -229,7 +230,14 @@ router.post(
       owner: userWalletPk,
       payer: operator.publicKey,
       nonce,
+      name: company.name,
+      locale: company.locale ?? "",
       metadataUri,
+      // SHA-256 of canonical metadata JSON, 32 bytes. Empty buffer when
+      // metadata not yet finalized — chain accepts zeroes here.
+      metadataHash: company.metadataHash
+        ? Buffer.from(company.metadataHash, "hex")
+        : Buffer.alloc(32),
     });
 
     let prepared: Awaited<ReturnType<typeof prepareOwnerSignedTx>>;
@@ -380,7 +388,10 @@ router.post(
       return;
     }
 
-    const agent = await findOwnedAgentByUserId({ userId, agentId });
+    const agent = await findOwnedDeploymentByUserId({
+      userId,
+      deploymentId: agentId,
+    });
     if (!agent) {
       res
         .status(StatusCodes.NOT_FOUND)
@@ -388,11 +399,11 @@ router.post(
       return;
     }
 
-    if (agent.agentPda) {
+    if (agent.deploymentPda) {
       res.status(StatusCodes.OK).json({
         alreadyRegistered: true,
-        agentPda: agent.agentPda,
-        agentIndex: agent.agentIndex,
+        agentPda: agent.deploymentPda,
+        agentIndex: agent.deploymentIndex,
       });
       return;
     }
@@ -411,12 +422,36 @@ router.post(
     const userWalletPk = new PublicKey(req.user!.walletAddress);
     const companyPda = new PublicKey(companyRow.companyPda);
 
-    // Pick a free agent_index. Prefer the row's reserved index if any.
+    // create_deployment requires the AgentIdentity PDA — that PDA must
+    // already exist on chain (registered via register_agent_identity in
+    // a separate flow). The deployment row stores the identity FK; load
+    // it here to get the on-chain PDA string.
+    const identityRow = await findIdentityById(agent.agentIdentityId);
+    if (!identityRow?.identityPda) {
+      res
+        .status(StatusCodes.PRECONDITION_FAILED)
+        .json({ error: ERROR_CODES.AGENT_NOT_FOUND });
+      return;
+    }
+    let identityPda: PublicKey;
+    try {
+      identityPda = new PublicKey(identityRow.identityPda);
+    } catch {
+      // Placeholder identity_pda from pre-chain deployment — block until
+      // identity is registered on-chain. Caller should run the identity
+      // registration flow first.
+      res
+        .status(StatusCodes.PRECONDITION_FAILED)
+        .json({ error: ERROR_CODES.AGENT_NOT_FOUND });
+      return;
+    }
+
+    // Pick a free deployment_index. Prefer the row's reserved index if any.
     let agentIndex =
-      agent.agentIndex ?? (await nextAgentIndex(agent.companyId));
+      agent.deploymentIndex ?? (await nextAgentIndex(agent.companyId));
     let agentPda: PublicKey | null = null;
     for (let attempt = 0; attempt < 16; attempt += 1) {
-      const probe = deriveAgentPda(companyPda, agentIndex);
+      const probe = deriveDeploymentPda(companyPda, agentIndex);
       // eslint-disable-next-line no-await-in-loop
       const exists = await accountExists(probe.pda);
       if (!exists) {
@@ -433,17 +468,21 @@ router.post(
     }
 
     // Pin the index on the row so confirm can't drift.
-    if (agent.agentIndex !== agentIndex) {
+    if (agent.deploymentIndex !== agentIndex) {
       await reserveAgentIndex({ agentId, agentIndex });
     }
 
-    const { instruction } = buildRegisterAgentInstruction({
+    const { instruction } = buildCreateDeploymentInstruction({
       companyPda,
+      identityPda,
       owner: userWalletPk,
       payer: operator.publicKey,
-      agentIndex,
-      roleId: 0,
+      deploymentIndex: agentIndex,
+      role: agent.role,
+      parentDeploymentIndex: agent.parentDeploymentIndex ?? null,
       adapterId: PublicKey.default,
+      metadataUri: "",
+      metadataHash: Buffer.alloc(32),
     });
 
     let prepared: Awaited<ReturnType<typeof prepareOwnerSignedTx>>;
@@ -494,7 +533,10 @@ router.post(
     const { signedTransaction, blockhash, lastValidBlockHeight, agentIndex } =
       parsed.data;
 
-    const agent = await findOwnedAgentByUserId({ userId, agentId });
+    const agent = await findOwnedDeploymentByUserId({
+      userId,
+      deploymentId: agentId,
+    });
     if (!agent) {
       res
         .status(StatusCodes.NOT_FOUND)
@@ -502,12 +544,12 @@ router.post(
       return;
     }
 
-    if (agent.agentPda) {
+    if (agent.deploymentPda) {
       res.status(StatusCodes.OK).json({
         alreadyRegistered: true,
-        agentPda: agent.agentPda,
-        agentIndex: agent.agentIndex,
-        agentChainTxSignature: agent.agentChainTxSignature,
+        agentPda: agent.deploymentPda,
+        agentIndex: agent.deploymentIndex,
+        agentChainTxSignature: agent.chainTxSignature,
       });
       return;
     }
@@ -522,7 +564,7 @@ router.post(
 
     const userWalletPk = new PublicKey(req.user!.walletAddress);
     const companyPda = new PublicKey(companyRow.companyPda);
-    const { pda: agentPda } = deriveAgentPda(companyPda, agentIndex);
+    const { pda: agentPda } = deriveDeploymentPda(companyPda, agentIndex);
 
     let signature: string;
     try {
@@ -607,14 +649,17 @@ router.post(
       return;
     }
 
-    const agent = await findOwnedAgentByUserId({ userId, agentId });
+    const agent = await findOwnedDeploymentByUserId({
+      userId,
+      deploymentId: agentId,
+    });
     if (!agent) {
       res
         .status(StatusCodes.NOT_FOUND)
         .json({ error: ERROR_CODES.AGENT_NOT_FOUND });
       return;
     }
-    if (!agent.agentPda) {
+    if (!agent.deploymentPda) {
       res
         .status(StatusCodes.PRECONDITION_FAILED)
         .json({ error: ERROR_CODES.AGENT_NOT_FOUND });
@@ -626,7 +671,7 @@ router.post(
 
     const userWalletPk = new PublicKey(req.user!.walletAddress);
     const { instruction } = buildSetOperatingWalletInstruction({
-      agentPda: new PublicKey(agent.agentPda),
+      deploymentPda: new PublicKey(agent.deploymentPda),
       owner: userWalletPk,
       newOperatingWallet,
     });
@@ -690,8 +735,11 @@ router.post(
       return;
     }
 
-    const agent = await findOwnedAgentByUserId({ userId, agentId });
-    if (!agent || !agent.agentPda) {
+    const agent = await findOwnedDeploymentByUserId({
+      userId,
+      deploymentId: agentId,
+    });
+    if (!agent || !agent.deploymentPda) {
       res
         .status(StatusCodes.NOT_FOUND)
         .json({ error: ERROR_CODES.AGENT_NOT_FOUND });
@@ -721,7 +769,7 @@ router.post(
     log.info(
       {
         agentId,
-        agentPda: agent.agentPda,
+        agentPda: agent.deploymentPda,
         operatingWallet: newOperatingWallet.toBase58(),
         signature,
       },

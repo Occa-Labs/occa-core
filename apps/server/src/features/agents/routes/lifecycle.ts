@@ -24,27 +24,38 @@ import {
   type SerializedKeypair,
 } from "@occa/adapter-openclaw";
 import {
-  agents,
-  agentWorkspaceFiles,
+  agentIdentities,
+  agentRuntimeProfile,
   companies,
+  deploymentWorkspaceFiles,
+  deployments,
   users,
 } from "@occa/shared/schema";
+import { randomBytes } from "node:crypto";
 import type {
   CreateAgentResponse,
   ListAgentFilesResponse,
   ListAgentsResponse,
 } from "@occa/shared/types";
 import { db } from "../../../infra/database/client";
-import { findOwnedByUserId } from "../repositories/agents";
+import {
+  findOwnedByUserId,
+  listByCompanyId as listDeploymentsByCompanyId,
+} from "../repositories/deployments";
+import { findByDeploymentId as findRuntimeProfile } from "../repositories/agent-runtime-profile";
+import { findById as findIdentityById } from "../repositories/agent-identities";
 import { findByCompanyId as findCompanyProfileByCompanyId } from "../../companies/repositories/company-profiles";
 import { requireAuth } from "../../../middleware/auth";
 import { toCompanyDTO } from "../../companies/domain/dto";
-import { hydrateAgentDTO, hydrateAgentDTOs } from "../services/agent-status";
+import {
+  hydrateDeploymentDTO,
+  hydrateDeploymentDTOs,
+} from "../services/deployment-status";
 import {
   autoAssignSkillsToNewAgent,
   enqueueSkillSyncs,
 } from "../../skills/services/agent-skill-assign";
-import { wouldCreateCycle } from "../services/agent-hierarchy";
+import { wouldCreateCycle } from "../services/deployment-hierarchy";
 import {
   renderWorkspaceFiles,
   roleLabelFor,
@@ -62,9 +73,16 @@ import { log } from "./_shared";
 
 const router: Router = Router();
 
+// Synthetic placeholder for on-chain-bound `agent_pubkey`, `identity_pda`,
+// `deployment_pda` columns. NOT NULL UNIQUE in the schema; chain step
+// will overwrite with real Solana pubkey/PDA values.
+function synthPlaceholderKey(tag: string): string {
+  return `${tag}_${randomBytes(24).toString("hex")}`;
+}
+
 // Local helper — single-row read used by the create flow's gating (do
 // we need to demand a `companyName` from the caller?). The owner-scoped
-// agent lookups go through `findOwnedByUserId` instead.
+// deployment lookups go through `findOwnedByUserId` instead.
 async function userCompanyId(userId: string): Promise<string | null> {
   const [row] = await db
     .select({ id: companies.id })
@@ -161,14 +179,15 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
   let keypair;
   let deviceToken: string | undefined;
 
-  // Pairing is per-(gatewayUrl, deviceId). Pull all agents in user's
-  // company and filter by *normalized* gatewayUrl in JS — stored URLs are
-  // `wss://...` (post adapter scheme rewrite) while probe input is usually
-  // `https://...` with possible trailing slash, so a SQL `=` would miss.
-  const userAgents = await db
-    .select({ adapterConfig: agents.adapterConfig })
-    .from(agents)
-    .innerJoin(companies, eq(agents.companyId, companies.id))
+  // Pairing is per-(gatewayUrl, deviceId). Pull all runtime profiles in
+  // user's company and filter by *normalized* gatewayUrl in JS — stored
+  // URLs are `wss://...` (post adapter scheme rewrite) while probe input
+  // is usually `https://...` with possible trailing slash, so a SQL `=`
+  // would miss.
+  const userProfiles = await db
+    .select({ adapterConfig: agentRuntimeProfile.adapterConfig })
+    .from(agentRuntimeProfile)
+    .innerJoin(companies, eq(agentRuntimeProfile.companyId, companies.id))
     .where(
       and(
         eq(companies.ownerUserId, userId),
@@ -177,14 +196,14 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
       ),
     );
   const probeKey = normalizeGatewayUrl(adapterConfig.gatewayUrl);
-  const existingAgent = userAgents.find((row) => {
+  const existingProfile = userProfiles.find((row) => {
     const cfg = row.adapterConfig as Record<string, unknown> | undefined;
     const stored = cfg?.gatewayUrl;
     return (
       typeof stored === "string" && normalizeGatewayUrl(stored) === probeKey
     );
   });
-  const agentCfg = existingAgent?.adapterConfig as
+  const agentCfg = existingProfile?.adapterConfig as
     | Record<string, unknown>
     | undefined;
   const agentKeypair = agentCfg?.deviceKeypair as
@@ -249,10 +268,11 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
 
   const serialized = serializeKeypair(keypair);
 
-  // Step 1: DB transaction
-  stepStart("creating_record", "Creating agent record");
+  // Step 1: DB transaction — insert identity → deployment → runtime profile.
+  stepStart("creating_record", "Creating deployment record");
   let companyRow: typeof companies.$inferSelect | null = null;
-  let agentRow: typeof agents.$inferSelect;
+  let identityRow: typeof agentIdentities.$inferSelect;
+  let deploymentRow: typeof deployments.$inferSelect;
   try {
     const tx = await db.transaction(async (t) => {
       let cid = existingCompanyId;
@@ -266,7 +286,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
         cid = inserted.id;
       }
       // Assign 3D seat — pure algorithm against the current occupied set.
-      // Done inside the transaction so a concurrent hire on the same
+      // Done inside the transaction so a concurrent deploy on the same
       // company can't pick the same desk before we commit.
       const workstationId = await assignSeatForCompany({
         companyId: cid,
@@ -275,25 +295,71 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
       if (!workstationId) {
         throw new Error("office_full");
       }
-      const [aRow] = await t
-        .insert(agents)
+
+      // identity owner_wallet is NOT NULL but companies.owner_wallet is
+      // nullable until chain registration — fall back to a placeholder
+      // marker so the constraint holds. Chain step overwrites both.
+      const [companyForOwner] = await t
+        .select({ ownerWallet: companies.ownerWallet })
+        .from(companies)
+        .where(eq(companies.id, cid))
+        .limit(1);
+      const ownerWallet =
+        companyForOwner?.ownerWallet ?? `placeholder:${cid}`;
+
+      const [iRow] = await t
+        .insert(agentIdentities)
         .values({
-          companyId: cid,
+          ownerUserId: userId,
+          agentPubkey: synthPlaceholderKey("ag_pk"),
+          identityPda: synthPlaceholderKey("ag_pda"),
+          ownerWallet,
           name,
-          role,
-          adapterType,
-          adapterConfig: {
-            gatewayUrl: adapterConfig.gatewayUrl,
-            apiKey: adapterConfig.apiKey,
-            deviceKeypair: serialized,
-            ...(deviceToken ? { deviceToken } : {}),
-          },
-          workstationId,
         })
         .returning();
-      return { aRow, createdCompanyRow };
+
+      // Per-company `MAX(deployment_index)+1`. Serialized via the unique
+      // `(company_id, deployment_index)` index — concurrent deploys race
+      // against the constraint and the loser would surface a unique
+      // violation here, which the catch below maps to the same error path
+      // as company-already-exists.
+      const sibs = await t
+        .select({ idx: deployments.deploymentIndex })
+        .from(deployments)
+        .where(eq(deployments.companyId, cid));
+      const nextIdx =
+        sibs.length === 0 ? 0 : Math.max(...sibs.map((r) => r.idx)) + 1;
+
+      const [dRow] = await t
+        .insert(deployments)
+        .values({
+          companyId: cid,
+          agentIdentityId: iRow.id,
+          deploymentPda: synthPlaceholderKey("dep_pda"),
+          deploymentIndex: nextIdx,
+          role,
+          status: "active",
+        })
+        .returning();
+
+      await t.insert(agentRuntimeProfile).values({
+        deploymentId: dRow.id,
+        companyId: cid,
+        adapterType,
+        adapterConfig: {
+          gatewayUrl: adapterConfig.gatewayUrl,
+          apiKey: adapterConfig.apiKey,
+          deviceKeypair: serialized,
+          ...(deviceToken ? { deviceToken } : {}),
+        },
+        provisioningState: "pending",
+        workstationId,
+      });
+
+      return { iRow, dRow, createdCompanyRow };
     });
-    agentRow = tx.aRow;
+    identityRow = tx.iRow;
+    deploymentRow = tx.dRow;
     companyRow = tx.createdCompanyRow;
   } catch (err) {
     if (
@@ -312,11 +378,11 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
 
   // Step 2: Provision on gateway (may emit gateway_restart substep)
   stepStart("provisioning", "Provisioning on gateway");
-  const companyId = agentRow.companyId;
+  const companyId = deploymentRow.companyId;
   const externalAgentId = buildExternalAgentId(
-    agentRow.id,
-    agentRow.role,
-    agentRow.name,
+    deploymentRow.id,
+    deploymentRow.role,
+    identityRow.name,
   );
   const workspacePath = buildWorkspacePath(externalAgentId);
 
@@ -351,14 +417,14 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
     fail(
       `provision_failed: ${provision.error}${provision.reason ? ` — ${provision.reason}` : ""}`,
       currentStep,
-      { agentId: agentRow.id, retryable: true },
+      { agentId: deploymentRow.id, retryable: true },
     );
     return;
   }
   stepDone("provisioning");
 
-  const [updatedAgent] = await db
-    .update(agents)
+  await db
+    .update(agentRuntimeProfile)
     .set({
       externalAgentId: provision.externalAgentId,
       adapterConfig: {
@@ -369,10 +435,10 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
         openclawAgentId: provision.externalAgentId,
         workspacePath: provision.workspacePath,
       },
+      provisioningState: "ready",
       updatedAt: new Date(),
     })
-    .where(eq(agents.id, agentRow.id))
-    .returning();
+    .where(eq(agentRuntimeProfile.deploymentId, deploymentRow.id));
 
   // Step 3: Seed workspace files
   stepStart("seeding_workspace", "Seeding workspace files");
@@ -383,7 +449,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
   let rendered: Awaited<ReturnType<typeof renderWorkspaceFiles>>;
   try {
     rendered = await renderWorkspaceFiles({
-      agent: { name, role, roleLabel: roleLabelFor(role) },
+      agent: { name: identityRow.name, role, roleLabel: roleLabelFor(role) },
       company: { name: companyRow ? companyRow.name : "" },
       runtime: {
         externalAgentId: provision.externalAgentId,
@@ -398,7 +464,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
     fail(
       err instanceof Error ? err.message : "workspace_template_render_failed",
       "seeding_workspace",
-      { agentId: agentRow.id, retryable: true },
+      { agentId: deploymentRow.id, retryable: true },
     );
     return;
   }
@@ -430,16 +496,16 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
     fail(
       `seed_failed: ${seed.error}${seed.reason ? ` — ${seed.reason}` : ""}`,
       "seeding_workspace",
-      { agentId: agentRow.id, retryable: true },
+      { agentId: deploymentRow.id, retryable: true },
     );
     return;
   }
 
   const syncedAt = new Date();
   try {
-    await db.insert(agentWorkspaceFiles).values(
+    await db.insert(deploymentWorkspaceFiles).values(
       rendered.map((f) => ({
-        agentId: agentRow.id,
+        deploymentId: deploymentRow.id,
         companyId,
         filename: f.filename,
         content: f.content,
@@ -453,25 +519,25 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
     fail(
       err instanceof Error ? err.message : "workspace_files_persist_failed",
       "seeding_workspace",
-      { agentId: agentRow.id, retryable: true },
+      { agentId: deploymentRow.id, retryable: true },
     );
     return;
   }
   stepDone("seeding_workspace");
 
-  // Step 4: Auto-assign skills + enqueue installs (non-critical)
+  // Step 4: Auto-assign skills + enqueue installs (non-critical).
+  // skills feature still uses the `agentId` field name pre-migration —
+  // the value here is the deployment UUID.
   stepStart("assigning_skills", "Assigning skills");
-  let finalRow = updatedAgent;
   try {
     const keys = await autoAssignSkillsToNewAgent(
-      updatedAgent.id,
-      updatedAgent.role,
+      deploymentRow.id,
+      deploymentRow.role,
       companyId,
     );
     if (keys.length > 0) {
-      finalRow = { ...updatedAgent, desiredSkills: keys };
       await enqueueSkillSyncs({
-        agentId: updatedAgent.id,
+        deploymentId: deploymentRow.id,
         companyId,
         skillKeys: keys,
       });
@@ -481,7 +547,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
   }
   stepDone("assigning_skills");
 
-  // Keypair has migrated to agent.adapter_config.deviceKeypair — drop the
+  // Keypair has migrated to runtime profile adapter_config — drop the
   // pending copy so a future onboarding (e.g. second wallet) starts with
   // a clean slate instead of inheriting a stale identity.
   await db
@@ -493,7 +559,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
     ? await findCompanyProfileByCompanyId(companyRow.id)
     : null;
   const body: CreateAgentResponse = {
-    agent: await hydrateAgentDTO(finalRow),
+    agent: await hydrateDeploymentDTO(deploymentRow),
     company: companyRow
       ? toCompanyDTO(companyRow, companyProfileRow)
       : undefined,
@@ -511,16 +577,30 @@ router.post(
   "/:id/reprovision",
   requireAuth,
   async (req: Request, res: Response) => {
-    const agentRecord = await findOwnedByUserId({
+    const deploymentRecord = await findOwnedByUserId({
       userId: req.user!.userId,
-      agentId: req.params.id,
+      deploymentId: req.params.id,
     });
-    if (!agentRecord) {
+    if (!deploymentRecord) {
       res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.NOT_FOUND });
       return;
     }
+    const identityRecord = await findIdentityById(
+      deploymentRecord.agentIdentityId,
+    );
+    if (!identityRecord) {
+      res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.NOT_FOUND });
+      return;
+    }
+    const profile = await findRuntimeProfile(deploymentRecord.id);
+    if (!profile) {
+      res
+        .status(StatusCodes.BAD_REQUEST)
+        .json({ error: ERROR_CODES.AGENT_NOT_CONFIGURED });
+      return;
+    }
 
-    let cfg = (agentRecord.adapterConfig ?? {}) as Record<string, unknown>;
+    let cfg = (profile.adapterConfig ?? {}) as Record<string, unknown>;
 
     // Backfill missing gateway creds / keypair from the company's CEO.
     // Old kickoff-service inserts didn't persist the deviceKeypair on
@@ -535,17 +615,26 @@ router.post(
       typeof cfg.apiKey !== "string" ||
       !cfg.deviceKeypair;
     if (missing) {
-      const [ceo] = await db
-        .select()
-        .from(agents)
+      // Find the CEO deployment in the same company, then read the
+      // adapter config off its runtime profile.
+      const [ceoCfgRow] = await db
+        .select({ adapterConfig: agentRuntimeProfile.adapterConfig })
+        .from(agentRuntimeProfile)
+        .innerJoin(
+          deployments,
+          eq(agentRuntimeProfile.deploymentId, deployments.id),
+        )
         .where(
           and(
-            eq(agents.companyId, agentRecord.companyId),
-            eq(agents.role, CEO_ROLE),
+            eq(deployments.companyId, deploymentRecord.companyId),
+            eq(deployments.role, CEO_ROLE),
           ),
         )
         .limit(1);
-      const ceoCfg = (ceo?.adapterConfig ?? {}) as Record<string, unknown>;
+      const ceoCfg = (ceoCfgRow?.adapterConfig ?? {}) as Record<
+        string,
+        unknown
+      >;
       if (
         typeof ceoCfg.gatewayUrl !== "string" ||
         typeof ceoCfg.apiKey !== "string" ||
@@ -558,10 +647,11 @@ router.post(
           .json({ error: ERROR_CODES.AGENT_NOT_CONFIGURED });
         return;
       }
-      // Preserve per-agent extras the row already had (e.g.
+      // Preserve per-deployment extras the row already had (e.g.
       // openclawAgentId, workspacePath from a prior partial provision),
-      // then overlay CEO credentials. Order matters: per-agent fields
-      // first, credentials last so the broken baseline gets repaired.
+      // then overlay CEO credentials. Order matters: per-deployment
+      // fields first, credentials last so the broken baseline gets
+      // repaired.
       const merged: Record<string, unknown> = {
         ...cfg,
         gatewayUrl: ceoCfg.gatewayUrl,
@@ -573,11 +663,11 @@ router.post(
       }
       cfg = merged;
       await db
-        .update(agents)
+        .update(agentRuntimeProfile)
         .set({ adapterConfig: merged, updatedAt: new Date() })
-        .where(eq(agents.id, agentRecord.id));
+        .where(eq(agentRuntimeProfile.deploymentId, deploymentRecord.id));
       log.info(
-        { agentId: agentRecord.id, role: agentRecord.role },
+        { deploymentId: deploymentRecord.id, role: deploymentRecord.role },
         "reprovision: backfilled adapter creds from CEO keypair",
       );
     }
@@ -591,8 +681,12 @@ router.post(
     let deviceToken: string | undefined =
       typeof cfg.deviceToken === "string" ? cfg.deviceToken : undefined;
     const externalAgentId =
-      agentRecord.externalAgentId ??
-      buildExternalAgentId(agentRecord.id, agentRecord.role, agentRecord.name);
+      profile.externalAgentId ??
+      buildExternalAgentId(
+        deploymentRecord.id,
+        deploymentRecord.role,
+        identityRecord.name,
+      );
     const workspacePath = buildWorkspacePath(externalAgentId);
 
     res.setHeader("Content-Type", "text/event-stream");
@@ -617,7 +711,7 @@ router.post(
       emit("error", {
         message,
         step,
-        agentId: agentRecord.id,
+        agentId: deploymentRecord.id,
         retryable: true,
       });
       res.end();
@@ -662,7 +756,7 @@ router.post(
     if (provision.deviceToken) deviceToken = provision.deviceToken;
 
     await db
-      .update(agents)
+      .update(agentRuntimeProfile)
       .set({
         externalAgentId: provision.externalAgentId,
         adapterConfig: {
@@ -673,7 +767,7 @@ router.post(
         },
         updatedAt: new Date(),
       })
-      .where(eq(agents.id, agentRecord.id));
+      .where(eq(agentRuntimeProfile.deploymentId, deploymentRecord.id));
 
     // Step: seed workspace files (upsert — overwrite any partial
     // previous seed)
@@ -686,16 +780,16 @@ router.post(
     const [companyRow] = await db
       .select()
       .from(companies)
-      .where(eq(companies.id, agentRecord.companyId))
+      .where(eq(companies.id, deploymentRecord.companyId))
       .limit(1);
 
     let rendered: Awaited<ReturnType<typeof renderWorkspaceFiles>>;
     try {
       rendered = await renderWorkspaceFiles({
         agent: {
-          name: agentRecord.name,
-          role: agentRecord.role,
-          roleLabel: roleLabelFor(agentRecord.role),
+          name: identityRecord.name,
+          role: deploymentRecord.role,
+          roleLabel: roleLabelFor(deploymentRecord.role),
         },
         company: { name: companyRow?.name ?? "" },
         runtime: {
@@ -733,15 +827,15 @@ router.post(
       return;
     }
 
-    // Upsert workspace files — replace any existing rows for this agent
+    // Upsert workspace files — replace any existing rows for this deployment
     try {
       await db
-        .delete(agentWorkspaceFiles)
-        .where(eq(agentWorkspaceFiles.agentId, agentRecord.id));
-      await db.insert(agentWorkspaceFiles).values(
+        .delete(deploymentWorkspaceFiles)
+        .where(eq(deploymentWorkspaceFiles.deploymentId, deploymentRecord.id));
+      await db.insert(deploymentWorkspaceFiles).values(
         rendered.map((f) => ({
-          agentId: agentRecord.id,
-          companyId: agentRecord.companyId,
+          deploymentId: deploymentRecord.id,
+          companyId: deploymentRecord.companyId,
           filename: f.filename,
           content: f.content,
           source: "template" as const,
@@ -763,14 +857,14 @@ router.post(
     stepStart("assigning_skills", "Assigning skills");
     try {
       const keys = await autoAssignSkillsToNewAgent(
-        agentRecord.id,
-        agentRecord.role,
-        agentRecord.companyId,
+        deploymentRecord.id,
+        deploymentRecord.role,
+        deploymentRecord.companyId,
       );
       if (keys.length > 0) {
         await enqueueSkillSyncs({
-          agentId: agentRecord.id,
-          companyId: agentRecord.companyId,
+          deploymentId: deploymentRecord.id,
+          companyId: deploymentRecord.companyId,
           skillKeys: keys,
         });
       }
@@ -779,30 +873,25 @@ router.post(
     }
     stepDone("assigning_skills");
 
-    // Mark the row healthy now that gateway provision + workspace seed +
-    // skill assignment all completed. Without this, the agent stays in
-    // its pre-retry state (e.g. `failed`) and the Overview tab keeps
-    // showing the "Provisioning incomplete" banner even after a
-    // successful retry.
+    // Mark the runtime profile healthy now that gateway provision +
+    // workspace seed + skill assignment all completed. Without this, the
+    // deployment stays in its pre-retry state (e.g. `failed`) and the
+    // Overview tab keeps showing the "Provisioning incomplete" banner
+    // even after a successful retry.
     await db
-      .update(agents)
+      .update(agentRuntimeProfile)
       .set({
         provisioningState: "ready",
         provisioningError: null,
         updatedAt: new Date(),
       })
-      .where(eq(agents.id, agentRecord.id));
+      .where(eq(agentRuntimeProfile.deploymentId, deploymentRecord.id));
 
-    const [finalRow] = await db
-      .select()
-      .from(agents)
-      .where(eq(agents.id, agentRecord.id))
-      .limit(1);
     const companyProfileRow = companyRow
       ? await findCompanyProfileByCompanyId(companyRow.id)
       : null;
     const body: CreateAgentResponse = {
-      agent: await hydrateAgentDTO(finalRow),
+      agent: await hydrateDeploymentDTO(deploymentRecord),
       company: companyRow
         ? toCompanyDTO(companyRow, companyProfileRow)
         : undefined,
@@ -812,7 +901,7 @@ router.post(
   },
 );
 
-// GET /api/agents — list this company's agents.
+// GET /api/agents — list this company's deployments.
 router.get("/", requireAuth, async (req: Request, res: Response) => {
   const companyId = await userCompanyId(req.user!.userId);
   if (!companyId) {
@@ -820,11 +909,8 @@ router.get("/", requireAuth, async (req: Request, res: Response) => {
     res.json(body);
     return;
   }
-  const rows = await db
-    .select()
-    .from(agents)
-    .where(eq(agents.companyId, companyId));
-  const body: ListAgentsResponse = { agents: await hydrateAgentDTOs(rows) };
+  const rows = await listDeploymentsByCompanyId(companyId);
+  const body: ListAgentsResponse = { agents: await hydrateDeploymentDTOs(rows) };
   res.json(body);
 });
 
@@ -832,21 +918,21 @@ router.get("/", requireAuth, async (req: Request, res: Response) => {
 router.get("/:id", requireAuth, async (req: Request, res: Response) => {
   const existing = await findOwnedByUserId({
     userId: req.user!.userId,
-    agentId: req.params.id,
+    deploymentId: req.params.id,
   });
   if (!existing) {
     res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.NOT_FOUND });
     return;
   }
-  res.json({ agent: await hydrateAgentDTO(existing) });
+  res.json({ agent: await hydrateDeploymentDTO(existing) });
 });
 
 // GET /api/agents/:id/files — list workspace files from
-// agent_workspace_files.
+// deployment_workspace_files.
 router.get("/:id/files", requireAuth, async (req: Request, res: Response) => {
   const existing = await findOwnedByUserId({
     userId: req.user!.userId,
-    agentId: req.params.id,
+    deploymentId: req.params.id,
   });
   if (!existing) {
     res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.NOT_FOUND });
@@ -854,8 +940,8 @@ router.get("/:id/files", requireAuth, async (req: Request, res: Response) => {
   }
   const rows = await db
     .select()
-    .from(agentWorkspaceFiles)
-    .where(eq(agentWorkspaceFiles.agentId, existing.id));
+    .from(deploymentWorkspaceFiles)
+    .where(eq(deploymentWorkspaceFiles.deploymentId, existing.id));
   const body: ListAgentFilesResponse = {
     files: rows.map((r) => ({
       id: r.id,
@@ -870,11 +956,14 @@ router.get("/:id/files", requireAuth, async (req: Request, res: Response) => {
   res.json(body);
 });
 
-// PATCH /api/agents/:id — edit name/role/adapterConfig
+// PATCH /api/agents/:id — edit name/role/adapterConfig.
+// Writes fan out to three tables: identity (name), deployment (role,
+// parentDeploymentIndex), runtime profile (adapterConfig, workstationId,
+// modelOverride).
 router.patch("/:id", requireAuth, async (req: Request, res: Response) => {
   const existing = await findOwnedByUserId({
     userId: req.user!.userId,
-    agentId: req.params.id,
+    deploymentId: req.params.id,
   });
   if (!existing) {
     res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.NOT_FOUND });
@@ -890,29 +979,40 @@ router.patch("/:id", requireAuth, async (req: Request, res: Response) => {
       });
     return;
   }
-  const update: Partial<typeof agents.$inferInsert> = {
-    updatedAt: new Date(),
-  };
-  if (parsed.data.name !== undefined) update.name = parsed.data.name;
-  if (parsed.data.role !== undefined) update.role = parsed.data.role;
+
+  const identityPatch: Partial<typeof agentIdentities.$inferInsert> = {};
+  const deploymentPatch: Partial<typeof deployments.$inferInsert> = {};
+  const profilePatch: Partial<typeof agentRuntimeProfile.$inferInsert> = {};
+
+  if (parsed.data.name !== undefined) identityPatch.name = parsed.data.name;
+  if (parsed.data.role !== undefined) deploymentPatch.role = parsed.data.role;
+
   if (parsed.data.adapterConfig !== undefined) {
+    const profile = await findRuntimeProfile(existing.id);
     const existingConfig =
-      (existing.adapterConfig as Record<string, unknown>) ?? {};
-    update.adapterConfig = {
+      (profile?.adapterConfig as Record<string, unknown>) ?? {};
+    profilePatch.adapterConfig = {
       ...existingConfig,
       gatewayUrl: parsed.data.adapterConfig.gatewayUrl,
       apiKey: parsed.data.adapterConfig.apiKey,
     };
   }
+
+  // Wire field stays `parentAgentId` (UUID) for web compat. Resolve to
+  // per-company `parentDeploymentIndex` here.
   if (parsed.data.parentAgentId !== undefined) {
     const next = parsed.data.parentAgentId;
-    if (next !== null) {
-      // Parent must be a real agent in the same company AND not a
-      // descendant of this agent (cycle prevention).
+    if (next === null) {
+      deploymentPatch.parentDeploymentIndex = null;
+    } else {
       const [parentRow] = await db
-        .select({ id: agents.id, companyId: agents.companyId })
-        .from(agents)
-        .where(eq(agents.id, next))
+        .select({
+          id: deployments.id,
+          companyId: deployments.companyId,
+          deploymentIndex: deployments.deploymentIndex,
+        })
+        .from(deployments)
+        .where(eq(deployments.id, next))
         .limit(1);
       if (!parentRow || parentRow.companyId !== existing.companyId) {
         res
@@ -927,40 +1027,62 @@ router.patch("/:id", requireAuth, async (req: Request, res: Response) => {
           .json({ error: ERROR_CODES.WOULD_CREATE_CYCLE });
         return;
       }
+      deploymentPatch.parentDeploymentIndex = parentRow.deploymentIndex;
     }
-    update.parentAgentId = next;
   }
+
   if (parsed.data.workstationId !== undefined) {
     const next = parsed.data.workstationId;
-    // Slug must match a real anchor — reserved zones (meeting/lobby/exec)
-    // are intentionally allowed for manual override; auto-assign skips
-    // them but the user is god here.
     if (!ALL_DESKS.has(next)) {
       res
         .status(StatusCodes.BAD_REQUEST)
         .json({ error: ERROR_CODES.WORKSTATION_NOT_FOUND });
       return;
     }
-    update.workstationId = next;
+    profilePatch.workstationId = next;
   }
   if (parsed.data.modelOverride !== undefined) {
-    update.modelOverride = parsed.data.modelOverride;
+    profilePatch.modelOverride = parsed.data.modelOverride;
   }
-  if (Object.keys(update).length === 1) {
-    res.json({ agent: await hydrateAgentDTO(existing) });
+
+  const noop =
+    Object.keys(identityPatch).length === 0 &&
+    Object.keys(deploymentPatch).length === 0 &&
+    Object.keys(profilePatch).length === 0;
+  if (noop) {
+    res.json({ agent: await hydrateDeploymentDTO(existing) });
     return;
   }
-  let row: typeof agents.$inferSelect;
+
+  let row: typeof deployments.$inferSelect = existing;
   try {
-    [row] = await db
-      .update(agents)
-      .set(update)
-      .where(eq(agents.id, existing.id))
-      .returning();
+    await db.transaction(async (tx) => {
+      if (Object.keys(identityPatch).length > 0) {
+        await tx
+          .update(agentIdentities)
+          .set({ ...identityPatch, updatedAt: new Date() })
+          .where(eq(agentIdentities.id, existing.agentIdentityId));
+      }
+      if (Object.keys(deploymentPatch).length > 0) {
+        const [updated] = await tx
+          .update(deployments)
+          .set({ ...deploymentPatch, updatedAt: new Date() })
+          .where(eq(deployments.id, existing.id))
+          .returning();
+        row = updated;
+      }
+      if (Object.keys(profilePatch).length > 0) {
+        await tx
+          .update(agentRuntimeProfile)
+          .set({ ...profilePatch, updatedAt: new Date() })
+          .where(eq(agentRuntimeProfile.deploymentId, existing.id));
+      }
+    });
   } catch (err) {
-    // Partial unique index `(company_id, workstation_id)` blocks moving
-    // onto a desk another agent already owns — surface as a typed error
-    // so the frontend can show "desk taken" instead of a generic 500.
+    // Partial unique index `(company_id, workstation_id)` on the runtime
+    // profile blocks moving onto a desk another deployment already owns
+    // — surface as a typed error so the frontend can show "desk taken"
+    // instead of a generic 500.
     if (
       typeof err === "object" &&
       err !== null &&
@@ -975,27 +1097,31 @@ router.patch("/:id", requireAuth, async (req: Request, res: Response) => {
     throw err;
   }
 
-  res.json({ agent: await hydrateAgentDTO(row) });
+  res.json({ agent: await hydrateDeploymentDTO(row) });
 });
 
-// DELETE /api/agents/:id — remove from gateway, then DB. Cascade clears
-// tasks (set null), tokens, runtime state, sessions, traces.
+// DELETE /api/agents/:id — remove from gateway, then DB. Cascade from
+// `deployments` clears runtime profile, workspace files, tokens, runtime
+// state, sessions, traces. The shared `agent_identity` survives by
+// design (an identity may be deployed to multiple companies owned by
+// the same wallet).
 router.delete("/:id", requireAuth, async (req: Request, res: Response) => {
   const existing = await findOwnedByUserId({
     userId: req.user!.userId,
-    agentId: req.params.id,
+    deploymentId: req.params.id,
   });
   if (!existing) {
     res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.NOT_FOUND });
     return;
   }
 
-  const config = (existing.adapterConfig ?? {}) as Record<string, unknown>;
+  const profile = await findRuntimeProfile(existing.id);
+  const config = (profile?.adapterConfig ?? {}) as Record<string, unknown>;
   const gatewayUrl =
     typeof config.gatewayUrl === "string" ? config.gatewayUrl : null;
   const apiKey = typeof config.apiKey === "string" ? config.apiKey : null;
   const deviceKeypair = config.deviceKeypair;
-  const externalAgentId = existing.externalAgentId;
+  const externalAgentId = profile?.externalAgentId ?? null;
 
   // Best-effort gateway cleanup. Only attempt when we have everything we
   // need to talk to OpenClaw; legacy rows (pre-1:1 mapping) won't have
@@ -1013,7 +1139,7 @@ router.delete("/:id", requireAuth, async (req: Request, res: Response) => {
       if (!result.ok) {
         log.warn(
           {
-            agentId: existing.id,
+            deploymentId: existing.id,
             externalAgentId,
             reason: result.reason ?? result.error,
           },
@@ -1021,11 +1147,11 @@ router.delete("/:id", requireAuth, async (req: Request, res: Response) => {
         );
       }
     } catch (err) {
-      log.warn({ err, agentId: existing.id }, "deprovision threw");
+      log.warn({ err, deploymentId: existing.id }, "deprovision threw");
     }
   }
 
-  await db.delete(agents).where(eq(agents.id, existing.id));
+  await db.delete(deployments).where(eq(deployments.id, existing.id));
   res.json({ ok: true });
 });
 

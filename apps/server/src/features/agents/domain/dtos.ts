@@ -1,14 +1,19 @@
-// DTO mappers for agent-adjacent rows. Pure projections from Drizzle row
-// shape → wire shape (`@occa/shared/types`). Lives in `domain/` because
-// it has no Drizzle / Express / network dependencies — just type-level
-// shaping the routes use to flatten DB rows into JSON responses.
+// DTO mappers for deployment-adjacent rows. Pure projections from
+// Drizzle row shape → wire shape (`@occa/shared/types`). Lives in
+// `domain/` because it has no Drizzle / Express / network dependencies
+// — just type-level shaping the routes use to flatten DB rows into JSON
+// responses.
 //
-// Mappers for the agent itself live in `services/agent-status.ts`
-// (`hydrateAgentDTO` enriches with runtime state); this file covers the
-// child resources that don't need that runtime hop.
+// Mappers for the deployment itself live in
+// `services/deployment-status.ts` (`hydrateDeploymentDTO` enriches with
+// runtime state); this file covers the child resources that don't need
+// that runtime hop.
+//
+// Wire field names still emit `agentId` (= deployment UUID) until the
+// shared/types migration in the shared-types step.
 
 import type {
-  agentSkillSyncs,
+  deploymentSkillSyncs,
   traces,
 } from "@occa/shared/schema";
 import type {
@@ -22,12 +27,12 @@ import type {
 } from "@occa/shared/types";
 
 export function toSkillSyncDTO(
-  row: typeof agentSkillSyncs.$inferSelect,
+  row: typeof deploymentSkillSyncs.$inferSelect,
   derivedStatus?: AgentSkillSyncStatus,
 ): AgentSkillSyncDTO {
   return {
     id: row.id,
-    agentId: row.agentId,
+    agentId: row.deploymentId,
     skillKey: row.skillKey,
     status: (derivedStatus ?? row.status) as AgentSkillSyncStatus,
     action: row.action as AgentSkillSyncDTO["action"],
@@ -42,7 +47,7 @@ export function toSkillSyncDTO(
 export function toTraceDTO(row: typeof traces.$inferSelect): TraceDTO {
   return {
     id: row.id,
-    agentId: row.agentId,
+    agentId: row.deploymentId,
     companyId: row.companyId,
     taskId: row.taskId ?? null,
     conversationId: row.conversationId ?? null,

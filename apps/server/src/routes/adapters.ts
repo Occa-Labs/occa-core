@@ -12,7 +12,7 @@ import {
   serializeKeypair,
   type SerializedKeypair,
 } from "@occa/adapter-openclaw";
-import { agents, companies, users } from "@occa/shared/schema";
+import { agentRuntimeProfile, companies, users } from "@occa/shared/schema";
 import type { ProbeResponse } from "@occa/shared/types";
 import { db } from "../infra/database/client";
 import { requireAuth } from "../middleware/auth";
@@ -59,13 +59,14 @@ router.post("/openclaw/probe", requireAuth, async (req: Request, res: Response) 
   let device;
   let deviceToken: string | undefined;
 
-  // Pull all agents in user's company; filter by normalized gatewayUrl in
-  // JS so we match "wss://gateway.occa.team" (stored after adapter rewrite)
-  // with "https://gateway.occa.team/" (typical Hire modal input).
-  const userAgents = await db
-    .select({ adapterConfig: agents.adapterConfig })
-    .from(agents)
-    .innerJoin(companies, eq(agents.companyId, companies.id))
+  // Pull all runtime profiles in user's company; filter by normalized
+  // gatewayUrl in JS so we match "wss://gateway.occa.team" (stored after
+  // adapter rewrite) with "https://gateway.occa.team/" (typical Hire
+  // modal input).
+  const userProfiles = await db
+    .select({ adapterConfig: agentRuntimeProfile.adapterConfig })
+    .from(agentRuntimeProfile)
+    .innerJoin(companies, eq(agentRuntimeProfile.companyId, companies.id))
     .where(
       and(
         eq(companies.ownerUserId, userId),
@@ -74,12 +75,12 @@ router.post("/openclaw/probe", requireAuth, async (req: Request, res: Response) 
       ),
     );
   const probeKey = normalizeGatewayUrl(parsed.data.gatewayUrl);
-  const existingAgent = userAgents.find((row) => {
+  const existingProfile = userProfiles.find((row) => {
     const cfg = row.adapterConfig as Record<string, unknown> | undefined;
     const stored = cfg?.gatewayUrl;
     return typeof stored === "string" && normalizeGatewayUrl(stored) === probeKey;
   });
-  const agentCfg = existingAgent?.adapterConfig as
+  const agentCfg = existingProfile?.adapterConfig as
     | Record<string, unknown>
     | undefined;
   const agentKeypair = agentCfg?.deviceKeypair as

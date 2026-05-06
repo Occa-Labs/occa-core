@@ -20,6 +20,7 @@ Sync to OCCA Registry program v3. Introduces the **Deployment** primitive — Ag
   - These responsibilities moved out of the SDK; custody is now handled at the runtime layer.
 - **Renamed** seed constant `AGENT_SEED` → `AGENT_IDENTITY_SEED`. New seed `DEPLOYMENT_SEED` added.
 - **Removed** `src/derivation.ts`. Its responsibilities split into `src/pda.ts` (PDA helpers) and `src/instructions.ts` (instruction builders).
+- **Removed dependency** `@noble/hashes` — no longer needed after custody model removal. SDK now only depends on `@solana/web3.js`.
 
 ### Added
 

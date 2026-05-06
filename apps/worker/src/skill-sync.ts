@@ -1,5 +1,5 @@
-// Background worker: installs/uninstalls skills on provisioned OpenClaw agents.
-// Reads pending rows from agent_skill_syncs, sends prompts to the agent via the
+// Background worker: installs/uninstalls skills on provisioned OpenClaw deployments.
+// Reads pending rows from deployment_skill_syncs, sends prompts to the agent via the
 // OpenClaw gateway WebSocket, and parses [[SKILL:INSTALLED]] /
 // [[SKILL:FAILED]] / [[SKILL:REMOVED]] markers from the agent reply.
 //
@@ -8,7 +8,12 @@
 // if the worker restarts, installing rows older than 5 min are automatically re-tried.
 
 import { eq, inArray, sql } from "drizzle-orm";
-import { agents, agentSkillSyncs, companySkills } from "@occa/shared/schema";
+import {
+  agentRuntimeProfile,
+  companySkills,
+  deploymentSkillSyncs,
+  deployments,
+} from "@occa/shared/schema";
 import {
   deleteAgentSession,
   deserializeKeypair,
@@ -100,8 +105,15 @@ function parseMarker(
   return null;
 }
 
-type SyncRow = typeof agentSkillSyncs.$inferSelect;
-type AgentRow = typeof agents.$inferSelect;
+type SyncRow = typeof deploymentSkillSyncs.$inferSelect;
+
+// Denormalized worker-side view: deployment id + runtime profile fields
+// (adapter wiring). Built once per tick via JOIN.
+interface AgentRow {
+  id: string;
+  adapterConfig: unknown;
+  externalAgentId: string | null;
+}
 
 function agentGatewayConfig(agent: AgentRow) {
   const cfg = (agent.adapterConfig ?? {}) as Record<string, unknown>;
@@ -135,31 +147,31 @@ async function applyMarker(
   const marker = parseMarker(reply);
   const now = new Date();
   if (marker === "installed") {
-    await db.update(agentSkillSyncs).set({
+    await db.update(deploymentSkillSyncs).set({
       status: "installed",
       lastError: null,
       gatewayRunId: null,
       skillUrl: skillUrl ?? syncRow.skillUrl,
       installedAt: now,
       updatedAt: now,
-    }).where(eq(agentSkillSyncs.id, syncRow.id));
+    }).where(eq(deploymentSkillSyncs.id, syncRow.id));
   } else if (marker === "removed") {
-    await db.delete(agentSkillSyncs).where(eq(agentSkillSyncs.id, syncRow.id));
+    await db.delete(deploymentSkillSyncs).where(eq(deploymentSkillSyncs.id, syncRow.id));
   } else if (marker === "failed") {
     const reason = reply.replace("[[SKILL:FAILED]]", "").trim().slice(0, 500);
-    await db.update(agentSkillSyncs).set({
+    await db.update(deploymentSkillSyncs).set({
       status: "failed",
       lastError: reason || "agent_reported_failure",
       gatewayRunId: null,
       updatedAt: now,
-    }).where(eq(agentSkillSyncs.id, syncRow.id));
+    }).where(eq(deploymentSkillSyncs.id, syncRow.id));
   } else {
-    await db.update(agentSkillSyncs).set({
+    await db.update(deploymentSkillSyncs).set({
       status: "failed",
       lastError: "no_marker_in_reply",
       gatewayRunId: null,
       updatedAt: now,
-    }).where(eq(agentSkillSyncs.id, syncRow.id));
+    }).where(eq(deploymentSkillSyncs.id, syncRow.id));
   }
   return marker;
 }
@@ -212,9 +224,9 @@ async function processRow(
 ): Promise<void> {
   const gw = agentGatewayConfig(agent);
   if (!gw) {
-    await db.update(agentSkillSyncs).set({
+    await db.update(deploymentSkillSyncs).set({
       status: "failed", lastError: "agent_not_configured", updatedAt: new Date(),
-    }).where(eq(agentSkillSyncs.id, syncRow.id));
+    }).where(eq(deploymentSkillSyncs.id, syncRow.id));
     return;
   }
 
@@ -227,14 +239,14 @@ async function processRow(
 
   const sessionKey = `agent:${gw.openclawAgentId}:${SKILL_SESSION_PREFIX}:${syncRow.skillKey.replace(/\//g, "-")}`;
 
-  await db.update(agentSkillSyncs).set({
+  await db.update(deploymentSkillSyncs).set({
     status: "installing",
     skillUrl: lib.treeUrl ?? syncRow.skillUrl,
     gatewayRunId: null,
     updatedAt: new Date(),
-  }).where(eq(agentSkillSyncs.id, syncRow.id));
+  }).where(eq(deploymentSkillSyncs.id, syncRow.id));
 
-  console.log(`[skill-sync] firing agent=${syncRow.agentId} key=${syncRow.skillKey}`);
+  console.log(`[skill-sync] firing agent=${syncRow.deploymentId} key=${syncRow.skillKey}`);
 
   const result = await sendAgentPrompt(
     { ...gw, sessionKey, message },
@@ -242,16 +254,16 @@ async function processRow(
   );
 
   if (!result.ok) {
-    await db.update(agentSkillSyncs).set({
+    await db.update(deploymentSkillSyncs).set({
       status: "failed",
       lastError: result.reason ?? result.error,
       updatedAt: new Date(),
-    }).where(eq(agentSkillSyncs.id, syncRow.id));
+    }).where(eq(deploymentSkillSyncs.id, syncRow.id));
     return;
   }
 
   const marker = await applyMarker(syncRow, result.reply, lib.treeUrl);
-  console.log(`[skill-sync] done agent=${syncRow.agentId} key=${syncRow.skillKey} reply=${result.reply.slice(0, 120)}`);
+  console.log(`[skill-sync] done agent=${syncRow.deploymentId} key=${syncRow.skillKey} reply=${result.reply.slice(0, 120)}`);
 
   // Terminal outcome — drop the install session from the gateway so the
   // OpenClaw dashboard dropdown doesn't accumulate one entry per skill.
@@ -269,17 +281,28 @@ async function tick(): Promise<void> {
   const staleThreshold = new Date(Date.now() - 5 * 60_000);
   const candidates = await db
     .select()
-    .from(agentSkillSyncs)
+    .from(deploymentSkillSyncs)
     .where(
-      sql`${agentSkillSyncs.status} = 'pending'
-        OR (${agentSkillSyncs.status} = 'installing' AND ${agentSkillSyncs.updatedAt} < ${staleThreshold})`,
+      sql`${deploymentSkillSyncs.status} = 'pending'
+        OR (${deploymentSkillSyncs.status} = 'installing' AND ${deploymentSkillSyncs.updatedAt} < ${staleThreshold})`,
     );
 
   const toProcess = candidates.filter((r) => !inFlight.has(r.id));
   if (toProcess.length === 0) return;
 
-  const agentIds = [...new Set(toProcess.map((r) => r.agentId))];
-  const agentRows = await db.select().from(agents).where(inArray(agents.id, agentIds));
+  const deploymentIds = [...new Set(toProcess.map((r) => r.deploymentId))];
+  const agentRows: AgentRow[] = await db
+    .select({
+      id: deployments.id,
+      adapterConfig: agentRuntimeProfile.adapterConfig,
+      externalAgentId: agentRuntimeProfile.externalAgentId,
+    })
+    .from(deployments)
+    .innerJoin(
+      agentRuntimeProfile,
+      eq(agentRuntimeProfile.deploymentId, deployments.id),
+    )
+    .where(inArray(deployments.id, deploymentIds));
   const agentMap = new Map(agentRows.map((a) => [a.id, a]));
 
   const skillKeys = [...new Set(toProcess.map((r) => r.skillKey))];
@@ -299,7 +322,7 @@ async function tick(): Promise<void> {
 
   for (const row of toProcess) {
     if (inFlight.has(row.id)) continue;
-    const agent = agentMap.get(row.agentId);
+    const agent = agentMap.get(row.deploymentId);
     if (!agent) continue;
 
     const lib = skillLibMap.get(row.skillKey);
@@ -321,7 +344,7 @@ async function tick(): Promise<void> {
     void processRow(row, agent, summary)
       .catch((err) =>
         console.error(
-          `[skill-sync] error agent=${row.agentId} key=${row.skillKey}:`,
+          `[skill-sync] error deployment=${row.deploymentId} key=${row.skillKey}:`,
           err instanceof Error ? err.stack ?? err.message : err,
         )
       )

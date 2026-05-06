@@ -1,4 +1,4 @@
-// Skill-sync surface for a single agent — list current sync state +
+// Skill-sync surface for a single deployment — list current sync state +
 // derive UI status (outdated / skill_deleted), commit a new desired-skill
 // list, force a single skill to resync. Workspace-template skills are
 // pushed by the worker via `skill-sync.ts`; these endpoints just manage
@@ -9,9 +9,9 @@ import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { ERROR_CODES } from "@occa/shared/error-codes";
 import { StatusCodes } from "http-status-codes";
 import {
-  agents,
-  agentSkillSyncs,
+  agentRuntimeProfile,
   companySkills,
+  deploymentSkillSyncs,
 } from "@occa/shared/schema";
 import type {
   AgentSkillSyncDTO,
@@ -19,14 +19,15 @@ import type {
   ListAgentSkillSyncsResponse,
 } from "@occa/shared/types";
 import { db } from "../../../infra/database/client";
-import { findOwnedByUserId } from "../repositories/agents";
+import { findOwnedByUserId } from "../repositories/deployments";
+import { findByDeploymentId as findRuntimeProfile } from "../repositories/agent-runtime-profile";
 import { requireAuth } from "../../../middleware/auth";
 import {
   resyncSkillBody,
   syncSkillsBody,
 } from "../domain/schemas";
 import { toSkillSyncDTO } from "../domain/dtos";
-import { hydrateAgentDTO } from "../services/agent-status";
+import { hydrateDeploymentDTO } from "../services/deployment-status";
 
 const router: Router = Router();
 
@@ -37,29 +38,34 @@ router.get(
   async (req: Request, res: Response) => {
     const existing = await findOwnedByUserId({
       userId: req.user!.userId,
-      agentId: req.params.id,
+      deploymentId: req.params.id,
     });
     if (!existing) {
+      res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.NOT_FOUND });
+      return;
+    }
+    const profile = await findRuntimeProfile(existing.id);
+    if (!profile) {
       res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.NOT_FOUND });
       return;
     }
 
     let syncRows = await db
       .select()
-      .from(agentSkillSyncs)
-      .where(eq(agentSkillSyncs.agentId, existing.id));
+      .from(deploymentSkillSyncs)
+      .where(eq(deploymentSkillSyncs.deploymentId, existing.id));
 
     // Backfill: create pending install rows for any desiredSkills that have
-    // no sync row yet (covers agents assigned skills before the sync system
-    // landed).
+    // no sync row yet (covers deployments assigned skills before the sync
+    // system landed).
     const syncedKeys = new Set(syncRows.map((r) => r.skillKey));
-    const missing = existing.desiredSkills.filter((k) => !syncedKeys.has(k));
+    const missing = profile.desiredSkills.filter((k) => !syncedKeys.has(k));
     if (missing.length > 0) {
       const inserted = await db
-        .insert(agentSkillSyncs)
+        .insert(deploymentSkillSyncs)
         .values(
           missing.map((key) => ({
-            agentId: existing.id,
+            deploymentId: existing.id,
             companyId: existing.companyId,
             skillKey: key,
             status: "pending" as const,
@@ -124,9 +130,14 @@ router.post(
   async (req: Request, res: Response) => {
     const existing = await findOwnedByUserId({
       userId: req.user!.userId,
-      agentId: req.params.id,
+      deploymentId: req.params.id,
     });
     if (!existing) {
+      res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.NOT_FOUND });
+      return;
+    }
+    const profile = await findRuntimeProfile(existing.id);
+    if (!profile) {
       res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.NOT_FOUND });
       return;
     }
@@ -181,27 +192,26 @@ router.post(
       }
     }
 
-    const [row] = await db
-      .update(agents)
+    await db
+      .update(agentRuntimeProfile)
       .set({ desiredSkills: dedup, updatedAt: new Date() })
-      .where(eq(agents.id, existing.id))
-      .returning();
+      .where(eq(agentRuntimeProfile.deploymentId, existing.id));
 
     // Manage sync rows: insert pending rows for newly added skills, queue
     // uninstall for removed ones. Upserts so re-adding a failed/installed
     // skill resets cleanly without duplicate rows.
-    const prevSkills = new Set(existing.desiredSkills);
+    const prevSkills = new Set(profile.desiredSkills);
     const nextSkills = new Set(dedup);
 
     const added = dedup.filter((k) => !prevSkills.has(k));
-    const removed = existing.desiredSkills.filter((k) => !nextSkills.has(k));
+    const removed = profile.desiredSkills.filter((k) => !nextSkills.has(k));
 
     if (added.length > 0) {
       await db
-        .insert(agentSkillSyncs)
+        .insert(deploymentSkillSyncs)
         .values(
           added.map((key) => ({
-            agentId: existing.id,
+            deploymentId: existing.id,
             companyId: existing.companyId,
             skillKey: key,
             status: "pending" as const,
@@ -209,7 +219,10 @@ router.post(
           })),
         )
         .onConflictDoUpdate({
-          target: [agentSkillSyncs.agentId, agentSkillSyncs.skillKey],
+          target: [
+            deploymentSkillSyncs.deploymentId,
+            deploymentSkillSyncs.skillKey,
+          ],
           set: {
             status: "pending",
             action: "install",
@@ -223,19 +236,19 @@ router.post(
       // Only queue uninstall for rows that were successfully installed.
       // Pending/failed rows for removed skills can just be deleted.
       await db
-        .delete(agentSkillSyncs)
+        .delete(deploymentSkillSyncs)
         .where(
           and(
-            eq(agentSkillSyncs.agentId, existing.id),
-            inArray(agentSkillSyncs.skillKey, removed),
-            inArray(agentSkillSyncs.status, ["pending", "failed"]),
+            eq(deploymentSkillSyncs.deploymentId, existing.id),
+            inArray(deploymentSkillSyncs.skillKey, removed),
+            inArray(deploymentSkillSyncs.status, ["pending", "failed"]),
           ),
         );
       await db
-        .insert(agentSkillSyncs)
+        .insert(deploymentSkillSyncs)
         .values(
           removed.map((key) => ({
-            agentId: existing.id,
+            deploymentId: existing.id,
             companyId: existing.companyId,
             skillKey: key,
             status: "pending" as const,
@@ -243,7 +256,10 @@ router.post(
           })),
         )
         .onConflictDoUpdate({
-          target: [agentSkillSyncs.agentId, agentSkillSyncs.skillKey],
+          target: [
+            deploymentSkillSyncs.deploymentId,
+            deploymentSkillSyncs.skillKey,
+          ],
           set: {
             status: "pending",
             action: "uninstall",
@@ -253,7 +269,7 @@ router.post(
         });
     }
 
-    res.json({ agent: await hydrateAgentDTO(row) });
+    res.json({ agent: await hydrateDeploymentDTO(existing) });
   },
 );
 
@@ -266,9 +282,14 @@ router.post(
   async (req: Request, res: Response) => {
     const existing = await findOwnedByUserId({
       userId: req.user!.userId,
-      agentId: req.params.id,
+      deploymentId: req.params.id,
     });
     if (!existing) {
+      res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.NOT_FOUND });
+      return;
+    }
+    const profile = await findRuntimeProfile(existing.id);
+    if (!profile) {
       res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.NOT_FOUND });
       return;
     }
@@ -289,11 +310,11 @@ router.post(
 
     const [syncRow] = await db
       .select()
-      .from(agentSkillSyncs)
+      .from(deploymentSkillSyncs)
       .where(
         and(
-          eq(agentSkillSyncs.agentId, existing.id),
-          eq(agentSkillSyncs.skillKey, skillKey),
+          eq(deploymentSkillSyncs.deploymentId, existing.id),
+          eq(deploymentSkillSyncs.skillKey, skillKey),
         ),
       )
       .limit(1);
@@ -301,16 +322,16 @@ router.post(
     if (!syncRow) {
       // Row doesn't exist yet — insert as pending install if skill is
       // desired.
-      if (!existing.desiredSkills.includes(skillKey)) {
+      if (!profile.desiredSkills.includes(skillKey)) {
         res
           .status(StatusCodes.NOT_FOUND)
           .json({ error: ERROR_CODES.SKILL_NOT_ASSIGNED });
         return;
       }
       const [inserted] = await db
-        .insert(agentSkillSyncs)
+        .insert(deploymentSkillSyncs)
         .values({
-          agentId: existing.id,
+          deploymentId: existing.id,
           companyId: existing.companyId,
           skillKey,
           status: "pending",
@@ -322,14 +343,14 @@ router.post(
     }
 
     const [updated] = await db
-      .update(agentSkillSyncs)
+      .update(deploymentSkillSyncs)
       .set({
         status: "pending",
         action,
         lastError: null,
         updatedAt: new Date(),
       })
-      .where(eq(agentSkillSyncs.id, syncRow.id))
+      .where(eq(deploymentSkillSyncs.id, syncRow.id))
       .returning();
     res.json({ sync: toSkillSyncDTO(updated) });
   },

@@ -1,11 +1,16 @@
-import { agents, agentRuntimeState } from "@occa/shared/schema";
+import {
+  agentRuntimeProfile,
+  deploymentRuntimeState,
+} from "@occa/shared/schema";
 import { db } from "./db";
 import { getAdapter } from "./adapter-registry";
 
 const TICK_INTERVAL_MS = 90_000;
 const PROBE_TIMEOUT_MS = 10_000;
 
-async function probeAgent(row: typeof agents.$inferSelect): Promise<{
+async function probeProfile(
+  row: typeof agentRuntimeProfile.$inferSelect,
+): Promise<{
   state: "connected" | "disconnected" | "unknown";
   error: string | null;
 }> {
@@ -13,17 +18,18 @@ async function probeAgent(row: typeof agents.$inferSelect): Promise<{
   if (!adapter) {
     return { state: "unknown", error: `no_adapter:${row.adapterType}` };
   }
-  // Skip agents that are not fully provisioned. Probing them with a fresh
-  // ephemeral keypair (the adapter's fallback) generates pending pair
-  // requests on the gateway every 90s — log spam + wasted load.
+  // Skip deployments that are not fully provisioned. Probing them with a
+  // fresh ephemeral keypair (the adapter's fallback) generates pending
+  // pair requests on the gateway every 90s — log spam + wasted load.
   if (row.provisioningState !== "ready") {
     return {
       state: "unknown",
       error: `provisioning_state:${row.provisioningState}`,
     };
   }
-  // Defensive: also skip if the agent row somehow has no deviceKeypair.
-  // probeConnection's fallback would generate ephemeral → unpaired → spam.
+  // Defensive: also skip if the runtime profile somehow has no
+  // deviceKeypair. probeConnection's fallback would generate ephemeral
+  // → unpaired → spam.
   const cfg = (row.adapterConfig as Record<string, unknown> | null) ?? {};
   if (!cfg.deviceKeypair) {
     return { state: "unknown", error: "no_device_keypair" };
@@ -46,20 +52,20 @@ async function probeAgent(row: typeof agents.$inferSelect): Promise<{
 }
 
 async function tick(): Promise<void> {
-  const rows = await db.select().from(agents);
+  const rows = await db.select().from(agentRuntimeProfile);
   if (rows.length === 0) return;
 
   // Probe in parallel; each failure is self-contained so one bad adapter
-  // doesn't block others. Upsert one row at a time for clarity over a batch
-  // CTE — N is small (per-company agent count).
+  // doesn't block others. Upsert one row at a time for clarity over a
+  // batch CTE — N is small (per-company deployment count).
   await Promise.all(
     rows.map(async (row) => {
-      const result = await probeAgent(row);
+      const result = await probeProfile(row);
       const now = new Date();
       await db
-        .insert(agentRuntimeState)
+        .insert(deploymentRuntimeState)
         .values({
-          agentId: row.id,
+          deploymentId: row.deploymentId,
           companyId: row.companyId,
           connectionState: result.state,
           connectionCheckedAt: now,
@@ -67,7 +73,7 @@ async function tick(): Promise<void> {
           updatedAt: now,
         })
         .onConflictDoUpdate({
-          target: agentRuntimeState.agentId,
+          target: deploymentRuntimeState.deploymentId,
           set: {
             connectionState: result.state,
             connectionCheckedAt: now,
@@ -108,8 +114,8 @@ export function startConnectionProbeLoop(): () => void {
     }
   };
 
-  // Fire once immediately so newly-started workers don't leave agents in
-  // "unknown" for the full interval on first boot.
+  // Fire once immediately so newly-started workers don't leave deployments
+  // in "unknown" for the full interval on first boot.
   void run();
   timer = setInterval(() => void run(), TICK_INTERVAL_MS);
 

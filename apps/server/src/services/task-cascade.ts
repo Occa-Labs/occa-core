@@ -53,7 +53,7 @@ async function unblockDependents(taskId: string): Promise<string[]> {
     .select({
       id: tasks.id,
       status: tasks.status,
-      assignedAgentId: tasks.assignedAgentId,
+      assignedDeploymentId: tasks.assignedDeploymentId,
     })
     .from(tasks)
     .where(sql`${taskId}::uuid = ANY(${tasks.blockedByTaskIds})`);
@@ -85,7 +85,7 @@ async function unblockDependents(taskId: string): Promise<string[]> {
     if (
       blockersEmpty &&
       dep.status === "blocked" &&
-      dep.assignedAgentId !== null
+      dep.assignedDeploymentId !== null
     ) {
       await db
         .update(tasks)
@@ -155,7 +155,7 @@ export async function cascadeOnTaskDone(
   const [parent] = await db
     .select({
       id: tasks.id,
-      assignedAgentId: tasks.assignedAgentId,
+      assignedDeploymentId: tasks.assignedDeploymentId,
       status: tasks.status,
     })
     .from(tasks)
@@ -169,7 +169,7 @@ export async function cascadeOnTaskDone(
       reason: "parent_not_found",
     };
   }
-  if (!parent.assignedAgentId) {
+  if (!parent.assignedDeploymentId) {
     return {
       parentWoken: false,
       parentTaskId: parent.id,

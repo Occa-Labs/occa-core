@@ -26,7 +26,14 @@ import {
   seedWorkspace,
   validateDeviceKeypair,
 } from "@occa/adapter-openclaw";
-import { agents, companies, agentWorkspaceFiles } from "@occa/shared/schema";
+import { randomBytes } from "node:crypto";
+import {
+  agentIdentities,
+  agentRuntimeProfile,
+  companies,
+  deploymentWorkspaceFiles,
+  deployments,
+} from "@occa/shared/schema";
 import type { AgentRole } from "@occa/shared/types";
 import {
   CEO_ROLE,
@@ -48,6 +55,13 @@ import {
   autoAssignSkillsToNewAgent,
   enqueueSkillSyncs,
 } from "../features/skills/services/agent-skill-assign";
+
+// Synthetic placeholder for chain-bound NOT NULL UNIQUE columns
+// (agent_pubkey, identity_pda, deployment_pda). Chain step overwrites
+// with real Solana pubkey/PDA values.
+function synthPlaceholderKey(tag: string): string {
+  return `${tag}_${randomBytes(24).toString("hex")}`;
+}
 
 // Gateway provisioning timeouts. Handshake is one round-trip; restart is
 // the worst-case wait that includes restarting the gateway-side agent.
@@ -203,10 +217,22 @@ export async function startKickoff(
   // (gatewayUrl, apiKey, deviceKeypair, deviceToken). Without this, each
   // new agent would prompt OpenClaw for its own pair approval — exactly
   // the UX problem we solved earlier with persistent device tokens.
+  // Adapter config lives on agent_runtime_profile now; JOIN to surface
+  // it alongside the deployment id used for parent linking.
   const [ceoRow] = await db
-    .select()
-    .from(agents)
-    .where(and(eq(agents.companyId, companyId), eq(agents.role, CEO_ROLE)))
+    .select({
+      id: deployments.id,
+      deploymentIndex: deployments.deploymentIndex,
+      adapterConfig: agentRuntimeProfile.adapterConfig,
+    })
+    .from(deployments)
+    .innerJoin(
+      agentRuntimeProfile,
+      eq(agentRuntimeProfile.deploymentId, deployments.id),
+    )
+    .where(
+      and(eq(deployments.companyId, companyId), eq(deployments.role, CEO_ROLE)),
+    )
     .limit(1);
   if (!ceoRow) {
     throw new Error("kickoff_requires_ceo");
@@ -246,24 +272,63 @@ export async function startKickoff(
       continue;
     }
 
-    const [row] = await db
-      .insert(agents)
-      .values({
+    // 3-table insert per hire: identity → deployment → runtime profile.
+    // Identity ownerWallet comes from companies.ownerWallet (placeholder
+    // if chain isn't registered yet). deploymentIndex serializes against
+    // the unique (company_id, deployment_index) constraint.
+    const inserted = await db.transaction(async (tx) => {
+      const [companyOwner] = await tx
+        .select({
+          ownerUserId: companies.ownerUserId,
+          ownerWallet: companies.ownerWallet,
+        })
+        .from(companies)
+        .where(eq(companies.id, companyId))
+        .limit(1);
+      if (!companyOwner) throw new Error("company_disappeared_mid_kickoff");
+      const ownerWallet =
+        companyOwner.ownerWallet ?? `placeholder:${companyId}`;
+
+      const [identity] = await tx
+        .insert(agentIdentities)
+        .values({
+          ownerUserId: companyOwner.ownerUserId,
+          agentPubkey: synthPlaceholderKey("ag_pk"),
+          identityPda: synthPlaceholderKey("ag_pda"),
+          ownerWallet,
+          name: tpl.defaultName,
+        })
+        .returning();
+
+      const sibs = await tx
+        .select({ idx: deployments.deploymentIndex })
+        .from(deployments)
+        .where(eq(deployments.companyId, companyId));
+      const nextIdx =
+        sibs.length === 0 ? 0 : Math.max(...sibs.map((r) => r.idx)) + 1;
+
+      const [deployment] = await tx
+        .insert(deployments)
+        .values({
+          companyId,
+          agentIdentityId: identity.id,
+          deploymentPda: synthPlaceholderKey("dep_pda"),
+          deploymentIndex: nextIdx,
+          role: tpl.key,
+          // CEO is parent; mirror its deploymentIndex (Option<u32> on chain).
+          parentDeploymentIndex: ceoRow.deploymentIndex,
+          status: "active",
+        })
+        .returning();
+
+      // Seed runtime profile with shared CEO credentials. Persisting at
+      // insert time (not after the async provision) matters: if
+      // provisioning fails halfway, /reprovision has everything it needs
+      // without falling back to lookup.
+      await tx.insert(agentRuntimeProfile).values({
+        deploymentId: deployment.id,
         companyId,
-        name: tpl.defaultName,
-        role: tpl.key,
         adapterType: "openclaw",
-        // Seed adapter config with parent (CEO) credentials including
-        // the deviceKeypair + deviceToken. Hires intentionally share the
-        // CEO's keypair so the gateway sees one paired device handling
-        // many agents — generating fresh keypairs per hire would force
-        // the user to re-approve pairing N times.
-        //
-        // Persisting at insert time (not after the async provision)
-        // matters: if provisioning fails halfway (e.g. gateway rate
-        // limit), the row still has a valid keypair so a later
-        // /reprovision call has everything it needs without falling
-        // back to lookup.
         adapterConfig: {
           gatewayUrl: ceoAdapter.gatewayUrl,
           apiKey: ceoAdapter.apiKey,
@@ -272,14 +337,15 @@ export async function startKickoff(
             ? { deviceToken: ceoAdapter.deviceToken }
             : {}),
         },
-        parentAgentId: ceoRow.id,
         provisioningState: "pending",
         workstationId,
-      })
-      .returning();
-    hiredIds.push(row.id);
+      });
+
+      return deployment;
+    });
+    hiredIds.push(inserted.id);
     log.info(
-      { agentId: row.id, role: tpl.key, name: tpl.defaultName },
+      { deploymentId: inserted.id, role: tpl.key, name: tpl.defaultName },
       "inserted pending hire",
     );
   }
@@ -328,9 +394,18 @@ export async function processKickoffProvisioning(
   }
 
   const [ceoRow] = await db
-    .select()
-    .from(agents)
-    .where(and(eq(agents.companyId, companyId), eq(agents.role, CEO_ROLE)))
+    .select({
+      id: deployments.id,
+      adapterConfig: agentRuntimeProfile.adapterConfig,
+    })
+    .from(deployments)
+    .innerJoin(
+      agentRuntimeProfile,
+      eq(agentRuntimeProfile.deploymentId, deployments.id),
+    )
+    .where(
+      and(eq(deployments.companyId, companyId), eq(deployments.role, CEO_ROLE)),
+    )
     .limit(1);
   if (!ceoRow) {
     log.warn("CEO missing, cannot provision new hires");
@@ -374,15 +449,32 @@ export async function processKickoffProvisioning(
   // config.patch calls would race on the gateway's baseHash and one
   // would win, leaving the rest to retry.
   for (const [i, agentId] of agentIds.entries()) {
+    // JOIN deployment + identity (name) + runtime profile (provisioning
+    // state + adapter config) so the loop body still reads everything
+    // off one denormalized object.
     const [agentRow] = await db
-      .select()
-      .from(agents)
-      .where(eq(agents.id, agentId))
+      .select({
+        id: deployments.id,
+        companyId: deployments.companyId,
+        role: deployments.role,
+        name: agentIdentities.name,
+        provisioningState: agentRuntimeProfile.provisioningState,
+      })
+      .from(deployments)
+      .innerJoin(
+        agentIdentities,
+        eq(deployments.agentIdentityId, agentIdentities.id),
+      )
+      .innerJoin(
+        agentRuntimeProfile,
+        eq(agentRuntimeProfile.deploymentId, deployments.id),
+      )
+      .where(eq(deployments.id, agentId))
       .limit(1);
     if (!agentRow) {
       log.warn(
         { agentId, index: i + 1, total: agentIds.length },
-        "agent row missing, skipping",
+        "deployment row missing, skipping",
       );
       continue;
     }
@@ -395,7 +487,7 @@ export async function processKickoffProvisioning(
           index: i + 1,
           total: agentIds.length,
         },
-        "skipping non-pending agent",
+        "skipping non-pending deployment",
       );
       continue;
     }
@@ -409,14 +501,14 @@ export async function processKickoffProvisioning(
         index: i + 1,
         total: agentIds.length,
       },
-      "provisioning agent",
+      "provisioning deployment",
     );
 
     // Mark in-flight so SSE viewers can show "provisioning…" not just "pending".
     await db
-      .update(agents)
+      .update(agentRuntimeProfile)
       .set({ provisioningState: "provisioning", updatedAt: new Date() })
-      .where(eq(agents.id, agentId));
+      .where(eq(agentRuntimeProfile.deploymentId, agentId));
 
     try {
       await provisionOne(
@@ -439,7 +531,7 @@ export async function processKickoffProvisioning(
         );
         if (assignedKeys.length > 0) {
           await enqueueSkillSyncs({
-            agentId: agentRow.id,
+            deploymentId: agentRow.id,
             companyId,
             skillKeys: assignedKeys,
           });
@@ -477,13 +569,13 @@ export async function processKickoffProvisioning(
         "agent provisioning failed",
       );
       await db
-        .update(agents)
+        .update(agentRuntimeProfile)
         .set({
           provisioningState: "failed",
           provisioningError: message.slice(0, 500),
           updatedAt: new Date(),
         })
-        .where(eq(agents.id, agentId));
+        .where(eq(agentRuntimeProfile.deploymentId, agentId));
       // Continue to next agent — partial team is better than full bail.
     }
   }
@@ -511,8 +603,15 @@ export async function processKickoffProvisioning(
   );
 }
 
+interface PendingHire {
+  id: string;
+  companyId: string;
+  role: string;
+  name: string;
+}
+
 async function provisionOne(
-  agentRow: typeof agents.$inferSelect,
+  agentRow: PendingHire,
   gatewayUrl: string,
   apiKey: string,
   ceoKeypair: Awaited<ReturnType<typeof deserializeKeypair>>,
@@ -613,9 +712,10 @@ async function provisionOne(
   const serialized = ceoKeypairSerialized;
 
   // Flip externalAgentId + persist final adapter config (incl. rotated
-  // device token if the gateway issued a new one during provision).
+  // device token if the gateway issued a new one during provision) on
+  // the runtime profile.
   await db
-    .update(agents)
+    .update(agentRuntimeProfile)
     .set({
       externalAgentId: provision.externalAgentId,
       adapterConfig: {
@@ -628,7 +728,7 @@ async function provisionOne(
       },
       updatedAt: new Date(),
     })
-    .where(eq(agents.id, agentRow.id));
+    .where(eq(agentRuntimeProfile.deploymentId, agentRow.id));
 
   // Seed workspace files (skill catalog, README, etc) — same template
   // pipeline used by the direct hire flow.
@@ -680,9 +780,9 @@ async function provisionOne(
   log.info("workspace seeded");
   // Persist file inventory for the Agents window — same shape as the
   // direct hire flow.
-  await db.insert(agentWorkspaceFiles).values(
+  await db.insert(deploymentWorkspaceFiles).values(
     rendered.map((f) => ({
-      agentId: agentRow.id,
+      deploymentId: agentRow.id,
       companyId: agentRow.companyId,
       filename: f.filename,
       content: f.content,
@@ -694,11 +794,11 @@ async function provisionOne(
 
   // Mark ready.
   await db
-    .update(agents)
+    .update(agentRuntimeProfile)
     .set({
       provisioningState: "ready",
       provisioningError: null,
       updatedAt: new Date(),
     })
-    .where(eq(agents.id, agentRow.id));
+    .where(eq(agentRuntimeProfile.deploymentId, agentRow.id));
 }

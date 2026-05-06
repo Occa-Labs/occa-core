@@ -1,14 +1,16 @@
 import { randomBytes, createHash } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import {
-  agentApiKeys,
-  agentRuntimeState,
-  agentTaskSessions,
-  agents,
+  agentIdentities,
+  agentRuntimeProfile,
   companySkills,
+  deploymentApiKeys,
+  deploymentRuntimeState,
+  deploymentTaskSessions,
+  deployments,
+  tasks,
   traceEvents,
   traces,
-  tasks,
 } from "@occa/shared/schema";
 import type {
   AdapterExecutionContext,
@@ -46,7 +48,7 @@ async function claimTraces(limit: number): Promise<ClaimedTrace[]> {
     const { rows } = await tx.execute<{
       id: string;
       company_id: string;
-      agent_id: string;
+      deployment_id: string;
       task_id: string | null;
       retry_of_trace_id: string | null;
       invocation_source: string;
@@ -54,7 +56,7 @@ async function claimTraces(limit: number): Promise<ClaimedTrace[]> {
       continuation_attempt: number;
       failure_retry_attempt: number;
     }>(sql`
-      SELECT id, company_id, agent_id, task_id, retry_of_trace_id,
+      SELECT id, company_id, deployment_id, task_id, retry_of_trace_id,
              invocation_source, trigger_detail, continuation_attempt,
              failure_retry_attempt
       FROM traces
@@ -80,7 +82,7 @@ async function claimTraces(limit: number): Promise<ClaimedTrace[]> {
       (r): ClaimedTrace => ({
         id: r.id,
         companyId: r.company_id,
-        agentId: r.agent_id,
+        agentId: r.deployment_id,
         taskId: r.task_id,
         retryOfTraceId: r.retry_of_trace_id,
         invocationSource: r.invocation_source,
@@ -97,14 +99,14 @@ async function claimTraces(limit: number): Promise<ClaimedTrace[]> {
 // retrieving existing keys (they're hashed). Stored like any other key
 // so the agent's calls can be verified server-side.
 async function mintEphemeralAgentKey(
-  agentId: string,
+  deploymentId: string,
   companyId: string,
   traceId: string,
 ): Promise<string> {
   const raw = `occa_ag_${randomBytes(32).toString("base64url")}`;
   const hash = createHash("sha256").update(raw).digest("hex");
-  await db.insert(agentApiKeys).values({
-    agentId,
+  await db.insert(deploymentApiKeys).values({
+    deploymentId,
     companyId,
     name: `trace:${traceId}`,
     keyHash: hash,
@@ -112,11 +114,41 @@ async function mintEphemeralAgentKey(
   return raw;
 }
 
-async function loadAgent(agentId: string) {
+// Denormalized agent context built per-trace via JOIN: deployment +
+// identity name + runtime profile (adapter wiring + desired skills).
+interface LoadedAgent {
+  id: string;
+  companyId: string;
+  name: string;
+  role: string;
+  adapterType: string;
+  adapterConfig: unknown;
+  externalAgentId: string | null;
+  desiredSkills: string[];
+}
+
+async function loadAgent(deploymentId: string): Promise<LoadedAgent | null> {
   const [row] = await db
-    .select()
-    .from(agents)
-    .where(eq(agents.id, agentId))
+    .select({
+      id: deployments.id,
+      companyId: deployments.companyId,
+      role: deployments.role,
+      name: agentIdentities.name,
+      adapterType: agentRuntimeProfile.adapterType,
+      adapterConfig: agentRuntimeProfile.adapterConfig,
+      externalAgentId: agentRuntimeProfile.externalAgentId,
+      desiredSkills: agentRuntimeProfile.desiredSkills,
+    })
+    .from(deployments)
+    .innerJoin(
+      agentIdentities,
+      eq(deployments.agentIdentityId, agentIdentities.id),
+    )
+    .innerJoin(
+      agentRuntimeProfile,
+      eq(agentRuntimeProfile.deploymentId, deployments.id),
+    )
+    .where(eq(deployments.id, deploymentId))
     .limit(1);
   return row ?? null;
 }
@@ -178,13 +210,13 @@ async function loadOrCreateSession(input: {
 }) {
   const [row] = await db
     .select()
-    .from(agentTaskSessions)
+    .from(deploymentTaskSessions)
     .where(
       and(
-        eq(agentTaskSessions.companyId, input.companyId),
-        eq(agentTaskSessions.agentId, input.agentId),
-        eq(agentTaskSessions.adapterType, input.adapterType),
-        eq(agentTaskSessions.taskKey, input.taskKey),
+        eq(deploymentTaskSessions.companyId, input.companyId),
+        eq(deploymentTaskSessions.deploymentId, input.agentId),
+        eq(deploymentTaskSessions.adapterType, input.adapterType),
+        eq(deploymentTaskSessions.taskKey, input.taskKey),
       ),
     )
     .limit(1);
@@ -202,10 +234,10 @@ async function upsertSession(input: {
   lastError: string | null;
 }) {
   await db
-    .insert(agentTaskSessions)
+    .insert(deploymentTaskSessions)
     .values({
       companyId: input.companyId,
-      agentId: input.agentId,
+      deploymentId: input.agentId,
       adapterType: input.adapterType,
       taskKey: input.taskKey,
       sessionParamsJson: input.sessionParamsJson,
@@ -215,10 +247,10 @@ async function upsertSession(input: {
     })
     .onConflictDoUpdate({
       target: [
-        agentTaskSessions.companyId,
-        agentTaskSessions.agentId,
-        agentTaskSessions.adapterType,
-        agentTaskSessions.taskKey,
+        deploymentTaskSessions.companyId,
+        deploymentTaskSessions.deploymentId,
+        deploymentTaskSessions.adapterType,
+        deploymentTaskSessions.taskKey,
       ],
       set: {
         sessionParamsJson: input.sessionParamsJson,
@@ -240,7 +272,7 @@ async function recordEvent(args: {
   await db.insert(traceEvents).values({
     companyId: args.companyId,
     traceId: args.traceId,
-    agentId: args.agentId,
+    deploymentId: args.agentId,
     seq: args.seq,
     eventType: args.event.type,
     stream: args.event.stream ?? null,
@@ -291,9 +323,9 @@ async function updateRuntimeCounters(args: {
     costCents: 0,
   };
   await db
-    .insert(agentRuntimeState)
+    .insert(deploymentRuntimeState)
     .values({
-      agentId: args.agentId,
+      deploymentId: args.agentId,
       companyId: args.companyId,
       sessionId: args.sessionIdAfter,
       totalInputTokens: usage.tokensIn,
@@ -305,13 +337,13 @@ async function updateRuntimeCounters(args: {
       lastError: args.lastError,
     })
     .onConflictDoUpdate({
-      target: agentRuntimeState.agentId,
+      target: deploymentRuntimeState.deploymentId,
       set: {
         sessionId: args.sessionIdAfter,
-        totalInputTokens: sql`${agentRuntimeState.totalInputTokens} + ${usage.tokensIn}`,
-        totalOutputTokens: sql`${agentRuntimeState.totalOutputTokens} + ${usage.tokensOut}`,
-        totalCachedInputTokens: sql`${agentRuntimeState.totalCachedInputTokens} + ${usage.cachedTokensIn}`,
-        totalCostCents: sql`${agentRuntimeState.totalCostCents} + ${usage.costCents}`,
+        totalInputTokens: sql`${deploymentRuntimeState.totalInputTokens} + ${usage.tokensIn}`,
+        totalOutputTokens: sql`${deploymentRuntimeState.totalOutputTokens} + ${usage.tokensOut}`,
+        totalCachedInputTokens: sql`${deploymentRuntimeState.totalCachedInputTokens} + ${usage.cachedTokensIn}`,
+        totalCostCents: sql`${deploymentRuntimeState.totalCostCents} + ${usage.costCents}`,
         lastTraceId: args.traceId,
         lastTraceStatus: args.lastTraceStatus,
         lastError: args.lastError,

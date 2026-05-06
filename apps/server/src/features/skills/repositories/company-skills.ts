@@ -1,5 +1,9 @@
 import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
-import { agents, companySkills } from "@occa/shared/schema";
+import {
+  agentRuntimeProfile,
+  companySkills,
+  deployments,
+} from "@occa/shared/schema";
 import type { AgentRole } from "@occa/shared/types";
 import { db } from "../../../infra/database/client";
 
@@ -136,11 +140,13 @@ export async function listLibraryForCompany(args: {
         ? inArray(companySkills.key, args.roleScopedKeys)
         : sql`false`;
   } else {
-    // Company library view: defaults + skills any agent uses.
+    // Company library view: defaults + skills any deployment uses.
     const usedKeys = db
-      .select({ key: sql<string>`DISTINCT unnest(${agents.desiredSkills})` })
-      .from(agents)
-      .where(eq(agents.companyId, args.companyId));
+      .select({
+        key: sql<string>`DISTINCT unnest(${agentRuntimeProfile.desiredSkills})`,
+      })
+      .from(agentRuntimeProfile)
+      .where(eq(agentRuntimeProfile.companyId, args.companyId));
     const defaultMatch =
       args.occaDefaultSources.length > 0
         ? inArray(
@@ -189,10 +195,12 @@ export async function deleteSkillById(skillId: string): Promise<void> {
   await db.delete(companySkills).where(eq(companySkills.id, skillId));
 }
 
-// Auto-broadcast a newly imported skill to every eligible agent in the
-// company. Runs only on first-time insert — re-import (update) does not
-// re-add, so manual per-agent disables survive re-imports. Role gate:
-// empty allowedRoles = all roles eligible.
+// Auto-broadcast a newly imported skill to every eligible deployment in
+// the company. Runs only on first-time insert — re-import (update) does
+// not re-add, so manual per-deployment disables survive re-imports.
+// Role gate: empty allowedRoles = all roles eligible. Reads `role` from
+// `deployments` and `desiredSkills` from the runtime profile via JOIN;
+// writes go to the runtime profile.
 export async function broadcastSkillToEligibleAgents(args: {
   companyId: string;
   skillKey: string;
@@ -200,12 +208,16 @@ export async function broadcastSkillToEligibleAgents(args: {
 }): Promise<void> {
   const rows = await db
     .select({
-      id: agents.id,
-      role: agents.role,
-      desiredSkills: agents.desiredSkills,
+      deploymentId: deployments.id,
+      role: deployments.role,
+      desiredSkills: agentRuntimeProfile.desiredSkills,
     })
-    .from(agents)
-    .where(eq(agents.companyId, args.companyId));
+    .from(deployments)
+    .innerJoin(
+      agentRuntimeProfile,
+      eq(agentRuntimeProfile.deploymentId, deployments.id),
+    )
+    .where(eq(deployments.companyId, args.companyId));
   const eligible = rows.filter(
     (a) =>
       (args.allowedRoles.length === 0 || args.allowedRoles.includes(a.role)) &&
@@ -215,12 +227,12 @@ export async function broadcastSkillToEligibleAgents(args: {
   await Promise.all(
     eligible.map((a) =>
       db
-        .update(agents)
+        .update(agentRuntimeProfile)
         .set({
           desiredSkills: [...a.desiredSkills, args.skillKey],
           updatedAt: new Date(),
         })
-        .where(eq(agents.id, a.id)),
+        .where(eq(agentRuntimeProfile.deploymentId, a.deploymentId)),
     ),
   );
 }

@@ -5,7 +5,12 @@ import { StatusCodes } from "http-status-codes";
 import { z } from "zod";
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { db } from "../infra/database/client";
-import { agents, companies, tasks } from "@occa/shared/schema";
+import {
+  agentIdentities,
+  companies,
+  deployments,
+  tasks,
+} from "@occa/shared/schema";
 import {
   EFFORT_LEVELS,
   TASK_PRIORITIES,
@@ -45,11 +50,17 @@ async function userCompanyId(userId: string): Promise<string | null> {
   return row?.id ?? null;
 }
 
+// Names live on `agent_identities`, not on the deployment row — JOIN to
+// surface them for the per-company assigned-agent name map.
 async function agentNameMap(companyId: string): Promise<Map<string, string>> {
   const rows = await db
-    .select({ id: agents.id, name: agents.name })
-    .from(agents)
-    .where(eq(agents.companyId, companyId));
+    .select({ id: deployments.id, name: agentIdentities.name })
+    .from(deployments)
+    .innerJoin(
+      agentIdentities,
+      eq(deployments.agentIdentityId, agentIdentities.id),
+    )
+    .where(eq(deployments.companyId, companyId));
   return new Map(rows.map((r) => [r.id, r.name]));
 }
 
@@ -61,7 +72,7 @@ function toDTO(
     id: row.id,
     companyId: row.companyId,
     taskNumber: row.taskNumber,
-    assignedAgentId: row.assignedAgentId,
+    assignedAgentId: row.assignedDeploymentId,
     assignedAgentName: agentName,
     title: row.title,
     blocks: (row.blocks as ContentBlock[]) ?? [],
@@ -75,7 +86,7 @@ function toDTO(
     parentTaskId: row.parentTaskId ?? null,
     blockedByTaskIds: row.blockedByTaskIds ?? [],
     createdByUserId: row.createdByUserId ?? null,
-    createdByAgentId: row.createdByAgentId ?? null,
+    createdByAgentId: row.createdByDeploymentId ?? null,
     acceptanceCriteria: row.acceptanceCriteria ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
@@ -125,13 +136,18 @@ const updateBody = createBody.partial();
 
 async function verifyAgent(
   companyId: string,
-  agentId: string | null | undefined,
+  deploymentId: string | null | undefined,
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
-  if (!agentId) return { ok: true };
+  if (!deploymentId) return { ok: true };
   const [row] = await db
-    .select({ id: agents.id })
-    .from(agents)
-    .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)))
+    .select({ id: deployments.id })
+    .from(deployments)
+    .where(
+      and(
+        eq(deployments.id, deploymentId),
+        eq(deployments.companyId, companyId),
+      ),
+    )
     .limit(1);
   if (!row) return { ok: false, reason: "agent_not_in_company" };
   return { ok: true };
@@ -154,7 +170,9 @@ router.get("/", requireAuth, async (req: Request, res: Response) => {
     tasks: rows.map((r) =>
       toDTO(
         r,
-        r.assignedAgentId ? (names.get(r.assignedAgentId) ?? null) : null,
+        r.assignedDeploymentId
+          ? (names.get(r.assignedDeploymentId) ?? null)
+          : null,
       ),
     ),
   });
@@ -200,7 +218,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
       .values({
         companyId,
         taskNumber: next,
-        assignedAgentId: parsed.data.assignedAgentId ?? null,
+        assignedDeploymentId: parsed.data.assignedAgentId ?? null,
         title: parsed.data.title,
         blocks: parsed.data.blocks ?? [],
         status: parsed.data.status ?? "todo",
@@ -219,13 +237,15 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
   res.status(StatusCodes.CREATED).json({
     task: toDTO(
       row,
-      row.assignedAgentId ? (names.get(row.assignedAgentId) ?? null) : null,
+      row.assignedDeploymentId
+        ? (names.get(row.assignedDeploymentId) ?? null)
+        : null,
     ),
   });
 
   // Queue dispatch if assigned on creation. Response already flushed above;
   // enqueue errors just log — they don't impact the HTTP response.
-  if (row.assignedAgentId) {
+  if (row.assignedDeploymentId) {
     enqueueTaskDispatch(row.id).catch((err) =>
       log.error({ err, taskId: row.id }, "enqueue task dispatch failed"),
     );
@@ -302,7 +322,7 @@ router.patch("/:id", requireAuth, async (req: Request, res: Response) => {
       : null;
   }
   if (parsed.data.assignedAgentId !== undefined) {
-    updates.assignedAgentId = parsed.data.assignedAgentId;
+    updates.assignedDeploymentId = parsed.data.assignedAgentId;
   }
 
   const [row] = await db
@@ -315,14 +335,16 @@ router.patch("/:id", requireAuth, async (req: Request, res: Response) => {
   res.json({
     task: toDTO(
       row,
-      row.assignedAgentId ? (names.get(row.assignedAgentId) ?? null) : null,
+      row.assignedDeploymentId
+        ? (names.get(row.assignedDeploymentId) ?? null)
+        : null,
     ),
   });
 
   // Queue dispatch when agent is newly assigned.
   const agentJustAssigned =
     parsed.data.assignedAgentId &&
-    parsed.data.assignedAgentId !== existing.assignedAgentId &&
+    parsed.data.assignedAgentId !== existing.assignedDeploymentId &&
     row.status !== "in_progress";
   if (agentJustAssigned) {
     enqueueTaskDispatch(row.id).catch((err) =>
@@ -347,7 +369,7 @@ router.post("/:id/rerun", requireAuth, async (req: Request, res: Response) => {
     res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.TASK_NOT_FOUND });
     return;
   }
-  if (!existing.assignedAgentId) {
+  if (!existing.assignedDeploymentId) {
     res.status(StatusCodes.BAD_REQUEST).json({ error: ERROR_CODES.NO_AGENT_ASSIGNED });
     return;
   }
@@ -365,8 +387,8 @@ router.post("/:id/rerun", requireAuth, async (req: Request, res: Response) => {
   res.json({
     task: toDTO(
       existing,
-      existing.assignedAgentId
-        ? (names.get(existing.assignedAgentId) ?? null)
+      existing.assignedDeploymentId
+        ? (names.get(existing.assignedDeploymentId) ?? null)
         : null,
     ),
   });

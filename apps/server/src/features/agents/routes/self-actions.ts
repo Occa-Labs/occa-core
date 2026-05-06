@@ -24,7 +24,7 @@ import type {
 import { db } from "../../../infra/database/client";
 import { requireAgentToken } from "../../../middleware/agent-auth";
 import { approvalCreateBody } from "../domain/schemas";
-import { canHire } from "../services/agent-hierarchy";
+import { canDeploy } from "../services/deployment-hierarchy";
 
 const router: Router = Router();
 
@@ -53,7 +53,9 @@ router.post(
       const [latest] = await db
         .select({ taskId: traces.taskId })
         .from(traces)
-        .where(and(eq(traces.agentId, agentId), eq(traces.status, "running")))
+        .where(
+          and(eq(traces.deploymentId, agentId), eq(traces.status, "running")),
+        )
         .orderBy(desc(traces.createdAt))
         .limit(1);
       return latest?.taskId ?? null;
@@ -62,8 +64,8 @@ router.post(
     if (actionType === "delegate") {
       const dp = payload as DelegatePayload;
 
-      // Subtree validation — block self-hires, cross-company, out-of-scope.
-      const check = await canHire(agentId, dp.targetAgentId);
+      // Subtree validation — block self-deploys, cross-company, out-of-scope.
+      const check = await canDeploy(agentId, dp.targetAgentId);
       if (!check.ok) {
         res.status(StatusCodes.FORBIDDEN).json({
           error: ERROR_CODES.HIRE_NOT_ALLOWED,
@@ -78,7 +80,7 @@ router.post(
         .insert(approvals)
         .values({
           companyId,
-          requestedByAgentId: agentId,
+          requestedByDeploymentId: agentId,
           actionType: "delegate",
           payload: { ...dp, parentTaskId },
         })
@@ -101,7 +103,7 @@ router.post(
         .insert(approvals)
         .values({
           companyId,
-          requestedByAgentId: agentId,
+          requestedByDeploymentId: agentId,
           actionType: "hire",
           payload: { ...hp, parentTaskId },
         })

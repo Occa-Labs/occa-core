@@ -1,17 +1,17 @@
-// Agent API keys — generation, verification, revocation. Crypto + DTO
-// mapping live here; raw SQL access is delegated to the repository.
+// Deployment API keys — generation, verification, revocation. Crypto +
+// DTO mapping live here; raw SQL access is delegated to the repository.
 
 import { randomBytes, createHash, timingSafeEqual } from "node:crypto";
 import type { AgentApiKeyDTO } from "@occa/shared/types";
 import {
   findByHash,
   insertKey,
-  listByAgentId,
+  listByDeploymentId,
   revokeKey,
   touchLastUsed,
-  type AgentApiKeyRow,
-} from "../repositories/agent-api-keys";
-import { findById as findAgentById } from "../repositories/agents";
+  type DeploymentApiKeyRow,
+} from "../repositories/deployment-api-keys";
+import { findById as findDeploymentById } from "../repositories/deployments";
 
 const KEY_PREFIX = "occa_ag_";
 
@@ -19,10 +19,13 @@ function hashKey(raw: string): string {
   return createHash("sha256").update(raw).digest("hex");
 }
 
-export function toAgentApiKeyDTO(row: AgentApiKeyRow): AgentApiKeyDTO {
+// Wire shape still uses `agentId` field name pending the shared/types
+// migration in the domain step. The value is the deployment UUID — same
+// identifier exposed to the web as "agentId" everywhere else.
+export function toDeploymentApiKeyDTO(row: DeploymentApiKeyRow): AgentApiKeyDTO {
   return {
     id: row.id,
-    agentId: row.agentId,
+    agentId: row.deploymentId,
     name: row.name,
     createdAt: row.createdAt.toISOString(),
     lastUsedAt: row.lastUsedAt?.toISOString() ?? null,
@@ -30,14 +33,14 @@ export function toAgentApiKeyDTO(row: AgentApiKeyRow): AgentApiKeyDTO {
   };
 }
 
-export async function generateAgentKey(input: {
-  agentId: string;
+export async function generateDeploymentKey(input: {
+  deploymentId: string;
   companyId: string;
   name: string;
-}): Promise<{ rawKey: string; row: AgentApiKeyRow }> {
+}): Promise<{ rawKey: string; row: DeploymentApiKeyRow }> {
   const raw = `${KEY_PREFIX}${randomBytes(32).toString("base64url")}`;
   const row = await insertKey({
-    agentId: input.agentId,
+    deploymentId: input.deploymentId,
     companyId: input.companyId,
     name: input.name,
     keyHash: hashKey(raw),
@@ -45,15 +48,15 @@ export async function generateAgentKey(input: {
   return { rawKey: raw, row };
 }
 
-export interface VerifiedAgentKey {
+export interface VerifiedDeploymentKey {
   keyId: string;
-  agentId: string;
+  deploymentId: string;
   companyId: string;
 }
 
-export async function verifyAgentKey(
+export async function verifyDeploymentKey(
   rawKey: string,
-): Promise<VerifiedAgentKey | null> {
+): Promise<VerifiedDeploymentKey | null> {
   if (!rawKey.startsWith(KEY_PREFIX)) return null;
   const hash = hashKey(rawKey);
   const row = await findByHash(hash);
@@ -72,23 +75,27 @@ export async function verifyAgentKey(
     /* swallow */
   });
 
-  return { keyId: row.id, agentId: row.agentId, companyId: row.companyId };
+  return {
+    keyId: row.id,
+    deploymentId: row.deploymentId,
+    companyId: row.companyId,
+  };
 }
 
-export async function listAgentKeys(
-  agentId: string,
-): Promise<AgentApiKeyRow[]> {
-  return listByAgentId(agentId);
+export async function listDeploymentKeys(
+  deploymentId: string,
+): Promise<DeploymentApiKeyRow[]> {
+  return listByDeploymentId(deploymentId);
 }
 
-export async function revokeAgentKey(input: {
-  agentId: string;
+export async function revokeDeploymentKey(input: {
+  deploymentId: string;
   keyId: string;
 }): Promise<boolean> {
   return revokeKey(input);
 }
 
-// Used by requireAgentToken to hydrate the attached agent context.
-export async function getAgentById(agentId: string) {
-  return (await findAgentById(agentId)) ?? null;
+// Used by requireAgentToken to hydrate the attached deployment context.
+export async function getDeploymentById(deploymentId: string) {
+  return (await findDeploymentById(deploymentId)) ?? null;
 }

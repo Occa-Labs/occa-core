@@ -16,7 +16,7 @@ import type {
   WakeSource,
 } from "@occa/shared/types";
 import { db } from "../../../infra/database/client";
-import { findOwnedByUserId } from "../repositories/agents";
+import { findOwnedByUserId } from "../repositories/deployments";
 import { requireAuth } from "../../../middleware/auth";
 import {
   listAgentActivityQuery,
@@ -30,7 +30,7 @@ const router: Router = Router();
 router.get("/:id/traces", requireAuth, async (req: Request, res: Response) => {
   const existing = await findOwnedByUserId({
     userId: req.user!.userId,
-    agentId: req.params.id,
+    deploymentId: req.params.id,
   });
   if (!existing) {
     res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.NOT_FOUND });
@@ -42,7 +42,7 @@ router.get("/:id/traces", requireAuth, async (req: Request, res: Response) => {
     return;
   }
   const limit = q.data.limit ?? 50;
-  const conditions = [eq(traces.agentId, existing.id)];
+  const conditions = [eq(traces.deploymentId, existing.id)];
   if (q.data.cursor) {
     conditions.push(lt(traces.createdAt, new Date(q.data.cursor)));
   }
@@ -73,7 +73,7 @@ router.get(
   async (req: Request, res: Response) => {
     const existing = await findOwnedByUserId({
       userId: req.user!.userId,
-      agentId: req.params.id,
+      deploymentId: req.params.id,
     });
     if (!existing) {
       res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.NOT_FOUND });
@@ -87,7 +87,7 @@ router.get(
       return;
     }
     const limit = q.data.limit ?? 50;
-    const conditions = [eq(traces.agentId, existing.id)];
+    const conditions = [eq(traces.deploymentId, existing.id)];
     if (q.data.cursor) {
       conditions.push(lt(traces.createdAt, new Date(q.data.cursor)));
     }

@@ -51,7 +51,7 @@ async function userCompanyId(userId: string): Promise<string | null> {
 function toTraceDTO(row: typeof traces.$inferSelect): TraceDTO {
   return {
     id: row.id,
-    agentId: row.agentId,
+    agentId: row.deploymentId,
     companyId: row.companyId,
     taskId: row.taskId ?? null,
     conversationId: row.conversationId ?? null,

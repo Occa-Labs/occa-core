@@ -1,10 +1,14 @@
 import { Router, type Request, type Response } from "express";
 import { ERROR_CODES } from "@occa/shared/error-codes";
 import { StatusCodes } from "http-status-codes";
-import { z } from "zod";
 import { and, eq, inArray, isNull, or } from "drizzle-orm";
 import { db } from "../infra/database/client";
-import { agents, companySkills, users } from "@occa/shared/schema";
+import {
+  agentRuntimeProfile,
+  companySkills,
+  deployments,
+  users,
+} from "@occa/shared/schema";
 import {
   type AgentRole,
   type MeResponse,
@@ -14,13 +18,14 @@ import {
 } from "@occa/shared/types";
 import { requireAuth } from "../middleware/auth";
 import { requireAgentToken } from "../middleware/agent-auth";
-import { hydrateAgentDTO, hydrateAgentDTOs } from "../features/agents/services/agent-status";
+import {
+  hydrateDeploymentDTO,
+  hydrateDeploymentDTOs,
+} from "../features/agents/services/deployment-status";
 import { toCompanyDTO } from "../features/companies/domain/dto";
 import { findActiveOwnerCompanyWithProfile } from "../features/companies/repositories/companies";
 
 const router: Router = Router();
-
-// toCompanyDTO moved to ../lib/company-dto for cross-route sharing.
 
 // GET /api/me
 router.get("/", requireAuth, async (req: Request, res: Response) => {
@@ -38,8 +43,11 @@ router.get("/", requireAuth, async (req: Request, res: Response) => {
 
   const loaded = await findActiveOwnerCompanyWithProfile(userId);
 
-  const agentRows = loaded
-    ? await db.select().from(agents).where(eq(agents.companyId, loaded.company.id))
+  const deploymentRows = loaded
+    ? await db
+        .select()
+        .from(deployments)
+        .where(eq(deployments.companyId, loaded.company.id))
     : [];
 
   const response: MeResponse = {
@@ -50,24 +58,24 @@ router.get("/", requireAuth, async (req: Request, res: Response) => {
       createdAt: userRow.createdAt.toISOString(),
     },
     company: loaded ? toCompanyDTO(loaded.company, loaded.profile) : null,
-    agents: await hydrateAgentDTOs(agentRows),
+    agents: await hydrateDeploymentDTOs(deploymentRows),
   };
   res.json(response);
 });
 
-// GET /api/me/agent — agent-token authenticated: return the agent's own DTO.
+// GET /api/me/agent — agent-token authenticated: return the deployment's own DTO.
 router.get("/agent", requireAgentToken, async (req: Request, res: Response) => {
-  const agentId = req.agent!.agentId;
+  const deploymentId = req.agent!.agentId;
   const [row] = await db
     .select()
-    .from(agents)
-    .where(eq(agents.id, agentId))
+    .from(deployments)
+    .where(eq(deployments.id, deploymentId))
     .limit(1);
   if (!row) {
     res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.AGENT_NOT_FOUND });
     return;
   }
-  res.json({ agent: await hydrateAgentDTO(row) });
+  res.json({ agent: await hydrateDeploymentDTO(row) });
 });
 
 function toSkillDTO(row: typeof companySkills.$inferSelect): SkillDTO {
@@ -101,17 +109,17 @@ router.get(
   "/agent/skills",
   requireAgentToken,
   async (req: Request, res: Response) => {
-    const { agentId, companyId } = req.agent!;
-    const [agentRow] = await db
-      .select({ desiredSkills: agents.desiredSkills })
-      .from(agents)
-      .where(eq(agents.id, agentId))
+    const { agentId: deploymentId, companyId } = req.agent!;
+    const [profileRow] = await db
+      .select({ desiredSkills: agentRuntimeProfile.desiredSkills })
+      .from(agentRuntimeProfile)
+      .where(eq(agentRuntimeProfile.deploymentId, deploymentId))
       .limit(1);
-    if (!agentRow) {
+    if (!profileRow) {
       res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.AGENT_NOT_FOUND });
       return;
     }
-    if (agentRow.desiredSkills.length === 0) {
+    if (profileRow.desiredSkills.length === 0) {
       res.json({ skills: [] });
       return;
     }
@@ -124,12 +132,12 @@ router.get(
             eq(companySkills.companyId, companyId),
             isNull(companySkills.companyId),
           ),
-          inArray(companySkills.key, agentRow.desiredSkills),
+          inArray(companySkills.key, profileRow.desiredSkills),
         ),
       );
     // Return in desiredSkills order for deterministic preambles.
     const byKey = new Map(rows.map((r) => [r.key, r]));
-    const ordered = agentRow.desiredSkills
+    const ordered = profileRow.desiredSkills
       .map((k) => byKey.get(k))
       .filter((r): r is (typeof rows)[number] => r != null)
       .map(toSkillDTO);
@@ -145,7 +153,7 @@ router.get(
   "/agent/skills/:skillKey/files/*",
   requireAgentToken,
   async (req: Request, res: Response) => {
-    const { agentId, companyId } = req.agent!;
+    const { agentId: deploymentId, companyId } = req.agent!;
     const skillKey = decodeURIComponent(req.params.skillKey);
     const requestedPath = (req.params as unknown as { 0?: string })[0] ?? "";
     if (!requestedPath) {
@@ -153,13 +161,13 @@ router.get(
       return;
     }
 
-    // Agent must have the skill in its desiredSkills.
-    const [agentRow] = await db
-      .select({ desiredSkills: agents.desiredSkills })
-      .from(agents)
-      .where(eq(agents.id, agentId))
+    // Deployment must have the skill in its desiredSkills.
+    const [profileRow] = await db
+      .select({ desiredSkills: agentRuntimeProfile.desiredSkills })
+      .from(agentRuntimeProfile)
+      .where(eq(agentRuntimeProfile.deploymentId, deploymentId))
       .limit(1);
-    if (!agentRow || !agentRow.desiredSkills.includes(skillKey)) {
+    if (!profileRow || !profileRow.desiredSkills.includes(skillKey)) {
       res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.SKILL_NOT_ASSIGNED });
       return;
     }

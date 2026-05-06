@@ -5,7 +5,13 @@ import { StatusCodes } from "http-status-codes";
 import { z } from "zod";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "../infra/database/client";
-import { agents, approvals, companies, tasks } from "@occa/shared/schema";
+import {
+  agentRuntimeProfile,
+  approvals,
+  companies,
+  deployments,
+  tasks,
+} from "@occa/shared/schema";
 import {
   APPROVAL_DECISIONS,
   APPROVAL_STATUSES,
@@ -18,8 +24,8 @@ import {
   type ListApprovalsResponse,
 } from "@occa/shared/types";
 import { requireAuth } from "../middleware/auth";
-import { canHire } from "../features/agents/services/agent-hierarchy";
-import { createAgentInternal } from "../features/agents/services/agent-create";
+import { canDeploy } from "../features/agents/services/deployment-hierarchy";
+import { createDeploymentInternal } from "../features/agents/services/deployment-create";
 import { enqueueTaskDispatch } from "../infra/queue/task-worker";
 import type { HirePayload } from "@occa/shared/types";
 import { childLogger } from "../lib/logger";
@@ -30,7 +36,7 @@ function toApprovalDTO(row: typeof approvals.$inferSelect): ApprovalDTO {
   return {
     id: row.id,
     companyId: row.companyId,
-    requestedByAgentId: row.requestedByAgentId,
+    requestedByAgentId: row.requestedByDeploymentId,
     actionType: row.actionType as ApprovalActionType,
     payload: (row.payload as Record<string, unknown>) ?? {},
     status: row.status as ApprovalStatus,
@@ -235,18 +241,21 @@ async function runDelegate(
   ) {
     throw new Error("delegate_payload_invalid");
   }
-  if (!approval.requestedByAgentId) {
+  if (!approval.requestedByDeploymentId) {
     throw new Error("delegate_requester_missing");
   }
 
   // Re-validate scope at decide time — hierarchy could have changed.
-  const check = await canHire(approval.requestedByAgentId, dp.targetAgentId);
+  const check = await canDeploy(
+    approval.requestedByDeploymentId,
+    dp.targetAgentId,
+  );
   if (!check.ok) throw new Error(`delegate_scope_invalid:${check.reason}`);
 
   const [target] = await db
-    .select({ id: agents.id, companyId: agents.companyId })
-    .from(agents)
-    .where(eq(agents.id, dp.targetAgentId))
+    .select({ id: deployments.id, companyId: deployments.companyId })
+    .from(deployments)
+    .where(eq(deployments.id, dp.targetAgentId))
     .limit(1);
   if (!target || target.companyId !== approval.companyId) {
     throw new Error("delegate_target_missing");
@@ -265,9 +274,9 @@ async function runDelegate(
       .values({
         companyId: approval.companyId,
         taskNumber: nextNumber,
-        assignedAgentId: dp.targetAgentId,
+        assignedDeploymentId: dp.targetAgentId,
         parentTaskId: dp.parentTaskId ?? null,
-        createdByAgentId: approval.requestedByAgentId,
+        createdByDeploymentId: approval.requestedByDeploymentId,
         createdByUserId: null,
         title: dp.title as string,
         blocks,
@@ -304,22 +313,27 @@ async function runHire(
   ) {
     throw new Error("hire_payload_invalid");
   }
-  if (!approval.requestedByAgentId) {
+  if (!approval.requestedByDeploymentId) {
     throw new Error("hire_requester_missing");
   }
 
-  // Pull requester to inherit their adapterConfig (gateway URL + API key).
-  // The new agent generates its own keypair inside createAgentInternal —
-  // never share keypairs across agents.
+  // Pull requester deployment + its runtime profile to inherit
+  // gateway URL + API key. The new deployment generates its own
+  // keypair inside createDeploymentInternal — never share keypairs
+  // across deployments.
   const [requester] = await db
     .select({
-      id: agents.id,
-      companyId: agents.companyId,
-      adapterType: agents.adapterType,
-      adapterConfig: agents.adapterConfig,
+      id: deployments.id,
+      companyId: deployments.companyId,
+      adapterType: agentRuntimeProfile.adapterType,
+      adapterConfig: agentRuntimeProfile.adapterConfig,
     })
-    .from(agents)
-    .where(eq(agents.id, approval.requestedByAgentId))
+    .from(deployments)
+    .innerJoin(
+      agentRuntimeProfile,
+      eq(agentRuntimeProfile.deploymentId, deployments.id),
+    )
+    .where(eq(deployments.id, approval.requestedByDeploymentId))
     .limit(1);
   if (!requester || requester.companyId !== approval.companyId) {
     throw new Error("hire_requester_not_found");
@@ -329,10 +343,11 @@ async function runHire(
     throw new Error("hire_requester_adapter_missing");
   }
 
-  // Run the full create-pipeline. createAgentInternal handles network
-  // calls and rolls back the OCCA row on partial failure, so by the time
-  // we read its result the system is in a coherent state either way.
-  const create = await createAgentInternal({
+  // Run the full create-pipeline. createDeploymentInternal handles
+  // network calls and rolls back the OCCA rows on partial failure, so
+  // by the time we read its result the system is in a coherent state
+  // either way.
+  const create = await createDeploymentInternal({
     companyId: approval.companyId,
     name: hp.targetName,
     role: hp.targetRole,
@@ -341,12 +356,12 @@ async function runHire(
       gatewayUrl: cfg.gatewayUrl as string,
       apiKey: cfg.apiKey as string,
     },
-    parentAgentId: requester.id,
+    parentDeploymentId: requester.id,
   });
   if (!create.ok) {
     throw new Error(`hire_create_failed:${create.code}:${create.message}`);
   }
-  const newAgent = create.agent;
+  const newDeployment = create.deployment;
 
   // Insert the first task assigned to the new agent + stamp both the
   // spawned ids onto the approval payload. Single tx — if the task
@@ -363,9 +378,9 @@ async function runHire(
       .values({
         companyId: approval.companyId,
         taskNumber: nextNumber,
-        assignedAgentId: newAgent.id,
+        assignedDeploymentId: newDeployment.id,
         parentTaskId: hp.parentTaskId ?? null,
-        createdByAgentId: approval.requestedByAgentId,
+        createdByDeploymentId: approval.requestedByDeploymentId,
         createdByUserId: null,
         title: hp.title as string,
         blocks,
@@ -379,7 +394,7 @@ async function runHire(
       .set({
         payload: {
           ...hp,
-          spawnedAgentId: newAgent.id,
+          spawnedAgentId: newDeployment.id,
           spawnedTaskId: newTask.id,
         },
         updatedAt: new Date(),

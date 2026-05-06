@@ -14,7 +14,7 @@ async function loadTaskOwnership(
   const [row] = await db
     .select({
       status: tasks.status,
-      assignedAgentId: tasks.assignedAgentId,
+      assignedDeploymentId: tasks.assignedDeploymentId,
     })
     .from(tasks)
     .where(eq(tasks.id, taskId))
@@ -22,7 +22,7 @@ async function loadTaskOwnership(
   if (!row) return null;
   return {
     status: row.status as TaskStatus,
-    assignedAgentId: row.assignedAgentId,
+    assignedAgentId: row.assignedDeploymentId,
   };
 }
 
