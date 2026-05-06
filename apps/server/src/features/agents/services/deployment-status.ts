@@ -82,6 +82,7 @@ function toDTO(args: {
 
   return {
     id: deployment.id,
+    identityId: deployment.agentIdentityId,
     companyId: deployment.companyId,
     name: identity?.name ?? "",
     role: deployment.role,

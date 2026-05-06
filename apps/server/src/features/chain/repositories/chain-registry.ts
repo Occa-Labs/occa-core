@@ -67,6 +67,31 @@ export async function persistAgentChainRegistration(args: {
 }
 
 /**
+ * Mutate the identity row with on-chain cache columns after a
+ * successful `register_agent_identity` confirmation. Identity is
+ * portable (one identity may be deployed to multiple companies later);
+ * this writes the chain-side fields ONLY — does NOT touch deployments.
+ */
+export async function persistIdentityChainRegistration(args: {
+  identityId: string;
+  agentPubkey: string;
+  identityPda: string;
+  ownerWallet: string;
+  chainTxSignature: string;
+}): Promise<void> {
+  await db
+    .update(agentIdentities)
+    .set({
+      agentPubkey: args.agentPubkey,
+      identityPda: args.identityPda,
+      ownerWallet: args.ownerWallet,
+      chainTxSignature: args.chainTxSignature,
+      updatedAt: new Date(),
+    })
+    .where(eq(agentIdentities.id, args.identityId));
+}
+
+/**
  * Persist an updated `operating_wallet` after `set_operating_wallet`
  * confirms on-chain. Lives on the deployment row (per-company), not
  * the identity.

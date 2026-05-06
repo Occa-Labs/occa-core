@@ -160,6 +160,7 @@ export function useSetupWorkflow({
     const onboardingKind = onboarding.status.kind;
     if (onboardingKind === "loading") return "idle";
     if (onboardingKind === "needed") return "onboarding-form";
+    if (onboardingKind === "recovery-needed") return "recovery-pair-gateway";
     if (onboardingKind === "submitting" || onboardingKind === "error") {
       return "provisioning-ceo";
     }
@@ -223,6 +224,7 @@ export function useSetupWorkflow({
 
   const onboardingActive =
     phase === "onboarding-form" ||
+    phase === "recovery-pair-gateway" ||
     phase === "provisioning-ceo" ||
     phase === "anchoring-ceo" ||
     phase === "ceo-ready";

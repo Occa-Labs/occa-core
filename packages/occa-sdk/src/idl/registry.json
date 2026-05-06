@@ -1,10 +1,10 @@
 {
-  "address": "occakrum1PrVDaXauDuSiwPKfrhdnm7uVWKJxE39kfm",
+  "address": "occa53sXCgBPvd2omBH47626V6jyJ28ove5xNX8uEtN",
   "metadata": {
     "name": "registry",
     "version": "0.1.0",
     "spec": "0.1.0",
-    "description": "OCCA Registry program — Company & Agent identity PDAs (Phase 1 MVP)"
+    "description": "OCCA Registry — Company, AgentIdentity, and Deployment accounts on Solana"
   },
   "instructions": [
     {

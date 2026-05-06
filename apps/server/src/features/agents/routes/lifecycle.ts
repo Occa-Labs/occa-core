@@ -68,7 +68,11 @@ import {
   buildExternalAgentId,
   buildWorkspacePath,
 } from "../domain/external-id";
-import { createAgentBody, patchAgentBody } from "../domain/schemas";
+import {
+  createAgentBody,
+  patchAgentBody,
+  reprovisionAgentBody,
+} from "../domain/schemas";
 import { log } from "./_shared";
 
 const router: Router = Router();
@@ -577,6 +581,21 @@ router.post(
   "/:id/reprovision",
   requireAuth,
   async (req: Request, res: Response) => {
+    // Body is optional — only set on chain-recovery re-pair, where the
+    // caller supplies fresh `{gatewayUrl, apiKey}` for a runtime profile
+    // that came back from chain rebuild with empty Tier 3.
+    const parsedBody = reprovisionAgentBody.safeParse(req.body ?? {});
+    if (!parsedBody.success) {
+      res
+        .status(StatusCodes.BAD_REQUEST)
+        .json({
+          error: ERROR_CODES.INVALID_BODY,
+          detail: parsedBody.error.flatten(),
+        });
+      return;
+    }
+    const overrideConfig = parsedBody.data.adapterConfig;
+
     const deploymentRecord = await findOwnedByUserId({
       userId: req.user!.userId,
       deploymentId: req.params.id,
@@ -601,6 +620,51 @@ router.post(
     }
 
     let cfg = (profile.adapterConfig ?? {}) as Record<string, unknown>;
+
+    // Recovery re-pair: caller supplied fresh creds. Mint a new device
+    // keypair (chain has identity + deployment but Tier 3 is gone),
+    // probe the gateway, then write everything back to the runtime
+    // profile. Skip the CEO-fallback branch entirely — this path is
+    // explicit and self-sufficient.
+    if (overrideConfig) {
+      const newKeypair = await generateEphemeralKeypair();
+      const probe = await probeConnection(overrideConfig, {
+        device: newKeypair,
+      });
+      if (!probe.ok) {
+        res
+          .status(StatusCodes.BAD_GATEWAY)
+          .json({ error: ERROR_CODES.GATEWAY_UNREACHABLE });
+        return;
+      }
+      const issuedDeviceToken = probe.info?.deviceToken;
+      const validate = await validateDeviceKeypair(overrideConfig, newKeypair, {
+        deviceToken: issuedDeviceToken,
+      });
+      if (!validate.ok) {
+        res
+          .status(StatusCodes.BAD_GATEWAY)
+          .json({ error: ERROR_CODES.GATEWAY_UNREACHABLE });
+        return;
+      }
+      const finalDeviceToken = validate.deviceToken ?? issuedDeviceToken;
+      const merged: Record<string, unknown> = {
+        ...cfg,
+        gatewayUrl: overrideConfig.gatewayUrl,
+        apiKey: overrideConfig.apiKey,
+        deviceKeypair: serializeKeypair(newKeypair),
+        ...(finalDeviceToken ? { deviceToken: finalDeviceToken } : {}),
+      };
+      cfg = merged;
+      await db
+        .update(agentRuntimeProfile)
+        .set({ adapterConfig: merged, updatedAt: new Date() })
+        .where(eq(agentRuntimeProfile.deploymentId, deploymentRecord.id));
+      log.info(
+        { deploymentId: deploymentRecord.id },
+        "reprovision: re-paired gateway with fresh keypair",
+      );
+    }
 
     // Backfill missing gateway creds / keypair from the company's CEO.
     // Old kickoff-service inserts didn't persist the deviceKeypair on

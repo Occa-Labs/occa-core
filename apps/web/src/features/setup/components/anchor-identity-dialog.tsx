@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { KeyRound, Link2, RefreshCw } from "lucide-react";
 import type { UseOnboardingResult } from "@/hooks/use-onboarding";
+import { useMe } from "@/hooks/use-me";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { SpeakerBadge } from "@/components/ui/speaker-badge";
@@ -19,7 +20,7 @@ interface AnchorIdentityDialogProps {
 
 type ProgressStage =
   | "registering-company"
-  | "awaiting-signature"
+  | "registering-identity"
   | "registering-agent";
 
 const NARRATION = "One more step — let's anchor this on Solana.";
@@ -28,22 +29,24 @@ const TYPING_SPEED = 30;
 // Sub-label rendered under the active step. Two variants per step:
 // "busy" (work in flight) vs "idle" (waiting for the user to click).
 const STEP_SUBLABEL_BUSY: Record<ProgressStage, string> = {
-  "registering-company": "Building transaction…",
-  "awaiting-signature": "Approve in your wallet to continue.",
-  "registering-agent": "Confirming on Solana devnet…",
+  "registering-company": "Building company transaction…",
+  "registering-identity": "Building identity transaction…",
+  "registering-agent": "Building deployment transaction…",
 };
 
 const STEP_SUBLABEL_IDLE: Record<ProgressStage, string> = {
   "registering-company":
-    "We'll register your company on Solana. You'll sign once with your wallet.",
-  "awaiting-signature": "Click below to approve in your wallet.",
-  "registering-agent": "",
+    "We'll register your company on Solana. You'll sign with your wallet.",
+  "registering-identity":
+    "Now your CEO's portable identity. Sign once more with your wallet.",
+  "registering-agent":
+    "Last one — bind the identity to this company. One more signature.",
 };
 
 const STEPS: ReadonlyArray<{ key: ProgressStage; label: string }> = [
   { key: "registering-company", label: "Register company on-chain" },
-  { key: "awaiting-signature", label: "Sign on-chain transaction" },
-  { key: "registering-agent", label: "Register agent on-chain" },
+  { key: "registering-identity", label: "Register agent identity on-chain" },
+  { key: "registering-agent", label: "Register deployment on-chain" },
 ];
 
 function CheckIcon() {
@@ -87,6 +90,9 @@ export function AnchorIdentityDialog({
   const status = onboarding.status;
   const walletStatus = useAnchorWallet();
   const anchor = useAnchorIdentity();
+  // Need the agent row to resolve identityId — Phase B's
+  // `prepareIdentity` route is identity-scoped, not deployment-scoped.
+  const me = useMe(true);
   const ranKeyRef = useRef<string | null>(null);
 
   const [visible, setVisible] = useState(false);
@@ -127,19 +133,32 @@ export function AnchorIdentityDialog({
       : null;
   const companyId = active?.company.id ?? null;
   const agentId = active?.agentId ?? null;
+  const identityId = useMemo(() => {
+    if (!agentId) return null;
+    return me.agents.find((a) => a.id === agentId)?.identityId ?? null;
+  }, [agentId, me.agents]);
 
   // Pin onboarding callbacks to a ref so effects below don't re-fire when
   // the onboarding object identity changes on every parent render.
   const onboardingRef = useRef(onboarding);
   onboardingRef.current = onboarding;
 
-  // Mirror anchor.stage → onboarding state.
+  // Mirror anchor.stage → onboarding state. Three-phase flow now —
+  // identity gets its own onboarding stage so refresh-recovery lands on
+  // the right step instead of restarting from company.
   useEffect(() => {
     const ob = onboardingRef.current;
     if (ob.status.kind !== "anchoring") return;
     if (anchor.stage === "registering-company") {
       if (ob.status.stage !== "registering-company") {
         ob.setAnchorStage("registering-company");
+      }
+    } else if (
+      anchor.stage === "ready-to-sign-identity" ||
+      anchor.stage === "registering-identity"
+    ) {
+      if (ob.status.stage !== "registering-identity") {
+        ob.setAnchorStage("registering-identity");
       }
     } else if (
       anchor.stage === "ready-to-sign" ||
@@ -176,31 +195,52 @@ export function AnchorIdentityDialog({
     }
   }, [anchor.error]);
 
-  // Both Phase A (registerCompany) and Phase B (signAndRegisterAgent)
-  // call wallet.signTransaction now — they MUST originate from a user
-  // gesture or external wallets silently no-op the popup. We removed
-  // the auto-fire effect; the explicit Sign button drives both.
+  // All three phases (registerCompany / registerIdentity /
+  // signAndRegisterAgent) call wallet.signTransaction — each MUST
+  // originate from a user gesture or external wallets silently no-op
+  // the popup. Each click advances exactly one phase; the user signs
+  // three times total (company → identity → deployment).
   const anchorRef = useRef(anchor);
   anchorRef.current = anchor;
 
-  // Phase A+B trigger — invoked from button onClick.
   const onSignClick = async () => {
     if (walletStatus.kind !== "ready") return;
     if (!companyId || !agentId) return;
-    // Run A first (idempotent server-side); only proceed to B if A
-    // completed (companyPda cached on the hook).
-    if (anchor.stage === "idle" || anchor.stage === "registering-company") {
+    const stage = anchorRef.current.stage;
+
+    // Phase A — fresh start or partway through company.
+    if (stage === "idle" || stage === "registering-company") {
       await anchor.registerCompany({
         companyId,
         wallet: walletStatus.wallet,
       });
+      return;
     }
-    // After Phase A, the hook is in `ready-to-sign`. Kick off Phase B.
-    if (anchorRef.current.stage === "ready-to-sign") {
+
+    // Phase B — company done, sign identity.
+    if (
+      stage === "ready-to-sign-identity" ||
+      stage === "registering-identity"
+    ) {
+      if (!identityId) return; // me hasn't loaded yet — button stays disabled
+      await anchor.registerIdentity({
+        identityId,
+        wallet: walletStatus.wallet,
+      });
+      return;
+    }
+
+    // Phase C — identity done, sign deployment.
+    if (
+      stage === "ready-to-sign" ||
+      stage === "awaiting-signature" ||
+      stage === "registering-agent"
+    ) {
       await anchor.signAndRegisterAgent({
         agentId,
         wallet: walletStatus.wallet,
       });
+      return;
     }
   };
 
@@ -257,10 +297,12 @@ export function AnchorIdentityDialog({
       )
     : anchor.stage === "registering-company"
       ? 0
-      : anchor.stage === "ready-to-sign" ||
-          anchor.stage === "awaiting-signature"
+      : anchor.stage === "ready-to-sign-identity" ||
+          anchor.stage === "registering-identity"
         ? 1
-        : anchor.stage === "registering-agent"
+        : anchor.stage === "ready-to-sign" ||
+            anchor.stage === "awaiting-signature" ||
+            anchor.stage === "registering-agent"
           ? 2
           : anchor.stage === "complete"
             ? STEPS.length
@@ -271,6 +313,7 @@ export function AnchorIdentityDialog({
   const activeMode: ActiveMode = showError
     ? "idle"
     : anchor.stage === "registering-company" ||
+        anchor.stage === "registering-identity" ||
         anchor.stage === "registering-agent"
       ? "busy"
       : anchor.stage === "awaiting-signature"
@@ -330,6 +373,7 @@ export function AnchorIdentityDialog({
                     activeMode === "idle" &&
                     walletStatus.kind === "ready" &&
                     (anchor.stage === "idle" ||
+                      anchor.stage === "ready-to-sign-identity" ||
                       anchor.stage === "ready-to-sign");
 
                   return (

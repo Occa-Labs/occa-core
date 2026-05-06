@@ -1,6 +1,7 @@
 "use client";
 
 import { OnboardingFormDialog } from "./onboarding-form-dialog";
+import { RecoveryGatewayDialog } from "./recovery-gateway-dialog";
 import { SetupProgressDialog } from "./setup-progress-dialog";
 import { AnchorIdentityDialog } from "./anchor-identity-dialog";
 import { CeoReadyDialog } from "./ceo-ready-dialog";
@@ -48,6 +49,10 @@ export function SetupWorkflow({ setup }: SetupWorkflowProps) {
     return (
       <OnboardingFormDialog onboarding={onboarding} onReady={handleFormReady} />
     );
+  }
+
+  if (phase === "recovery-pair-gateway") {
+    return <RecoveryGatewayDialog onboarding={onboarding} />;
   }
 
   if (phase === "provisioning-ceo") {

@@ -21,6 +21,7 @@ import type {
   ListTracesResponse,
   ListSkillsResponse,
   ListTasksResponse,
+  OpenclawAdapterConfig,
   CreateTaskCommentRequest,
   TaskCommentResponse,
   MeResponse,
@@ -190,6 +191,35 @@ export interface ConfirmAgentOnChainResponse {
   agentChainTxSignature: string | null;
 }
 
+// Identity registration — Phase B in the chain anchor flow. Registers
+// the portable AgentIdentity PDA that `create_deployment` (Phase C)
+// requires to already exist on chain.
+export type PrepareIdentityOnChainResponse =
+  | {
+      alreadyRegistered: true;
+      identityPda: string;
+      agentPubkey: string;
+    }
+  | ({
+      alreadyRegistered: false;
+      identityPda: string;
+      agentPubkey: string;
+    } & PreparedTx);
+
+export interface ConfirmIdentityOnChainRequest {
+  signedTransaction: string;
+  blockhash: string;
+  lastValidBlockHeight: number;
+  agentPubkey: string;
+}
+
+export interface ConfirmIdentityOnChainResponse {
+  alreadyRegistered: boolean;
+  identityPda: string;
+  agentPubkey: string;
+  chainTxSignature: string | null;
+}
+
 export interface PrepareSetOperatingWalletRequest {
   operatingWallet: string;
 }
@@ -222,6 +252,19 @@ export const chainApi = {
   confirmCompany: (companyId: string, body: ConfirmCompanyOnChainRequest) =>
     request<ConfirmCompanyOnChainResponse>(
       `/api/chain/companies/${companyId}/register/confirm`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  prepareIdentity: (identityId: string) =>
+    request<PrepareIdentityOnChainResponse>(
+      `/api/chain/agent-identities/${identityId}/register/prepare`,
+      { method: "POST", body: JSON.stringify({}) },
+    ),
+  confirmIdentity: (
+    identityId: string,
+    body: ConfirmIdentityOnChainRequest,
+  ) =>
+    request<ConfirmIdentityOnChainResponse>(
+      `/api/chain/agent-identities/${identityId}/register/confirm`,
       { method: "POST", body: JSON.stringify(body) },
     ),
   prepareAgent: (agentId: string) =>
@@ -435,13 +478,24 @@ export const agentsApi = {
       label?: string;
     }) => void,
     signal?: AbortSignal,
+    // Optional override — only set on chain-recovery re-pair, where the
+    // server should write fresh creds + mint a new device keypair before
+    // running provision. Omit for the normal "retry partial provision"
+    // path (server uses the stored config).
+    options?: { adapterConfig?: OpenclawAdapterConfig },
   ): Promise<CreateAgentResponse> => {
     const token = getStoredToken();
     const headers: Record<string, string> = { Accept: "text/event-stream" };
     if (token) headers["Authorization"] = `Bearer ${token}`;
+    if (options?.adapterConfig) {
+      headers["Content-Type"] = "application/json";
+    }
     const res = await fetch(`${API_BASE}/api/agents/${id}/reprovision`, {
       method: "POST",
       headers,
+      body: options?.adapterConfig
+        ? JSON.stringify({ adapterConfig: options.adapterConfig })
+        : undefined,
       signal,
     });
     if (!res.ok) {

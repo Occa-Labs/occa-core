@@ -24,6 +24,7 @@ import {
 } from "../features/agents/services/deployment-status";
 import { toCompanyDTO } from "../features/companies/domain/dto";
 import { findActiveOwnerCompanyWithProfile } from "../features/companies/repositories/companies";
+import { recoverFromChainIfMissing } from "../features/chain/services/chain-recovery";
 
 const router: Router = Router();
 
@@ -41,7 +42,25 @@ router.get("/", requireAuth, async (req: Request, res: Response) => {
     return;
   }
 
-  const loaded = await findActiveOwnerCompanyWithProfile(userId);
+  let loaded = await findActiveOwnerCompanyWithProfile(userId);
+
+  // Chain-first recovery — DB cache may be empty (new device, DB wipe,
+  // or onboarding via direct SDK). Per CLAUDE.md "Chain = truth, DB =
+  // cache", look up the wallet's PDAs on-chain and rebuild the cache.
+  // Only triggers when DB has nothing — happy path stays single-query.
+  if (!loaded) {
+    try {
+      const result = await recoverFromChainIfMissing({
+        userId,
+        walletAddress: userRow.walletAddress,
+      });
+      if (result.recovered) {
+        loaded = await findActiveOwnerCompanyWithProfile(userId);
+      }
+    } catch (err) {
+      req.log.error({ err }, "chain recovery failed; serving empty /api/me");
+    }
+  }
 
   const deploymentRows = loaded
     ? await db

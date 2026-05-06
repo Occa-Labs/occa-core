@@ -19,9 +19,11 @@ export type SubmitStage =
   | "gateway-restarting";
 
 // Sub-stage of the on-chain anchoring phase. Drives the cinematic copy in
-// the wizard's anchor-identity step.
+// the wizard's anchor-identity step. Three on-chain phases (company →
+// identity → deployment), each with its own sign click.
 export type AnchorStage =
   | "registering-company"
+  | "registering-identity"
   | "awaiting-signature"
   | "deriving-keypair"
   | "registering-agent";
@@ -43,6 +45,18 @@ export type OnboardingStatus =
       // If set, the form dialog should mount directly at this step key
       // instead of starting at the intro. Used by backToReview/backToEdit.
       resume?: ResumeTarget;
+    }
+  // Chain-first recovery surfaced this session: server rebuilt company +
+  // CEO from on-chain state, but Tier 3 (gateway creds + device keypair)
+  // was wiped and must be re-paired. Distinct from `needed` so the UI
+  // shows a small "re-pair gateway" dialog (just gatewayUrl + apiKey)
+  // instead of the full onboarding form — company name + agent name are
+  // already known from chain.
+  | {
+      kind: "recovery-needed";
+      company: CompanyDTO;
+      ceoAgentId: string;
+      ceoName: string;
     }
   | { kind: "submitting"; stage: SubmitStage }
   // After a successful Phase A (company + agent in DB + adapter
@@ -112,6 +126,10 @@ export interface UseOnboardingResult {
   setAdapterConfig: (v: Partial<OpenclawAdapterConfig>) => void;
   probeAdapter: () => Promise<void>;
   launch: () => Promise<void>;
+  /** Re-pair the gateway after a chain-first recovery — sends fresh
+   *  gateway creds to the existing CEO deployment. Only valid in the
+   *  `recovery-needed` state. */
+  repairGateway: () => Promise<void>;
   /** Transition from error back into the form at the given step. */
   backToEdit: (target: ResumeTarget) => void;
   /** Push a stage transition while in `anchoring`. Driven by the
@@ -132,6 +150,14 @@ export interface UseOnboardingResult {
 // OpenClaw restart (~3–5s) so the hint appears before users lose patience
 // but doesn't flash for fast no-restart commits.
 const RESTART_HINT_DELAY_MS = 4000;
+
+// On-chain identity PDAs are base58 strings; partial-provision rows mint
+// `ag_pda_<hex>` placeholders. The presence of a real (non-placeholder)
+// PDA is the signal that the row was rebuilt from chain — used to
+// distinguish recovery from a half-finished onboarding attempt.
+function isRealAgentPda(pda: string | null): boolean {
+  return pda !== null && !pda.startsWith("ag_pda_") && !pda.startsWith("ag_pk_");
+}
 
 // Given a server error code, decide which step the user should be sent back
 // to when they click "Back to edit". Credential errors send them to the
@@ -162,6 +188,14 @@ export function useOnboarding(authenticated: boolean): UseOnboardingResult {
   // every restart attempt produced a fresh row in earlier versions).
   const [pendingAgentId, setPendingAgentId] = useState<string | null>(null);
   const lastAuthRef = useRef<boolean>(false);
+  // Mirror of `status` for callbacks that must read the freshest value
+  // without depending on it (avoids re-creating the callback every state
+  // change). Used by `repairGateway` to capture the recovery context at
+  // click-time.
+  const statusRef = useRef(status);
+  useEffect(() => {
+    statusRef.current = status;
+  }, [status]);
 
   const refresh = useCallback(async () => {
     if (!authenticated) {
@@ -186,6 +220,26 @@ export function useOnboarding(authenticated: boolean): UseOnboardingResult {
       );
 
       if (incompleteCeo && res.company) {
+        // Chain-first recovery: server rebuilt the row from on-chain
+        // state, so the PDA is real even though Tier 3 (gateway creds)
+        // is empty. Surface as `recovery-needed` so the UI shows a
+        // small re-pair dialog instead of the full onboarding form.
+        if (isRealAgentPda(incompleteCeo.agentPda)) {
+          setForm((f) => ({
+            ...f,
+            companyName: res.company!.name,
+            agentName: incompleteCeo.name,
+            agentRole: incompleteCeo.role as AgentRole,
+          }));
+          setStatus({
+            kind: "recovery-needed",
+            company: res.company,
+            ceoAgentId: incompleteCeo.id,
+            ceoName: incompleteCeo.name,
+          });
+          return;
+        }
+
         setPendingAgentId(incompleteCeo.id);
         setForm((f) => ({
           ...f,
@@ -206,14 +260,17 @@ export function useOnboarding(authenticated: boolean): UseOnboardingResult {
       setPendingAgentId(null);
 
       if (res.company && res.agents.length > 0) {
-        // Phase A complete. Now check Phase B (on-chain anchor). The CEO
-        // agent is the onboarding agent; if it (or the company) is not
-        // anchored, surface the anchoring state so the wizard can resume
-        // there instead of dismissing onto the desktop. This handles
-        // browser refresh after Phase A but before Phase B confirmation.
+        // Phase A complete. Now check Phase B/C (on-chain anchor). The
+        // CEO is the onboarding agent; if its identity isn't yet a real
+        // on-chain PDA, resume into anchoring instead of dropping the
+        // user onto the desktop. The placeholder check is essential —
+        // `agent_identities.identity_pda` is NOT NULL by schema and
+        // starts as `ag_pda_<hex>`, which is truthy and would silently
+        // mask "anchor not done" as "anchor done".
         const ceo = res.agents.find((a) => a.role === CEO_ROLE) ?? null;
         const needsAnchor =
-          !res.company.companyPda || (ceo != null && !ceo.agentPda);
+          !res.company.companyPda ||
+          (ceo != null && !isRealAgentPda(ceo.agentPda));
         if (needsAnchor && ceo) {
           setStatus({
             kind: "anchoring",
@@ -503,6 +560,52 @@ export function useOnboarding(authenticated: boolean): UseOnboardingResult {
     }
   }, [form, pendingAgentId]);
 
+  const repairGateway = useCallback(async () => {
+    // Only valid in `recovery-needed` — capture the deployment id at
+    // call time so a concurrent refresh can't change it underneath us.
+    const current = statusRef.current;
+    if (current.kind !== "recovery-needed") return;
+    const { ceoAgentId, company } = current;
+    setStatus({ kind: "submitting", stage: "provisioning-agent" });
+
+    const onStep = (evt: { status: "running" | "done"; step: string }) => {
+      if (evt.status !== "running") return;
+      if (evt.step === "gateway_restart") {
+        setStatus((s) =>
+          s.kind === "submitting"
+            ? { kind: "submitting", stage: "gateway-restarting" }
+            : s,
+        );
+      }
+    };
+
+    try {
+      await agentsApi.reprovisionStream(
+        ceoAgentId,
+        onStep,
+        undefined,
+        { adapterConfig: form.adapterConfig },
+      );
+      // Tier 3 re-paired. Drop straight to `complete` — chain anchor is
+      // already done (recovery rebuilt those columns from chain).
+      setStatus({ kind: "complete", company });
+    } catch (err) {
+      let message = "repair_failed";
+      let httpStatus: number | undefined;
+      if (err instanceof ApiError) {
+        httpStatus = err.status;
+        const body = err.body as { error?: string } | undefined;
+        if (body?.error) message = body.error;
+      }
+      setStatus({
+        kind: "error",
+        message,
+        httpStatus,
+        resume: "gateway-credentials",
+      });
+    }
+  }, [form.adapterConfig]);
+
   return {
     status,
     form,
@@ -515,6 +618,7 @@ export function useOnboarding(authenticated: boolean): UseOnboardingResult {
     setAdapterConfig,
     probeAdapter,
     launch,
+    repairGateway,
     backToEdit,
     setAnchorStage,
     markAnchored,

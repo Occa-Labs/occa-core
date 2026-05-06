@@ -32,6 +32,18 @@ export const createAgentBody = z.object({
   companyName: z.string().trim().min(1).max(LIMITS.NAME).optional(),
 });
 
+// POST /api/agents/:id/reprovision
+//
+// Body is optional. When `adapterConfig` is supplied, the route writes
+// it onto the runtime profile and mints a fresh device keypair before
+// running provision — used for chain-recovery re-pair, where the row
+// exists from chain rebuild but Tier 3 (creds + keypair) was wiped.
+// When omitted, reprovision uses the stored config (the "retry partial
+// provision" path).
+export const reprovisionAgentBody = z.object({
+  adapterConfig: adapterConfigSchema.optional(),
+});
+
 // PATCH /api/agents/:id
 export const patchAgentBody = z.object({
   name: z.string().trim().min(1).max(LIMITS.NAME).optional(),

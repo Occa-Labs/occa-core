@@ -6,6 +6,7 @@
 // Each phase corresponds 1:1 with what `<SetupWorkflow>` renders:
 //   idle             — nothing (auth still hydrating or me still loading)
 //   onboarding-form  — <OnboardingFormDialog>
+//   recovery-pair-gateway — <RecoveryGatewayDialog> (chain-rebuilt CEO; re-pair only)
 //   provisioning-ceo — <SetupProgressDialog>
 //   anchoring-ceo    — <AnchorIdentityDialog>  (Phase B — on-chain anchor)
 //   ceo-ready        — <CeoReadyDialog>      (Jia at the door)
@@ -18,6 +19,7 @@
 export type SetupPhase =
   | "idle"
   | "onboarding-form"
+  | "recovery-pair-gateway"
   | "provisioning-ceo"
   | "anchoring-ceo"
   | "ceo-ready"

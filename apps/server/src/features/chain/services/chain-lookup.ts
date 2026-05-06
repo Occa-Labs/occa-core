@@ -1,9 +1,78 @@
 import { PublicKey } from "@solana/web3.js";
-import { REGISTRY_PROGRAM_ID, deriveCompanyPda } from "occa-sdk";
+import {
+  ACCOUNT_DISCRIMINATOR,
+  DEPLOYMENT_STATUS,
+  REGISTRY_PROGRAM_ID,
+  deriveCompanyPda,
+  deriveDeploymentPda,
+  type DeploymentStatus,
+} from "occa-sdk";
 import { getConnection } from "../../../infra/solana/connection";
 import { childLogger } from "../../../lib/logger";
 
 const log = childLogger("chain:lookup");
+
+// Borsh-style cursor — registry accounts have variable-length string fields
+// (name, metadata_uri, role) so fixed offsets only work up to the first
+// string. Past that we sequence-read.
+class BorshCursor {
+  constructor(
+    private readonly data: Buffer,
+    private offset: number,
+  ) {}
+  get pos(): number {
+    return this.offset;
+  }
+  remaining(): number {
+    return this.data.length - this.offset;
+  }
+  skip(n: number): void {
+    this.offset += n;
+  }
+  readU8(): number {
+    const v = this.data.readUInt8(this.offset);
+    this.offset += 1;
+    return v;
+  }
+  readU32(): number {
+    const v = this.data.readUInt32LE(this.offset);
+    this.offset += 4;
+    return v;
+  }
+  readI64(): bigint {
+    const v = this.data.readBigInt64LE(this.offset);
+    this.offset += 8;
+    return v;
+  }
+  readPubkey(): PublicKey {
+    const v = new PublicKey(this.data.subarray(this.offset, this.offset + 32));
+    this.offset += 32;
+    return v;
+  }
+  readBytes32(): Buffer {
+    const v = Buffer.from(this.data.subarray(this.offset, this.offset + 32));
+    this.offset += 32;
+    return v;
+  }
+  readString(): string {
+    const len = this.readU32();
+    const v = this.data
+      .subarray(this.offset, this.offset + len)
+      .toString("utf8");
+    this.offset += len;
+    return v;
+  }
+  readOptionU32(): number | null {
+    const tag = this.readU8();
+    if (tag === 0) return null;
+    return this.readU32();
+  }
+}
+
+function checkDiscriminator(data: Buffer, expected: Buffer): boolean {
+  if (data.length < 8) return false;
+  return data.subarray(0, 8).equals(expected);
+}
 
 // Borsh layout offsets for the registry program's CompanyAccount. Fixed
 // up to the trailing variable-length `metadata_uri` string, so byte-slice
@@ -125,4 +194,271 @@ export async function fetchCompany(
     ),
     nonce: data.readUInt32LE(COMPANY_OFFSET_NONCE),
   };
+}
+
+// CompanyAccount recovery shape — full decode (name, locale, metadata)
+// needed to reconstruct the `companies` row, beyond the lookup-only
+// `OnChainCompany` returned by `findCompaniesForWallet`.
+export interface OnChainCompanyFull {
+  companyPda: PublicKey;
+  owner: PublicKey;
+  nonce: number;
+  status: number;
+  name: string;
+  locale: string;
+  metadataUri: string;
+  metadataHash: Buffer;
+}
+
+export async function fetchCompanyForRecovery(
+  companyPda: PublicKey,
+): Promise<OnChainCompanyFull | null> {
+  const conn = getConnection();
+  const info = await conn.getAccountInfo(companyPda, "confirmed");
+  if (!info) return null;
+  if (!info.owner.equals(REGISTRY_PROGRAM_ID)) return null;
+  if (!checkDiscriminator(info.data, ACCOUNT_DISCRIMINATOR.CompanyAccount)) {
+    log.warn(
+      { pda: companyPda.toBase58() },
+      "fetchCompanyForRecovery: discriminator mismatch",
+    );
+    return null;
+  }
+  try {
+    const c = new BorshCursor(info.data, 8);
+    c.skip(1); // version
+    const owner = c.readPubkey();
+    c.skip(32); // treasury
+    c.skip(32); // policy
+    c.skip(8); // created_at
+    c.skip(8); // updated_at
+    const nonce = c.readU32();
+    const status = c.readU8();
+    const name = c.readString();
+    const locale = c.readString();
+    const metadataUri = c.readString();
+    const metadataHash = c.readBytes32();
+    return {
+      companyPda,
+      owner,
+      nonce,
+      status,
+      name,
+      locale,
+      metadataUri,
+      metadataHash,
+    };
+  } catch (err) {
+    log.error(
+      { pda: companyPda.toBase58(), err },
+      "fetchCompanyForRecovery: decode failed",
+    );
+    return null;
+  }
+}
+
+// AgentIdentity recovery shape — fields needed to reconstruct the
+// `agent_identities` row. Not the full account; we skip what isn't required
+// for DB rebuild (e.g. timestamps, reputation_uri Phase-2-only).
+export interface OnChainAgentIdentity {
+  identityPda: PublicKey;
+  agentPubkey: PublicKey;
+  owner: PublicKey;
+  name: string;
+  metadataUri: string;
+  metadataHash: Buffer;
+}
+
+export async function fetchAgentIdentity(
+  identityPda: PublicKey,
+): Promise<OnChainAgentIdentity | null> {
+  const conn = getConnection();
+  const info = await conn.getAccountInfo(identityPda, "confirmed");
+  if (!info) return null;
+  if (!info.owner.equals(REGISTRY_PROGRAM_ID)) {
+    log.warn(
+      { pda: identityPda.toBase58(), owner: info.owner.toBase58() },
+      "fetchAgentIdentity: account not owned by registry program",
+    );
+    return null;
+  }
+  if (!checkDiscriminator(info.data, ACCOUNT_DISCRIMINATOR.AgentIdentity)) {
+    log.warn(
+      { pda: identityPda.toBase58() },
+      "fetchAgentIdentity: discriminator mismatch",
+    );
+    return null;
+  }
+  try {
+    const c = new BorshCursor(info.data, 8);
+    c.skip(1); // version
+    const agentPubkey = c.readPubkey();
+    const owner = c.readPubkey();
+    c.skip(8); // created_at
+    c.skip(8); // updated_at
+    const name = c.readString();
+    const metadataUri = c.readString();
+    const metadataHash = c.readBytes32();
+    return { identityPda, agentPubkey, owner, name, metadataUri, metadataHash };
+  } catch (err) {
+    log.error(
+      { pda: identityPda.toBase58(), err },
+      "fetchAgentIdentity: decode failed",
+    );
+    return null;
+  }
+}
+
+// Deployment recovery shape — fields needed to reconstruct the
+// `deployments` row + look up its identity for recursive recovery.
+export interface OnChainDeployment {
+  deploymentPda: PublicKey;
+  agentIdentity: PublicKey;
+  company: PublicKey;
+  deploymentIndex: number;
+  owner: PublicKey;
+  operatingWallet: PublicKey;
+  adapterId: PublicKey;
+  role: string;
+  parentDeploymentIndex: number | null;
+  status: DeploymentStatus;
+  metadataUri: string;
+  metadataHash: Buffer;
+}
+
+export async function fetchDeployment(
+  deploymentPda: PublicKey,
+): Promise<OnChainDeployment | null> {
+  const conn = getConnection();
+  const info = await conn.getAccountInfo(deploymentPda, "confirmed");
+  if (!info) return null;
+  if (!info.owner.equals(REGISTRY_PROGRAM_ID)) {
+    log.warn(
+      { pda: deploymentPda.toBase58(), owner: info.owner.toBase58() },
+      "fetchDeployment: account not owned by registry program",
+    );
+    return null;
+  }
+  if (!checkDiscriminator(info.data, ACCOUNT_DISCRIMINATOR.Deployment)) {
+    log.warn(
+      { pda: deploymentPda.toBase58() },
+      "fetchDeployment: discriminator mismatch",
+    );
+    return null;
+  }
+  try {
+    const c = new BorshCursor(info.data, 8);
+    c.skip(1); // version
+    const agentIdentity = c.readPubkey();
+    const company = c.readPubkey();
+    const deploymentIndex = c.readU32();
+    const owner = c.readPubkey();
+    const operatingWallet = c.readPubkey();
+    const adapterId = c.readPubkey();
+    const role = c.readString();
+    const parentDeploymentIndex = c.readOptionU32();
+    const statusByte = c.readU8();
+    c.skip(8); // deployed_at
+    c.skip(8); // retired_at
+    c.skip(8); // updated_at
+    const metadataUri = c.readString();
+    const metadataHash = c.readBytes32();
+    const status = (statusByte === DEPLOYMENT_STATUS.Paused
+      ? DEPLOYMENT_STATUS.Paused
+      : statusByte === DEPLOYMENT_STATUS.Retired
+        ? DEPLOYMENT_STATUS.Retired
+        : DEPLOYMENT_STATUS.Active) as DeploymentStatus;
+    return {
+      deploymentPda,
+      agentIdentity,
+      company,
+      deploymentIndex,
+      owner,
+      operatingWallet,
+      adapterId,
+      role,
+      parentDeploymentIndex,
+      status,
+      metadataUri,
+      metadataHash,
+    };
+  } catch (err) {
+    log.error(
+      { pda: deploymentPda.toBase58(), err },
+      "fetchDeployment: decode failed",
+    );
+    return null;
+  }
+}
+
+// Per-company deployment_index is a packed u32 counter (mirrors PDA seed).
+// Probe indices 0..N like we do for company nonces — single batched
+// `getMultipleAccountsInfo` call. No global index, no `getProgramAccounts`.
+const MAX_DEPLOYMENT_PROBE = 32;
+
+export async function listDeploymentsByCompany(
+  companyPda: PublicKey,
+): Promise<OnChainDeployment[]> {
+  const conn = getConnection();
+  const candidates = Array.from(
+    { length: MAX_DEPLOYMENT_PROBE },
+    (_, idx) => ({
+      deploymentIndex: idx,
+      pda: deriveDeploymentPda(companyPda, idx).pda,
+    }),
+  );
+  const infos = await conn.getMultipleAccountsInfo(
+    candidates.map((c) => c.pda),
+    "confirmed",
+  );
+  const out: OnChainDeployment[] = [];
+  for (let i = 0; i < candidates.length; i += 1) {
+    const info = infos[i];
+    if (!info) continue;
+    if (!info.owner.equals(REGISTRY_PROGRAM_ID)) continue;
+    if (!checkDiscriminator(info.data, ACCOUNT_DISCRIMINATOR.Deployment)) {
+      continue;
+    }
+    try {
+      const c = new BorshCursor(info.data, 8);
+      c.skip(1); // version
+      const agentIdentity = c.readPubkey();
+      const company = c.readPubkey();
+      const deploymentIndex = c.readU32();
+      const owner = c.readPubkey();
+      const operatingWallet = c.readPubkey();
+      const adapterId = c.readPubkey();
+      const role = c.readString();
+      const parentDeploymentIndex = c.readOptionU32();
+      const statusByte = c.readU8();
+      c.skip(8 + 8 + 8); // deployed_at + retired_at + updated_at
+      const metadataUri = c.readString();
+      const metadataHash = c.readBytes32();
+      const status = (statusByte === DEPLOYMENT_STATUS.Paused
+        ? DEPLOYMENT_STATUS.Paused
+        : statusByte === DEPLOYMENT_STATUS.Retired
+          ? DEPLOYMENT_STATUS.Retired
+          : DEPLOYMENT_STATUS.Active) as DeploymentStatus;
+      out.push({
+        deploymentPda: candidates[i].pda,
+        agentIdentity,
+        company,
+        deploymentIndex,
+        owner,
+        operatingWallet,
+        adapterId,
+        role,
+        parentDeploymentIndex,
+        status,
+        metadataUri,
+        metadataHash,
+      });
+    } catch (err) {
+      log.error(
+        { pda: candidates[i].pda.toBase58(), err },
+        "listDeploymentsByCompany: decode failed",
+      );
+    }
+  }
+  return out;
 }

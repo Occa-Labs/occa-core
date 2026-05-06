@@ -6,11 +6,18 @@ import { ERROR_CODES } from "@occa/shared/error-codes";
 import {
   buildCreateCompanyInstruction,
   buildCreateDeploymentInstruction,
+  buildRegisterAgentIdentityInstruction,
   buildSetOperatingWalletInstruction,
+  deriveAgentIdentityPda,
   deriveCompanyPda,
   deriveDeploymentPda,
 } from "occa-sdk";
-import { findById as findIdentityById } from "../../agents/repositories/agent-identities";
+import { Keypair } from "@solana/web3.js";
+import {
+  findById as findIdentityById,
+  findOwnedByUserId as findOwnedIdentityByUserId,
+  updateIdentityById,
+} from "../../agents/repositories/agent-identities";
 import { childLogger } from "../../../lib/logger";
 import { requireAuth } from "../../../middleware/auth";
 import { findOwnedById as findOwnedCompanyById } from "../../companies/repositories/companies";
@@ -27,6 +34,7 @@ import {
   persistAgentChainRegistration,
   persistAgentOperatingWallet,
   persistCompanyChainRegistration,
+  persistIdentityChainRegistration,
   reserveAgentIndex,
 } from "../repositories/chain-registry";
 import { findCompaniesForWallet } from "../services/chain-lookup";
@@ -75,6 +83,17 @@ const confirmAgentBody = z
     blockhash: z.string().min(32).max(64),
     lastValidBlockHeight: z.number().int().nonnegative(),
     agentIndex: z.number().int().nonnegative(),
+  })
+  .strict();
+
+const prepareIdentityBody = z.object({}).strict();
+
+const confirmIdentityBody = z
+  .object({
+    signedTransaction: z.string().min(1),
+    blockhash: z.string().min(32).max(64),
+    lastValidBlockHeight: z.number().int().nonnegative(),
+    agentPubkey: z.string().min(32).max(48),
   })
   .strict();
 
@@ -362,6 +381,251 @@ router.post(
   },
 );
 
+// ── Agent Identity: register ────────────────────────────────────────────────
+//
+// `register_agent_identity` mints the portable AgentIdentity PDA used as
+// the immutable seed for any future Deployment under any company owned
+// by this wallet. Identity is independent of company — `create_deployment`
+// requires this PDA to already exist on chain.
+//
+// The `agent_pubkey` baked into the PDA seed is a fresh keypair pubkey
+// (NOT a signer in this ix — see SDK keys layout). We generate it
+// server-side so the operator-as-fee-payer can pre-write the row before
+// the user signs; the private key is discarded — only the pubkey is
+// load-bearing as a stable identifier.
+
+/**
+ * POST /api/chain/agent-identities/:identityId/register/prepare
+ *
+ * Build a `register_agent_identity` instruction, partial-sign as
+ * fee-payer, and return the base64 tx for the FE wallet to add the
+ * owner signature. Pre-writes the freshly-generated `agent_pubkey` +
+ * derived `identity_pda` to the row so confirm matches.
+ *
+ * Idempotent: real (non-placeholder) `identity_pda` short-circuits to
+ * `alreadyRegistered: true`.
+ */
+router.post(
+  "/agent-identities/:identityId/register/prepare",
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const userId = req.user!.userId;
+    const identityId = req.params.identityId;
+
+    const parsed = prepareIdentityBody.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res
+        .status(StatusCodes.BAD_REQUEST)
+        .json({ error: ERROR_CODES.INVALID_BODY });
+      return;
+    }
+
+    const identity = await findOwnedIdentityByUserId({ userId, identityId });
+    if (!identity) {
+      res
+        .status(StatusCodes.NOT_FOUND)
+        .json({ error: ERROR_CODES.AGENT_NOT_FOUND });
+      return;
+    }
+
+    // Real PDA already cached → nothing to do. Placeholder strings
+    // (`ag_pda_<48hex>`) are NOT NULL by schema; parse-check filters
+    // them out so we don't false-positive a "registered" identity.
+    if (identity.identityPda) {
+      try {
+        const pk = new PublicKey(identity.identityPda);
+        res.status(StatusCodes.OK).json({
+          alreadyRegistered: true,
+          identityPda: pk.toBase58(),
+          agentPubkey: identity.agentPubkey,
+        });
+        return;
+      } catch {
+        // placeholder — fall through
+      }
+    }
+
+    const operator = operatorOrFail(res);
+    if (!operator) return;
+
+    const userWalletPk = new PublicKey(req.user!.walletAddress);
+
+    // Generate a fresh agent_pubkey. Not a signer in the ix; we keep
+    // only the pubkey for PDA derivation + future identity lookups.
+    // Discarding the private key is intentional — there's no future ix
+    // that needs it (owner wallet authorizes everything).
+    const agentKeypair = Keypair.generate();
+    const agentPubkey = agentKeypair.publicKey;
+    const { pda: identityPda } = deriveAgentIdentityPda(agentPubkey);
+
+    const { instruction } = buildRegisterAgentIdentityInstruction({
+      agentPubkey,
+      owner: userWalletPk,
+      payer: operator.publicKey,
+      name: identity.name,
+      metadataUri: identity.metadataUri ?? "",
+      metadataHash: identity.metadataHash
+        ? Buffer.from(identity.metadataHash, "hex")
+        : Buffer.alloc(32),
+    });
+
+    let prepared: Awaited<ReturnType<typeof prepareOwnerSignedTx>>;
+    try {
+      prepared = await prepareOwnerSignedTx({
+        instructions: [instruction],
+        feePayer: operator,
+      });
+    } catch (err) {
+      log.error(
+        { err, identityId },
+        "register_agent_identity prepare failed",
+      );
+      res
+        .status(StatusCodes.BAD_GATEWAY)
+        .json({ error: ERROR_CODES.CHAIN_TX_FAILED });
+      return;
+    }
+
+    // Pre-write so a concurrent prepare for the same identity (race) hits
+    // the parse-check above and short-circuits. Owner wallet + tx
+    // signature land in the confirm step. Using `updateIdentityById`
+    // keeps the create-time fields (name, metadata) untouched.
+    await updateIdentityById({
+      identityId,
+      patch: {
+        agentPubkey: agentPubkey.toBase58(),
+        identityPda: identityPda.toBase58(),
+      },
+    });
+
+    res.status(StatusCodes.OK).json({
+      alreadyRegistered: false,
+      identityPda: identityPda.toBase58(),
+      agentPubkey: agentPubkey.toBase58(),
+      transaction: prepared.transactionBase64,
+      blockhash: prepared.blockhash,
+      lastValidBlockHeight: prepared.lastValidBlockHeight,
+    });
+  },
+);
+
+/**
+ * POST /api/chain/agent-identities/:identityId/register/confirm
+ *
+ * FE submits the wallet-signed tx; we broadcast, confirm, and persist
+ * the chain-side cache columns (chain_tx_signature, owner_wallet).
+ */
+router.post(
+  "/agent-identities/:identityId/register/confirm",
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const userId = req.user!.userId;
+    const identityId = req.params.identityId;
+
+    const parsed = confirmIdentityBody.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res
+        .status(StatusCodes.BAD_REQUEST)
+        .json({ error: ERROR_CODES.INVALID_BODY });
+      return;
+    }
+    const { signedTransaction, blockhash, lastValidBlockHeight, agentPubkey } =
+      parsed.data;
+
+    const identity = await findOwnedIdentityByUserId({ userId, identityId });
+    if (!identity) {
+      res
+        .status(StatusCodes.NOT_FOUND)
+        .json({ error: ERROR_CODES.AGENT_NOT_FOUND });
+      return;
+    }
+
+    // Already on-chain (concurrent confirm) — return the cached fields.
+    if (identity.identityPda) {
+      try {
+        const pk = new PublicKey(identity.identityPda);
+        if (identity.chainTxSignature) {
+          res.status(StatusCodes.OK).json({
+            alreadyRegistered: true,
+            identityPda: pk.toBase58(),
+            agentPubkey: identity.agentPubkey,
+            chainTxSignature: identity.chainTxSignature,
+          });
+          return;
+        }
+      } catch {
+        // placeholder — proceed
+      }
+    }
+
+    let agentPubkeyPk: PublicKey;
+    try {
+      agentPubkeyPk = new PublicKey(agentPubkey);
+    } catch {
+      res
+        .status(StatusCodes.BAD_REQUEST)
+        .json({ error: ERROR_CODES.INVALID_BODY });
+      return;
+    }
+    const { pda: identityPda } = deriveAgentIdentityPda(agentPubkeyPk);
+    const userWalletPk = new PublicKey(req.user!.walletAddress);
+
+    let signature: string;
+    try {
+      signature = await submitSignedTx({
+        signedTransactionBase64: signedTransaction,
+        blockhash,
+        lastValidBlockHeight,
+      });
+    } catch (err) {
+      log.error(
+        { err, identityId },
+        "register_agent_identity submit failed",
+      );
+      res
+        .status(StatusCodes.BAD_GATEWAY)
+        .json({ error: ERROR_CODES.CHAIN_TX_FAILED });
+      return;
+    }
+
+    const exists = await accountExists(identityPda);
+    if (!exists) {
+      log.error(
+        {
+          identityId,
+          signature,
+          identityPda: identityPda.toBase58(),
+        },
+        "register_agent_identity confirm: PDA not present after confirmation",
+      );
+      res
+        .status(StatusCodes.BAD_GATEWAY)
+        .json({ error: ERROR_CODES.CHAIN_TX_FAILED });
+      return;
+    }
+
+    await persistIdentityChainRegistration({
+      identityId,
+      agentPubkey: agentPubkeyPk.toBase58(),
+      identityPda: identityPda.toBase58(),
+      ownerWallet: userWalletPk.toBase58(),
+      chainTxSignature: signature,
+    });
+
+    log.info(
+      { identityId, identityPda: identityPda.toBase58(), signature },
+      "agent identity registered on-chain",
+    );
+
+    res.status(StatusCodes.OK).json({
+      alreadyRegistered: false,
+      identityPda: identityPda.toBase58(),
+      agentPubkey: agentPubkeyPk.toBase58(),
+      chainTxSignature: signature,
+    });
+  },
+);
+
 // ── Agent: register ─────────────────────────────────────────────────────────
 
 /**
@@ -399,13 +663,23 @@ router.post(
       return;
     }
 
+    // Treat as registered ONLY if the stored PDA parses as a real Solana
+    // pubkey. Placeholder strings (`dep_pda_<48hex>`) are NOT NULL by
+    // schema until the chain confirm step overwrites them, so a naive
+    // truthy check would falsely report success and let the FE skip
+    // signing — leaving the user with a "Done" UI but nothing on chain.
     if (agent.deploymentPda) {
-      res.status(StatusCodes.OK).json({
-        alreadyRegistered: true,
-        agentPda: agent.deploymentPda,
-        agentIndex: agent.deploymentIndex,
-      });
-      return;
+      try {
+        const pk = new PublicKey(agent.deploymentPda);
+        res.status(StatusCodes.OK).json({
+          alreadyRegistered: true,
+          agentPda: pk.toBase58(),
+          agentIndex: agent.deploymentIndex,
+        });
+        return;
+      } catch {
+        // Placeholder — fall through to the prepare-tx path below.
+      }
     }
 
     const companyRow = await findCompanyById(agent.companyId);

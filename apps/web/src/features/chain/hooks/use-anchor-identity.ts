@@ -18,6 +18,11 @@ type SolanaWallet = ReturnType<typeof useSolanaWallets>["wallets"][number];
 export type AnchorStage =
   | "idle"
   | "registering-company"
+  // Company done, identity sign next.
+  | "ready-to-sign-identity"
+  | "registering-identity"
+  // Identity done, deployment sign next. (Replaces the old "ready-to-sign"
+  // which was Phase A→B transition; now Phase A→B→C with a third button.)
   | "ready-to-sign"
   | "awaiting-signature"
   | "registering-agent"
@@ -26,11 +31,15 @@ export type AnchorStage =
 export interface AnchorError {
   code: AnchorErrorCode;
   message: string;
-  stage: Exclude<AnchorStage, "idle" | "complete" | "ready-to-sign">;
+  stage: Exclude<
+    AnchorStage,
+    "idle" | "complete" | "ready-to-sign-identity" | "ready-to-sign"
+  >;
 }
 
 export interface AnchorResult {
   companyPda: string;
+  identityPda: string;
   agentPda: string;
   agentIndex: number;
   agentChainTxSignature: string | null;
@@ -45,9 +54,15 @@ export interface UseAnchorIdentityResult {
     companyId: string;
     wallet: SolanaWallet;
   }) => Promise<void>;
-  /** Phase B: register the CEO agent on-chain. MUST be invoked from a
-   *  user gesture (e.g. button onClick) — wallets like Phantom silently
-   *  no-op signTransaction requests originating from useEffect. */
+  /** Phase B: register the portable AgentIdentity PDA on-chain. Required
+   *  before Phase C — `create_deployment` references the identity PDA.
+   *  MUST be invoked from a user gesture (wallet popups need a click). */
+  registerIdentity: (input: {
+    identityId: string;
+    wallet: SolanaWallet;
+  }) => Promise<void>;
+  /** Phase C: register the Deployment PDA (ties the identity to a
+   *  company). MUST be invoked from a user gesture. */
   signAndRegisterAgent: (input: {
     agentId: string;
     wallet: SolanaWallet;
@@ -79,6 +94,7 @@ export function useAnchorIdentity(): UseAnchorIdentityResult {
   const [error, setError] = useState<AnchorError | null>(null);
   const [result, setResult] = useState<AnchorResult | null>(null);
   const companyPdaRef = useRef<string | null>(null);
+  const identityPdaRef = useRef<string | null>(null);
   const inFlightRef = useRef(false);
 
   const reset = useCallback(() => {
@@ -86,6 +102,7 @@ export function useAnchorIdentity(): UseAnchorIdentityResult {
     setError(null);
     setResult(null);
     companyPdaRef.current = null;
+    identityPdaRef.current = null;
     inFlightRef.current = false;
   }, []);
 
@@ -100,7 +117,7 @@ export function useAnchorIdentity(): UseAnchorIdentityResult {
     }) => {
       if (inFlightRef.current) return;
       if (companyPdaRef.current) {
-        setStage("ready-to-sign");
+        setStage("ready-to-sign-identity");
         return;
       }
       inFlightRef.current = true;
@@ -114,7 +131,7 @@ export function useAnchorIdentity(): UseAnchorIdentityResult {
           log("registerCompany already on-chain", {
             companyPda: prepRes.companyPda,
           });
-          setStage("ready-to-sign");
+          setStage("ready-to-sign-identity");
           return;
         }
 
@@ -142,7 +159,7 @@ export function useAnchorIdentity(): UseAnchorIdentityResult {
         });
         companyPdaRef.current = confirmRes.companyPda;
         log("registerCompany ok", { companyPda: confirmRes.companyPda });
-        setStage("ready-to-sign");
+        setStage("ready-to-sign-identity");
       } catch (err) {
         const m = mapServerError(err);
         setError({ ...m, stage: "registering-company" });
@@ -155,6 +172,83 @@ export function useAnchorIdentity(): UseAnchorIdentityResult {
   );
 
   // ── Phase B ───────────────────────────────────────────────────────
+  const registerIdentity = useCallback(
+    async ({
+      identityId,
+      wallet,
+    }: {
+      identityId: string;
+      wallet: SolanaWallet;
+    }) => {
+      if (inFlightRef.current) {
+        log("registerIdentity ignored — in flight");
+        return;
+      }
+      if (!companyPdaRef.current) {
+        setError({
+          code: "unknown",
+          message: "Phase A must complete before signing identity.",
+          stage: "registering-identity",
+        });
+        return;
+      }
+      if (identityPdaRef.current) {
+        setStage("ready-to-sign");
+        return;
+      }
+
+      inFlightRef.current = true;
+      setError(null);
+      setStage("registering-identity");
+      log("registerIdentity start", { identityId });
+
+      try {
+        const prepRes = await chainApi.prepareIdentity(identityId);
+        if (prepRes.alreadyRegistered) {
+          identityPdaRef.current = prepRes.identityPda;
+          log("registerIdentity already on-chain", prepRes);
+          setStage("ready-to-sign");
+          return;
+        }
+
+        let signedBytes: Uint8Array;
+        try {
+          const signRes = await signTransaction({
+            transaction: toBytes(prepRes.transaction),
+            wallet,
+            chain: SOLANA_CAIP_CHAIN,
+          });
+          signedBytes = signRes.signedTransaction;
+        } catch (err) {
+          log("registerIdentity signTransaction failed", err);
+          const m = classifyWalletError(err);
+          setError({ ...m, stage: "registering-identity" });
+          // Drop back to ready-to-sign-identity so the user can retry the
+          // identity sign without re-running Phase A.
+          setStage("ready-to-sign-identity");
+          return;
+        }
+
+        const confirmRes = await chainApi.confirmIdentity(identityId, {
+          signedTransaction: toBase64(signedBytes),
+          blockhash: prepRes.blockhash,
+          lastValidBlockHeight: prepRes.lastValidBlockHeight,
+          agentPubkey: prepRes.agentPubkey,
+        });
+        identityPdaRef.current = confirmRes.identityPda;
+        log("registerIdentity ok", { identityPda: confirmRes.identityPda });
+        setStage("ready-to-sign");
+      } catch (err) {
+        const m = mapServerError(err);
+        setError({ ...m, stage: "registering-identity" });
+      } finally {
+        inFlightRef.current = false;
+      }
+    },
+    [signTransaction],
+  );
+
+  // ── Phase C ───────────────────────────────────────────────────────
   const signAndRegisterAgent = useCallback(
     async ({ agentId, wallet }: { agentId: string; wallet: SolanaWallet }) => {
       if (inFlightRef.current) {
@@ -165,6 +259,14 @@ export function useAnchorIdentity(): UseAnchorIdentityResult {
         setError({
           code: "unknown",
           message: "Phase A must complete before signing.",
+          stage: "awaiting-signature",
+        });
+        return;
+      }
+      if (!identityPdaRef.current) {
+        setError({
+          code: "unknown",
+          message: "Phase B (identity) must complete before signing deployment.",
           stage: "awaiting-signature",
         });
         return;
@@ -183,6 +285,7 @@ export function useAnchorIdentity(): UseAnchorIdentityResult {
         if (prepRes.alreadyRegistered) {
           setResult({
             companyPda: companyPdaRef.current,
+            identityPda: identityPdaRef.current,
             agentPda: prepRes.agentPda,
             agentIndex: prepRes.agentIndex,
             agentChainTxSignature: null,
@@ -219,6 +322,7 @@ export function useAnchorIdentity(): UseAnchorIdentityResult {
           });
           setResult({
             companyPda: companyPdaRef.current,
+            identityPda: identityPdaRef.current,
             agentPda: res.agentPda,
             agentIndex: res.agentIndex,
             agentChainTxSignature: res.agentChainTxSignature,
@@ -241,6 +345,7 @@ export function useAnchorIdentity(): UseAnchorIdentityResult {
     error,
     result,
     registerCompany,
+    registerIdentity,
     signAndRegisterAgent,
     reset,
   };

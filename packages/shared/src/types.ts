@@ -205,6 +205,11 @@ export type AgentConnectionState = "connected" | "disconnected" | "unknown";
 // ── Agent DTO sent to client ──
 export interface AgentDTO {
   id: string;
+  /** UUID of the underlying `agent_identities` row (one identity may
+   *  back multiple deployments). Surfaced so chain flows can call the
+   *  identity-scoped routes (`/api/chain/agent-identities/:identityId/...`)
+   *  without an extra lookup. */
+  identityId: string;
   companyId: string;
   name: string;
   role: string;
