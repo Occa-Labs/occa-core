@@ -8,7 +8,7 @@ Companion docs: [task-system-design.md](../../task-system-design.md), [task-syst
 
 | Channel | When to use | Validation timing |
 |---|---|---|
-| **Block markers** in reply text | Status changes (REVIEW), structural side-effects detected at trace finalize (HIRE/DELEGATE/BLOCK/ASK) | Parsed when the trace's reply is persisted |
+| **Block markers** in reply text | Status changes (REVIEW), structural side-effects detected at trace finalize (DELEGATE, BLOCK) | Parsed when the trace's reply is persisted |
 | **HTTP back-channel** | Mid-task signals + idempotent side-effects (EmitFollowUp, RequestInfo) | Validated at request time, returns success/failure synchronously |
 
 Every action — regardless of channel — produces an `agent_action_emitted` row in `task_events` for audit and timeline rendering.
@@ -35,26 +35,28 @@ Defined in [packages/shared/src/markers.ts](../packages/shared/src/markers.ts). 
 [[OCCA:REVIEW]]
 ```
 
-Currently only `REVIEW` uses this — signals "task done, awaiting human approval."
+Currently only `REVIEW` uses this — signals "task done, awaiting human approval." Maps to the design-doc's `RequestReview` action; the wire token is `REVIEW` to match the marker name. Server effect: status → `review`, `task_status_changed` event emitted.
 
 ### Block (JSON body)
 
 ```
-[[OCCA:HIRE]]
-{ "targetRole": "...", "targetName": "...", "title": "...", "description": "..." }
-[[/OCCA:HIRE]]
+[[OCCA:DELEGATE]]
+{ "targetAgentId": "<uuid>", "title": "...", "description": "..." }
+[[/OCCA:DELEGATE]]
 ```
 
 | Token | Body shape | Server effect |
 |---|---|---|
-| `HIRE` | `{ targetRole, targetName, title, description, acceptanceCriteria? }` | Pending `approvals` row (`actionType=hire`); task status → `review` |
 | `DELEGATE` | `{ targetAgentId, title, description, acceptanceCriteria? }` | Pending `approvals` row (`actionType=delegate`); task status → `review` |
 | `BLOCK` | `{ blockedByTaskIds: string[], reason? }` | `tasks.blockedByTaskIds` populated; status → `blocked`. `task-cascade.ts` unblocks on dependent completion |
-| `ASK` | `{ question: string, mentionAgentId? }` | `task_comments` row inserted with optional @mention wake; status → `review` |
+
+The legacy `ASK` marker was removed in this rebuild — clarification questions go through `RequestInfo` on the HTTP back-channel (which posts a comment AND pauses the task). The wire token is no longer parsed; an agent that emits `[[OCCA:ASK]]` will see the block silently dropped. The `HIRE` marker (agent-to-agent deployment requests) was likewise removed for regulatory-naming compliance — `[[OCCA:HIRE]]` is no longer recognised.
 
 ### Marker consumption
 
-Markers are parsed by [features/tasks/services/dispatcher.ts](../apps/server/src/features/tasks/services/dispatcher.ts) (server path) at trace finalize via [features/tasks/services/action-blocks/parser.ts](../apps/server/src/features/tasks/services/action-blocks/parser.ts). The worker trace-dispatch path does **not** parse markers today — known limitation. Mirror is on the roadmap.
+Markers are parsed by [features/tasks/services/dispatcher.ts](../apps/server/src/features/tasks/services/dispatcher.ts) (server path) at trace finalize via [features/tasks/services/action-blocks/parser.ts](../apps/server/src/features/tasks/services/action-blocks/parser.ts). Every parsed marker — including those whose handler returned `ignored` (invalid payload, scope-check failure, etc.) — produces an `agent_action_emitted` row so the audit log captures rejected attempts as well as successes.
+
+The worker trace-dispatch path partially parses markers: `REVIEW` is detected in [apps/worker/src/task-sync.ts](../apps/worker/src/task-sync.ts) and emits the matching status flip + `agent_action_emitted` event. `DELEGATE` and `BLOCK` are **not** processed on the worker path — known limitation, see below.
 
 ## HTTP back-channel
 
@@ -104,7 +106,7 @@ Response:
 
 The child task is created with `assignedDeploymentId = null` — server picks routing later. Caps come from [apps/server/src/lib/limits.ts](../apps/server/src/lib/limits.ts).
 
-#### `RequestInfo` — post a question on the current task
+#### `RequestInfo` — post a question on the current task and pause it
 
 ```json
 {
@@ -118,7 +120,7 @@ The child task is created with `assignedDeploymentId = null` — server picks ro
 }
 ```
 
-The body may include `@<agent-name>` tokens — they are resolved against company deployments and woken via `task-comments.ts`.
+The body may include `@<agent-name>` tokens — they are resolved against company deployments and woken via `services/comments.ts`. After the comment is inserted, the task is flipped to `review` (from `todo` or `in_progress` only — already-closed tasks stay closed). This makes RequestInfo the canonical replacement for the legacy `[[OCCA:ASK]]` marker.
 
 Response:
 - `201 Created` first time: `{ "commentId": "<uuid>", "alreadyExisted": false }`
@@ -148,7 +150,7 @@ Hardcoded for foundation; per-company overrides ship in feature phase.
 | Status changes (REVIEW, BLOCK) | Block marker | Emitted at end of output, contextual to reply |
 | Side-effects (EmitFollowUp, comment posts) | HTTP back-channel | Validated, idempotent, separate from output |
 | Mid-task signals (RequestInfo) | HTTP back-channel | Real-time, no wait for output completion |
-| Existing approvals (HIRE, DELEGATE) | Block marker | Backwards-compat with existing `approvals` flow |
+| Existing approvals (DELEGATE) | Block marker | Backwards-compat with existing `approvals` flow |
 
 ## Event log contract — `task_events`
 
@@ -163,7 +165,7 @@ Event types:
 | `task_status_changed` | `features/tasks/services/{dispatcher,cascade}.ts`, `apps/worker/src/task-sync.ts`, `features/tasks/routes/tasks.ts` | `{ from, to, reason, ...ctx }` |
 | `agent_trace_started` | `features/tasks/services/dispatcher.ts` (server path), `apps/worker/src/task-sync.ts` (worker path) | `{ traceId, deploymentId }` |
 | `agent_trace_finished` | `features/tasks/services/dispatcher.ts`, `apps/worker/src/task-sync.ts` | `{ traceId, outcome }` |
-| `agent_action_emitted` | `features/tasks/services/dispatcher.ts` (markers), `features/agents/services/agent-actions.ts` (HTTP) | `{ actionType, channel, ...actionSpecific }` |
+| `agent_action_emitted` | `features/tasks/services/dispatcher.ts` (markers, incl. `outcome:"ignored"` rows), `apps/worker/src/task-sync.ts` (REVIEW only), `features/agents/services/agent-actions.ts` (HTTP) | `{ actionType, channel, outcome?, reason?, ...actionSpecific }` |
 | `comment_added` | `features/tasks/services/comments.ts` | `{ commentId, body, mentions }` |
 | `task_blocked` | `features/tasks/services/dispatcher.ts` (BLOCK marker) | `{ blockedByTaskIds }` |
 | `task_unblocked` | `features/tasks/services/cascade.ts` | `{ by, lastBlockerTaskId }` |
@@ -172,6 +174,6 @@ Best-effort writes via `appendTaskEventBestEffort` — if the append fails, the 
 
 ## Known limitations
 
-- **Worker dispatch path does not parse markers.** Only the server task-dispatcher path ([apps/server/src/features/tasks/services/dispatcher.ts](../apps/server/src/features/tasks/services/dispatcher.ts)) extracts and processes block markers. Tasks executed via the worker `dispatcher.ts` (`executeTrace` adapter contract) emit `agent_trace_*` events but no `agent_action_emitted` for in-text markers. Address when the worker path needs marker semantics.
+- **Worker dispatch path partially parses markers.** Only `REVIEW` is detected on the worker path (in [apps/worker/src/task-sync.ts](../apps/worker/src/task-sync.ts)) — it triggers the status flip + `agent_action_emitted` row. `DELEGATE` and `BLOCK` are still server-only: cron-driven traces that emit those markers will not create approvals or set blockers. Closing this gap requires extracting the action-block handlers ([features/tasks/services/action-blocks/](../apps/server/src/features/tasks/services/action-blocks/)) into a worker-reachable module — currently coupled to server `db` + `createTaskComment`. Tracked for a future refactor.
 - **Per-trace key is minted only on the worker path.** The server `sendPrompt` dispatch path doesn't mint a per-trace key; agents on that path can still call HTTP endpoints if they have a longer-lived deployment key, but ephemeral-key semantics differ between paths.
 - **No webhook/external-trigger surface.** All actions originate from a running agent context with a valid bearer token. External triggers (Lindy-style) are deferred to feature phase.

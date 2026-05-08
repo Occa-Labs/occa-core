@@ -208,6 +208,20 @@ export default function HomePage() {
   const [focusedWorkstationId, setFocusedWorkstationId] = useState<
     string | null
   >(null);
+
+  // "Open in Approvals" deep-link from notification. OsShell auto-opens the
+  // Approvals window with this id selected; cleared on close.
+  const [pendingApprovalId, setPendingApprovalId] = useState<string | null>(
+    null,
+  );
+  const handleOpenApprovals = useCallback(
+    (id: string) => setPendingApprovalId(id),
+    [],
+  );
+  const handleClearPendingApproval = useCallback(
+    () => setPendingApprovalId(null),
+    [],
+  );
   const handleFocusWorkstation = useCallback((id: string | null) => {
     setFocusedWorkstationId(id);
     // A new agent-click should override workstation focus, so we don't
@@ -305,6 +319,7 @@ export default function HomePage() {
         viewMode3d={view.enabled}
         onToggleViewMode={view.toggle}
         viewModeToggleEnabled={phase === "live"}
+        onOpenApprovals={handleOpenApprovals}
       />
       {cameraReady && <SetupWorkflow setup={setup} />}
       {!authenticated && <LandingFab />}
@@ -321,6 +336,8 @@ export default function HomePage() {
           tourActive={tourActive}
           devWalkRecord={devWalkRecord}
           onToggleWalkRecord={handleToggleWalkRecord}
+          pendingApprovalId={pendingApprovalId}
+          onClearPendingApproval={handleClearPendingApproval}
         />
       )}
       {phase === "live" && showAnchorReminder && (

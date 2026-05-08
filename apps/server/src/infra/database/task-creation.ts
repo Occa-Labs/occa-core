@@ -16,6 +16,13 @@ import { nextTaskNumber } from "./task-numbers";
 
 export type TaskRow = typeof tasks.$inferSelect;
 
+// Drizzle exposes the tx executor as the first param of the transaction
+// callback. Captured here so callers (EmitFollowUp, etc.) can pass an
+// existing tx to fold task creation into a larger atomic unit. Nesting
+// a fresh db.transaction inside another would break atomicity since
+// Postgres has no real nested transactions.
+export type TaskTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
 export interface CreateTaskRecordInput {
   companyId: string;
   title: string;
@@ -33,36 +40,43 @@ export interface CreateTaskRecordInput {
   acceptanceCriteria: string | null;
 }
 
-export async function createTaskRecord(
+async function insertWithCompanyLock(
+  tx: TaskTx,
   input: CreateTaskRecordInput,
 ): Promise<TaskRow> {
-  return db.transaction(async (tx) => {
-    await tx
-      .select({ id: companies.id })
-      .from(companies)
-      .where(eq(companies.id, input.companyId))
-      .for("update");
-    const taskNumber = await nextTaskNumber(tx, input.companyId);
-    const [row] = await tx
-      .insert(tasks)
-      .values({
-        companyId: input.companyId,
-        taskNumber,
-        title: input.title,
-        blocks: input.blocks,
-        status: input.status,
-        priority: input.priority,
-        taskType: input.taskType,
-        effortLevel: input.effortLevel,
-        tags: input.tags,
-        dueDate: input.dueDate,
-        assignedDeploymentId: input.assignedDeploymentId,
-        parentTaskId: input.parentTaskId,
-        createdByUserId: input.createdByUserId,
-        createdByDeploymentId: input.createdByDeploymentId,
-        acceptanceCriteria: input.acceptanceCriteria,
-      })
-      .returning();
-    return row;
-  });
+  await tx
+    .select({ id: companies.id })
+    .from(companies)
+    .where(eq(companies.id, input.companyId))
+    .for("update");
+  const taskNumber = await nextTaskNumber(tx, input.companyId);
+  const [row] = await tx
+    .insert(tasks)
+    .values({
+      companyId: input.companyId,
+      taskNumber,
+      title: input.title,
+      blocks: input.blocks,
+      status: input.status,
+      priority: input.priority,
+      taskType: input.taskType,
+      effortLevel: input.effortLevel,
+      tags: input.tags,
+      dueDate: input.dueDate,
+      assignedDeploymentId: input.assignedDeploymentId,
+      parentTaskId: input.parentTaskId,
+      createdByUserId: input.createdByUserId,
+      createdByDeploymentId: input.createdByDeploymentId,
+      acceptanceCriteria: input.acceptanceCriteria,
+    })
+    .returning();
+  return row;
+}
+
+export async function createTaskRecord(
+  input: CreateTaskRecordInput,
+  existingTx?: TaskTx,
+): Promise<TaskRow> {
+  if (existingTx) return insertWithCompanyLock(existingTx, input);
+  return db.transaction((tx) => insertWithCompanyLock(tx, input));
 }

@@ -488,28 +488,6 @@ function buildDelegateFixture(
   };
 }
 
-// Hire fixture — the requester (first agent) wants to bring a brand-new
-// engineer onto the team. Approving this fires the full agent-create
-// pipeline (provision OpenClaw + seed workspace + auto-skills + dispatch).
-function buildHireFixture(
-  agentRows: { id: string; name: string; role: string }[],
-): SeedApprovalFixture | null {
-  if (agentRows.length === 0) return null;
-  const namePool = ["Bolt", "Aria", "Nova", "Echo", "Sage", "Kira"];
-  const targetName = namePool[Math.floor(Math.random() * namePool.length)];
-  return {
-    actionType: "hire",
-    payload: {
-      targetRole: "eng",
-      targetName,
-      title: `Stand up the API skeleton`,
-      description: `Bootstrap the backend API: pick a framework that fits the rest of the stack, scaffold routes for the core resources, wire health checks. Ship a runnable repo we can iterate on.`,
-      acceptanceCriteria:
-        "A working API server with at least one functional endpoint, deployable locally, and a short README with run instructions.",
-    },
-  };
-}
-
 router.post(
   "/seed-approval",
   requireAuth,
@@ -535,8 +513,8 @@ router.post(
 
     // Pull the first two deployments. If we have at least two, the
     // requester is agentRows[0] (typically the CEO / first-onboarded)
-    // and the delegate target is agentRows[1] — gives the "CTO hires
-    // Engineer" flavour. Names come from `agent_identities` via JOIN.
+    // and the delegate target is agentRows[1] — gives the "CTO delegates
+    // to Engineer" flavour. Names come from `agent_identities` via JOIN.
     const agentRows = await db
       .select({
         id: deployments.id,
@@ -552,10 +530,8 @@ router.post(
       .limit(5);
 
     const delegate = buildDelegateFixture(agentRows);
-    const hire = buildHireFixture(agentRows);
     const pool: SeedApprovalFixture[] = [
       ...(delegate ? [delegate] : []),
-      ...(hire ? [hire] : []),
       ...STATIC_FIXTURES,
     ];
     const fixture = pool[Math.floor(Math.random() * pool.length)];

@@ -30,6 +30,13 @@ export interface FloatingPanelProps {
   onClose: () => void;
   width?: number;
   /**
+   * Fixed panel height in px. When set, the panel renders at this height
+   * regardless of content (still capped by viewport). Useful for sustained
+   * editing surfaces (task detail) where users want predictable real
+   * estate — the body needs `flex-1 overflow-y-auto` to fill + scroll.
+   */
+  height?: number;
+  /**
    * DOMRect of the element that opened this panel.
    * When provided, Floating UI positions the panel near the trigger with
    * automatic flip/shift/size middleware.
@@ -52,6 +59,7 @@ export function FloatingPanel({
   children,
   onClose,
   width = 400,
+  height,
   triggerRect,
   defaultPosition,
   zIndex = 200,
@@ -91,6 +99,23 @@ export function FloatingPanel({
       return;
     }
 
+    // Tall panels (sustained editing surfaces). Anchoring a 90vh popover
+    // to a kanban card sends it past the viewport bottom because the
+    // trigger position gates the start coordinate. Skip Floating UI here
+    // and place the panel near the trigger horizontally but always
+    // top-aligned vertically — the user still gets visual association
+    // with the card they clicked, without the cut-off problem.
+    if (height !== undefined) {
+      const rect = triggerRectRef.current;
+      const x = Math.max(
+        VIEWPORT_PADDING,
+        Math.min(rect.x, window.innerWidth - width - VIEWPORT_PADDING),
+      );
+      setPos({ x: Math.round(x), y: VIEWPORT_PADDING });
+      setPlaced(true);
+      return;
+    }
+
     const rect = triggerRectRef.current;
     const virtualRef: VirtualElement = {
       getBoundingClientRect: () => rect,
@@ -108,6 +133,12 @@ export function FloatingPanel({
           padding: VIEWPORT_PADDING,
           apply({ availableHeight }) {
             if (cancelled) return;
+            // When the caller asks for an explicit height, don't auto-cap
+            // to availableHeight (space below the trigger). `shift`'s
+            // default mainAxis behavior will slide the panel vertically
+            // into view, and the inline `height` already respects the
+            // viewport because callers pass viewport-relative values.
+            if (height !== undefined) return;
             setMaxHeight(Math.max(120, Math.floor(availableHeight)));
           },
         }),
@@ -121,7 +152,7 @@ export function FloatingPanel({
     return () => {
       cancelled = true;
     };
-  }, [defaultPosition, width]);
+  }, [defaultPosition, width, height]);
 
   const onDragDown = useCallback(
     (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -166,7 +197,14 @@ export function FloatingPanel({
         left: pos.x,
         top: pos.y,
         width,
-        maxHeight: maxHeight ?? `calc(100vh - ${VIEWPORT_PADDING * 2}px)`,
+        height,
+        // When `height` is explicit, drop the maxHeight cap — the inline
+        // height already enforces viewport-relative bounds at the call
+        // site, and the auto-cap would otherwise win and shrink the panel.
+        maxHeight:
+          height !== undefined
+            ? undefined
+            : maxHeight ?? `calc(100vh - ${VIEWPORT_PADDING * 2}px)`,
         zIndex,
         background: "rgba(22, 22, 28, 0.92)",
         backdropFilter: "blur(48px) saturate(1.7)",

@@ -1,25 +1,47 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Calendar, Flag, RotateCcw, Tag, Trash2, User, X } from "lucide-react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import {
+  Archive,
+  ArchiveRestore,
+  AlertTriangle,
+  RotateCcw,
+  Trash2,
+} from "lucide-react";
 import { FloatingPanel } from "@/components/ui/floating-panel";
-import { tasksApi } from "@/lib/api";
 import type {
   ContentBlock,
   TaskDTO,
   UpdateTaskRequest,
 } from "@occa/shared/types";
-import { isSystemTask, STATUS_COLUMNS } from "./_shared";
+import { taskKeys } from "../api/keys";
+import { useArchiveTask } from "../api/use-archive-task";
+import { useRerunTask } from "../api/use-rerun-task";
+import { useTaskEvents } from "../api/use-task-events";
+import { useUnarchiveTask } from "../api/use-unarchive-task";
+import { STATUS_COLUMNS } from "../types";
+import { isSystemTask } from "../utils";
+import { ArchiveConfirmModal } from "./archive-confirm-modal";
 import {
   EffortSelect,
-  PriorityBadge,
   PrioritySelect,
   StatusSelect,
   TaskTypeSelect,
-} from "./_form-controls";
+} from "./form-controls";
 import { BlockEditor } from "./block-editor";
+import { DetailField } from "./detail-field";
 import { ReadOnlyBlocks } from "./readonly-blocks";
 import { LiveTraceFeed } from "./live-trace-feed";
+import { TagsEditor } from "./tags-editor";
+import { TaskComments } from "./task-comments";
+import { TaskTimeline } from "./task-timeline";
 
 export function TaskDetail({
   task,
@@ -28,7 +50,6 @@ export function TaskDetail({
   onUpdate,
   onDelete,
   onClose,
-  onReload,
 }: {
   task: TaskDTO;
   triggerRect?: DOMRect | null;
@@ -36,30 +57,74 @@ export function TaskDetail({
   onUpdate: (data: UpdateTaskRequest) => void;
   onDelete: () => void;
   onClose: () => void;
-  onReload: () => void;
 }) {
+  const queryClient = useQueryClient();
+  const rerunTask = useRerunTask();
+  const archiveTask = useArchiveTask();
+  const unarchiveTask = useUnarchiveTask();
+  const taskEvents = useTaskEvents(task.id);
   const systemTask = isSystemTask(task);
+  const isArchived = task.archivedAt !== null;
   const isLocked = task.status === "in_progress" && !!task.linkedTraceId;
+  // Read-only when archived OR when agent is currently running. Both
+  // gate the same set of edit interactions in the body.
+  const isReadOnly = isLocked || isArchived;
   const canRerun =
     !isLocked &&
+    !isArchived &&
     !!task.assignedAgentId &&
     (task.status === "done" || task.status === "review");
+  // Auto-suggest archive banner: shown once status hits `review` on a
+  // non-system, non-archived task. User can dismiss for the current
+  // session; the suggestion comes back on the next open.
+  const [reviewBannerDismissed, setReviewBannerDismissed] = useState(false);
+  const showReviewBanner =
+    !systemTask && !isArchived && task.status === "review" && !reviewBannerDismissed;
+  const [archiveModalOpen, setArchiveModalOpen] = useState(false);
   const [title, setTitle] = useState(task.title);
   const [blocks, setBlocks] = useState<ContentBlock[]>(
     task.blocks?.length ? task.blocks : [{ type: "paragraph", text: "" }],
   );
   const [saving, setSaving] = useState(false);
-  const [rerunning, setRerunning] = useState(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const handleRerun = useCallback(async () => {
-    setRerunning(true);
-    try {
-      await tasksApi.rerun(task.id);
-    } finally {
-      setRerunning(false);
-    }
-  }, [task.id]);
+  // Most recent agent_result block — used to source the agent's message
+  // for the review banner without re-fetching trace events.
+  const lastAgentResult = [...blocks]
+    .reverse()
+    .find((b): b is Extract<ContentBlock, { type: "agent_result" }> =>
+      b.type === "agent_result",
+    );
+
+  const handleRerun = useCallback(() => {
+    rerunTask.mutate(task.id);
+  }, [rerunTask, task.id]);
+
+  const handleTraceFinish = useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: taskKeys.lists() });
+  }, [queryClient]);
+
+  const handleArchiveConfirm = useCallback(
+    (reason: string | undefined) => {
+      archiveTask.mutate(
+        { id: task.id, reason },
+        {
+          onSuccess: () => {
+            setArchiveModalOpen(false);
+            // Close the panel — archived tasks vanish from the default
+            // board, so leaving the panel open over an empty card is a
+            // dead end.
+            onClose();
+          },
+        },
+      );
+    },
+    [archiveTask, task.id, onClose],
+  );
+
+  const handleUnarchive = useCallback(() => {
+    unarchiveTask.mutate(task.id);
+  }, [unarchiveTask, task.id]);
 
   const scheduleAutoSave = useCallback(
     (updates: UpdateTaskRequest) => {
@@ -82,34 +147,53 @@ export function TaskDetail({
 
   const headerRight = (
     <div className="flex items-center gap-1.5">
-      {systemTask ? (
-        <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-white/50 font-mono">
-          ⚙ SYSTEM
-        </span>
-      ) : (
-        <PriorityBadge priority={task.priority} />
-      )}
       {saving && <span className="text-[10px] text-white/30 px-1">Saving…</span>}
-      {canRerun && (
+      {isArchived ? (
         <button
           type="button"
-          onClick={() => void handleRerun()}
-          disabled={rerunning}
-          className="p-1 rounded-md hover:bg-blue-500/10 text-white/30 hover:text-blue-300 disabled:opacity-40 transition-colors"
-          title="Re-run task"
+          onClick={handleUnarchive}
+          disabled={unarchiveTask.isPending}
+          className="p-1 rounded-md hover:bg-emerald-500/10 text-white/30 hover:text-emerald-300 disabled:opacity-40 transition-colors"
+          title="Unarchive task"
         >
-          <RotateCcw className={`size-3.5 ${rerunning ? "animate-spin" : ""}`} />
+          <ArchiveRestore className="size-3.5" />
         </button>
-      )}
-      {!systemTask && (
-        <button
-          type="button"
-          onClick={onDelete}
-          className="p-1 rounded-md hover:bg-red-500/10 text-white/30 hover:text-red-400 transition-colors"
-          title="Delete task"
-        >
-          <Trash2 className="size-3.5" />
-        </button>
+      ) : (
+        <>
+          {canRerun && (
+            <button
+              type="button"
+              onClick={handleRerun}
+              disabled={rerunTask.isPending}
+              className="p-1 rounded-md hover:bg-blue-500/10 text-white/30 hover:text-blue-300 disabled:opacity-40 transition-colors"
+              title="Re-run task"
+            >
+              <RotateCcw
+                className={`size-3.5 ${rerunTask.isPending ? "animate-spin" : ""}`}
+              />
+            </button>
+          )}
+          {!systemTask && (
+            <button
+              type="button"
+              onClick={() => setArchiveModalOpen(true)}
+              className="p-1 rounded-md hover:bg-amber-500/10 text-white/30 hover:text-amber-300 transition-colors"
+              title="Archive task"
+            >
+              <Archive className="size-3.5" />
+            </button>
+          )}
+          {!systemTask && (
+            <button
+              type="button"
+              onClick={onDelete}
+              className="p-1 rounded-md hover:bg-red-500/10 text-white/30 hover:text-red-400 transition-colors"
+              title="Delete task"
+            >
+              <Trash2 className="size-3.5" />
+            </button>
+          )}
+        </>
       )}
     </div>
   );
@@ -118,134 +202,202 @@ export function TaskDetail({
     <FloatingPanel
       title={`Task #${task.taskNumber}`}
       onClose={onClose}
-      width={480}
+      width={560}
+      height={Math.round(window.innerHeight * 0.9)}
       triggerRect={triggerRect}
       zIndex={180}
       headerRight={headerRight}
     >
       {isLocked && task.linkedTraceId && (
-        <LiveTraceFeed traceId={task.linkedTraceId} onFinish={onReload} />
+        <LiveTraceFeed
+          traceId={task.linkedTraceId}
+          onFinish={handleTraceFinish}
+        />
       )}
 
-      <div className="px-5 py-4 space-y-4">
+      <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+        {isArchived && (
+          <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-3 space-y-2">
+            <div className="flex items-center gap-2 text-xs text-white/60">
+              <Archive className="size-3.5" />
+              <span>
+                Archived
+                {task.archivedAt
+                  ? ` on ${new Date(task.archivedAt).toLocaleDateString(undefined, {
+                      month: "short",
+                      day: "numeric",
+                      year: "numeric",
+                    })}`
+                  : ""}
+              </span>
+            </div>
+            {task.archiveReason && (
+              <p className="text-xs text-white/50 italic">
+                &ldquo;{task.archiveReason}&rdquo;
+              </p>
+            )}
+            <button
+              type="button"
+              onClick={handleUnarchive}
+              disabled={unarchiveTask.isPending}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium bg-emerald-500/10 hover:bg-emerald-500/15 text-emerald-300 disabled:opacity-40 transition-colors"
+            >
+              <ArchiveRestore className="size-3" />
+              {unarchiveTask.isPending ? "Unarchiving…" : "Unarchive task"}
+            </button>
+          </div>
+        )}
+
+        {showReviewBanner && (
+          <div className="rounded-xl border border-amber-400/20 bg-amber-500/5 px-4 py-3 space-y-2">
+            <div className="flex items-center gap-2 text-xs text-amber-300/90">
+              <AlertTriangle className="size-3.5" />
+              <span>
+                {lastAgentResult?.agentName
+                  ? `${lastAgentResult.agentName} returned this for review`
+                  : "Task is in review"}
+              </span>
+            </div>
+            <p className="text-xs text-white/50">
+              If this can&apos;t proceed (wrong agent, out of scope, missing
+              input), archive it as unresolved instead of forcing a status.
+            </p>
+            <div className="flex items-center gap-2 pt-0.5">
+              <button
+                type="button"
+                onClick={() => setArchiveModalOpen(true)}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium bg-amber-500/15 hover:bg-amber-500/25 text-amber-200 transition-colors"
+              >
+                <Archive className="size-3" />
+                Archive as unresolved
+              </button>
+              <button
+                type="button"
+                onClick={() => setReviewBannerDismissed(true)}
+                className="px-2.5 py-1 rounded-lg text-xs text-white/40 hover:bg-white/8 transition-colors"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        )}
+
         {systemTask ? (
-          <div className="w-full bg-transparent text-lg font-semibold tracking-tight text-white border-b border-white/8 pb-2">
+          <div className="text-lg font-semibold tracking-tight text-white leading-snug">
             {title}
           </div>
         ) : (
-          <input
+          <textarea
             value={title}
-            readOnly={isLocked}
+            readOnly={isReadOnly}
+            rows={1}
             onChange={(e) => {
-              if (isLocked) return;
+              if (isReadOnly) return;
               setTitle(e.target.value);
               scheduleAutoSave({ title: e.target.value, blocks });
             }}
-            className={`w-full bg-transparent text-lg font-semibold tracking-tight text-white outline-none placeholder:text-white/20 border-b border-white/8 pb-2 ${isLocked ? "opacity-60 cursor-not-allowed" : ""}`}
+            className={`w-full bg-transparent text-lg font-semibold tracking-tight text-white outline-none placeholder:text-white/20 resize-none leading-snug field-sizing-content ${isReadOnly ? "opacity-60 cursor-not-allowed" : ""}`}
             placeholder="Task title"
           />
         )}
 
+        <hr className="border-white/8" />
+
         <div
-          className={`flex flex-wrap items-center gap-3 text-xs ${isLocked ? "pointer-events-none opacity-50" : ""}`}
+          className={`grid grid-cols-2 gap-x-4 gap-y-2.5 ${isReadOnly ? "pointer-events-none opacity-50" : ""}`}
         >
-          <div className="flex items-center gap-1.5 text-white/40">
-            <Flag className="size-3.5" />
-            <span>Status</span>
+          <DetailField label="Status">
             {systemTask ? (
-              <span className="glass-light rounded-lg px-3 py-1.5 text-xs text-white/60 capitalize">
+              <ReadOnlyValue>
                 {STATUS_COLUMNS.find((c) => c.id === task.status)?.label ??
                   task.status}
-              </span>
+              </ReadOnlyValue>
             ) : (
               <StatusSelect
                 value={task.status}
                 onChange={(v) => onUpdate({ status: v })}
               />
             )}
-          </div>
+          </DetailField>
+
           {!systemTask && (
-            <div className="flex items-center gap-1.5 text-white/40">
-              <Flag className="size-3.5" />
-              <span>Priority</span>
+            <DetailField label="Priority">
               <PrioritySelect
                 value={task.priority}
                 onChange={(v) => onUpdate({ priority: v })}
               />
-            </div>
+            </DetailField>
           )}
+
           {!systemTask && (
-            <div className="flex items-center gap-1.5 text-white/40">
-              <span>Type</span>
+            <DetailField label="Type">
               <TaskTypeSelect
                 value={task.taskType}
                 onChange={(v) => onUpdate({ taskType: v })}
               />
-            </div>
+            </DetailField>
           )}
+
           {!systemTask && (
-            <div className="flex items-center gap-1.5 text-white/40">
-              <span>Effort</span>
+            <DetailField label="Effort">
               <EffortSelect
                 value={task.effortLevel}
                 onChange={(v) => onUpdate({ effortLevel: v })}
               />
-            </div>
+            </DetailField>
           )}
-          {!systemTask && agentList && agentList.length > 0 && (
-            <div className="flex items-center gap-1.5 text-white/40">
-              <User className="size-3.5" />
-              <span>Assignee</span>
-              <select
-                value={task.assignedAgentId ?? ""}
-                onChange={(e) =>
-                  onUpdate({ assignedAgentId: e.target.value || null })
-                }
-                className="appearance-none glass-light rounded-lg px-2 py-1 text-xs text-white/80 cursor-pointer focus:outline-none focus:ring-1 focus:ring-white/20"
-              >
-                <option value="">Unassigned</option>
-                {agentList.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
+
           {!systemTask && (
-            <div className="flex items-center gap-1.5 text-white/40">
-              <Calendar className="size-3.5" />
+            <DetailField label="Assignee">
+              <ReadOnlyValue>
+                {task.assignedAgentId
+                  ? (agentList?.find((a) => a.id === task.assignedAgentId)?.name ??
+                    "Unknown agent")
+                  : "Unassigned"}
+              </ReadOnlyValue>
+            </DetailField>
+          )}
+
+          {!systemTask && (
+            <DetailField label="Due">
               <input
                 type="date"
                 value={task.dueDate ? task.dueDate.slice(0, 10) : ""}
-                onChange={(e) =>
-                  onUpdate({ dueDate: e.target.value || null })
-                }
-                className="bg-transparent glass-light rounded-lg px-2 py-1 text-xs text-white/70 cursor-pointer focus:outline-none focus:ring-1 focus:ring-white/20"
+                onChange={(e) => onUpdate({ dueDate: e.target.value || null })}
+                className="w-full glass-light rounded-lg px-2 py-1 text-xs text-white/70 cursor-pointer focus:outline-none focus:ring-1 focus:ring-white/20"
               />
-            </div>
+            </DetailField>
           )}
-        </div>
 
-        {systemTask ? (
-          <div className="flex flex-wrap items-center gap-1.5">
-            <Tag className="size-3.5 text-white/30" />
-            {task.tags.map((tag) => (
-              <span
-                key={tag}
-                className="rounded-full glass-light px-2 py-0.5 text-[10px] text-white/50"
-              >
-                {tag}
-              </span>
-            ))}
+          <div className="col-span-2">
+            <DetailField label="Tags" align="start">
+              {systemTask ? (
+                <div className="flex flex-wrap gap-1.5 py-1">
+                  {task.tags.map((tag) => (
+                    <span
+                      key={tag}
+                      className="rounded-full glass-light px-2 py-0.5 text-[10px] text-white/50"
+                    >
+                      {tag}
+                    </span>
+                  ))}
+                  {task.tags.length === 0 && (
+                    <span className="text-xs text-white/30 py-1">—</span>
+                  )}
+                </div>
+              ) : (
+                <TagsEditor
+                  tags={task.tags}
+                  onChange={(tags) => onUpdate({ tags })}
+                />
+              )}
+            </DetailField>
           </div>
-        ) : (
-          <TagsEditor tags={task.tags} onChange={(tags) => onUpdate({ tags })} />
-        )}
+        </div>
 
         <hr className="border-white/8" />
 
-        {systemTask ? (
+        {systemTask || isReadOnly ? (
           <ReadOnlyBlocks blocks={blocks} />
         ) : (
           <BlockEditor
@@ -256,50 +408,58 @@ export function TaskDetail({
             }}
           />
         )}
+
+        <hr className="border-white/8" />
+
+        <TaskComments taskId={task.id} agentList={agentList} />
+
+        <hr className="border-white/8" />
+
+        <details className="group" open>
+          <summary className="cursor-pointer list-none flex items-center gap-2 text-xs text-white/50 hover:text-white/70 transition-colors select-none">
+            <span className="text-white/30 group-open:rotate-90 transition-transform inline-block">
+              ▶
+            </span>
+            Activity
+            {taskEvents.data && taskEvents.data.length > 0 && (
+              <span className="text-[10px] text-white/30">
+                ({taskEvents.data.length})
+              </span>
+            )}
+          </summary>
+          <div className="mt-3">
+            {taskEvents.isPending && taskEvents.isFetching ? (
+              <div className="text-xs text-white/30">Loading…</div>
+            ) : taskEvents.isError ? (
+              <div className="text-xs text-red-400/70">
+                Failed to load activity.
+              </div>
+            ) : (
+              <TaskTimeline
+                events={taskEvents.data ?? []}
+                agentList={agentList}
+              />
+            )}
+          </div>
+        </details>
       </div>
+
+      <ArchiveConfirmModal
+        open={archiveModalOpen}
+        pending={archiveTask.isPending}
+        taskNumber={task.taskNumber}
+        onCancel={() => setArchiveModalOpen(false)}
+        onConfirm={handleArchiveConfirm}
+      />
     </FloatingPanel>
   );
 }
 
-function TagsEditor({
-  tags,
-  onChange,
-}: {
-  tags: string[];
-  onChange: (tags: string[]) => void;
-}) {
-  const [input, setInput] = useState("");
+function ReadOnlyValue({ children }: { children: ReactNode }) {
   return (
-    <div className="flex flex-wrap items-center gap-1.5">
-      <Tag className="size-3.5 text-white/30" />
-      {tags.map((tag) => (
-        <span
-          key={tag}
-          className="flex items-center gap-1 rounded-full glass-light px-2 py-0.5 text-[10px] text-white/60"
-        >
-          {tag}
-          <button
-            onClick={() => onChange(tags.filter((t) => t !== tag))}
-            className="hover:text-red-400 transition-colors"
-          >
-            <X className="size-2.5" />
-          </button>
-        </span>
-      ))}
-      <input
-        value={input}
-        onChange={(e) => setInput(e.target.value)}
-        onKeyDown={(e) => {
-          if ((e.key === "Enter" || e.key === ",") && input.trim()) {
-            e.preventDefault();
-            const tag = input.trim().replace(/,/g, "");
-            if (!tags.includes(tag)) onChange([...tags, tag]);
-            setInput("");
-          }
-        }}
-        placeholder="Add tag…"
-        className="bg-transparent text-[10px] text-white/40 placeholder:text-white/20 outline-none w-16"
-      />
-    </div>
+    <span className="inline-block glass-light rounded-lg px-2 py-1 text-xs text-white/60 capitalize">
+      {children}
+    </span>
   );
 }
+

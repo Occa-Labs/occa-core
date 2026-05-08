@@ -27,6 +27,7 @@ import chainRouter from "./features/chain/routes";
 import tracesRouter from "./routes/traces";
 import routinesRouter from "./routes/routines";
 import approvalsRouter from "./routes/approvals";
+import workflowsRouter from "./features/workflows/routes";
 import devRouter from "./routes/dev";
 
 const port = parseInt(process.env.PORT || "3002", 10);
@@ -49,6 +50,7 @@ app.use("/api/chain", chainRouter);
 app.use("/api/traces", tracesRouter);
 app.use("/api/routines", routinesRouter);
 app.use("/api/approvals", approvalsRouter);
+app.use("/api/workflows", workflowsRouter);
 app.use("/api/dev", devRouter);
 
 app.get("/health", (_req, res) => {

@@ -1,0 +1,36 @@
+id: blog-post-pipeline
+name: Blog Post Production
+description: >
+  Auto-spawn fact-check, SEO review, and image suggestion follow-up
+  tasks after a blog draft completes. The LLM evaluator may skip a
+  step (e.g. SEO review on an early draft) with a logged reason.
+
+trigger:
+  when: task.completed
+  match:
+    task_type: blog-post
+
+steps:
+  - title: "Fact-check {{parent.title}}"
+    assigned_to: ResearchBot
+    acceptance_criteria: >
+      Verify all numeric claims, named sources, and publish dates
+      against primary references. Flag any unsourced assertion.
+
+  - title: "SEO review {{parent.title}}"
+    assigned_to: SEOBot
+    acceptance_criteria: >
+      Check title length, meta description, heading hierarchy, and
+      internal-link density. Suggest improvements without rewriting
+      copy.
+
+  - title: "Suggest images for {{parent.title}}"
+    assigned_to: ContentBot
+    acceptance_criteria: >
+      Recommend 3–5 hero / inline images. For data-heavy drafts,
+      prefer charts over stock photography.
+
+llm_can_deviate: true
+caps:
+  max_depth: 2
+  max_children: 3

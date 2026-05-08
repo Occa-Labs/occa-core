@@ -5,6 +5,7 @@ import type { UseMeResult } from "@/hooks/use-me";
 import {
   Building2,
   CheckSquare,
+  CheckCircle2,
   Clock,
   FileText,
   Library,
@@ -17,6 +18,7 @@ import { Dock } from "@/components/ui/dock";
 import { FEATURES, IS_DEV_MODE } from "@/lib/env-flags";
 import { TaskManager } from "@/features/tasks/components/task-manager";
 import { AgentsWindow } from "@/features/agents/components/agents-window";
+import { ApprovalsWindow } from "@/features/approvals/components/approvals-window";
 import { CompanyWindow } from "@/features/companies/components/company-window";
 import { SkillLibrary } from "@/features/skills/components/skill-library";
 import { RoutinesWindow } from "@/components/routines-window";
@@ -65,6 +67,12 @@ interface OsShellProps {
   devWalkRecord?: boolean;
   /** Dev-only: flips `devWalkRecord` from the Dev window's Record tab. */
   onToggleWalkRecord?: () => void;
+  /** When set, OsShell auto-opens the Approvals window with this approval
+   *  selected. Driven by "Open in Approvals" clicks in NotificationCenter. */
+  pendingApprovalId?: string | null;
+  /** Called when the Approvals window is closed so the parent can drop the
+   *  pending-id state. */
+  onClearPendingApproval?: () => void;
 }
 
 // OS chrome: dock + windows. The first-run flow (onboarding wizard,
@@ -84,12 +92,15 @@ export function OsShell({
   tourActive = false,
   devWalkRecord = false,
   onToggleWalkRecord,
+  pendingApprovalId = null,
+  onClearPendingApproval,
 }: OsShellProps) {
   const { status: authStatus } = useAuth();
   const authenticated = authStatus === "authenticated";
   type WindowId =
     | "tasks"
     | "agents"
+    | "approvals"
     | "company"
     | "skills"
     | "routines"
@@ -105,12 +116,22 @@ export function OsShell({
     if (focusedAgentId) setActiveWindow("agents");
   }, [focusedAgentId]);
 
+  // External "Open in Approvals" request from notification center.
+  useEffect(() => {
+    if (pendingApprovalId) setActiveWindow("approvals");
+  }, [pendingApprovalId]);
+
   // Closing the AgentsWindow always clears upstream focus so the camera
   // can return to idle. Other windows close without touching focus.
   const closeAgentsWindow = useCallback(() => {
     setActiveWindow(null);
     onClearFocus?.();
   }, [onClearFocus]);
+
+  const closeApprovalsWindow = useCallback(() => {
+    setActiveWindow(null);
+    onClearPendingApproval?.();
+  }, [onClearPendingApproval]);
 
   if (!authenticated || !me.company) return null;
 
@@ -125,6 +146,9 @@ export function OsShell({
       const next = prev === id ? null : id;
       // Toggling AgentsWindow off counts as closing it.
       if (id === "agents" && next === null) onClearFocus?.();
+      // Toggling ApprovalsWindow off drops any pending deep-link target so
+      // the next open starts on the natural first-pending row.
+      if (id === "approvals" && next === null) onClearPendingApproval?.();
       return next;
     });
   };
@@ -153,6 +177,12 @@ export function OsShell({
             label: "Agents",
             active: activeWindow === "agents",
             onClick: () => toggle("agents"),
+          },
+          {
+            icon: <CheckCircle2 className="size-5" />,
+            label: "Approvals",
+            active: activeWindow === "approvals",
+            onClick: () => toggle("approvals"),
           },
           {
             icon: <Library className="size-5" />,
@@ -208,6 +238,13 @@ export function OsShell({
           onReloadMe={me.reload}
           initialAgentId={focusedAgentId ?? null}
           onClose={closeAgentsWindow}
+        />
+      )}
+      {activeWindow === "approvals" && (
+        <ApprovalsWindow
+          agents={me.agents}
+          initialApprovalId={pendingApprovalId}
+          onClose={closeApprovalsWindow}
         />
       )}
       {activeWindow === "company" && (

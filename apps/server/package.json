@@ -5,7 +5,9 @@
   "scripts": {
     "dev": "NODE_ENV=development tsx watch --env-file=../../.env src/index.ts",
     "start": "NODE_ENV=production tsx --env-file=../../.env src/index.ts",
-    "gc-orphans": "tsx scripts/gc-orphan-openclaw-agents.ts"
+    "gc-orphans": "tsx scripts/gc-orphan-openclaw-agents.ts",
+    "cancel-legacy-hire-approvals": "tsx --env-file=../../.env scripts/cancel-legacy-hire-approvals.ts",
+    "smoke:workflows": "tsx --env-file=../../.env scripts/smoke-workflows.ts"
   },
   "dependencies": {
     "@noble/ed25519": "^3.1.0",

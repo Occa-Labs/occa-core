@@ -1,7 +1,7 @@
 // Builds the agent-facing prompt for a task dispatch. Renders:
 //   - Runtime preamble (agent identity, trace id, task header)
-//   - Block-marker reference (HIRE / DELEGATE / BLOCK / ASK / REVIEW)
-//   - Available reports + hire catalog
+//   - Block-marker reference (DELEGATE / BLOCK / REVIEW)
+//   - Available reports
 //   - Recent activity (children that completed since last dispatch)
 //   - The task body itself (markdown'd from ContentBlock[])
 //
@@ -11,7 +11,6 @@
 
 import { and, eq, inArray } from "drizzle-orm";
 import { agentIdentities, deployments, tasks } from "@occa/shared/schema";
-import { ROLE_ORDER as HIRE_ROLE_CATALOG } from "@occa/shared";
 import type { ContentBlock } from "@occa/shared/types";
 import { db } from "../../../infra/database/client";
 
@@ -75,7 +74,7 @@ function renderReportsBlock(reports: SubordinateRef[]): string {
     return [
       `Available reports (DELEGATE): none.`,
       `You have no agents reporting to you yet. If the task needs another`,
-      `role, request a HIRE — see the OCCA Runtime skill for the API.`,
+      `role, finish what you can and flag the gap to the human in your reply.`,
     ].join("\n");
   }
   const lines = [
@@ -85,14 +84,6 @@ function renderReportsBlock(reports: SubordinateRef[]): string {
     lines.push(`  - ${r.name} (role: ${r.role}, id: ${r.id})`);
   }
   return lines.join("\n");
-}
-
-function renderHireCatalogBlock(): string {
-  return [
-    `Roles you may HIRE (bring on a new agent):`,
-    `  ${HIRE_ROLE_CATALOG.join(", ")}`,
-    `New hires become your direct reports and start work immediately.`,
-  ].join("\n");
 }
 
 interface CompletedChildRef {
@@ -172,7 +163,7 @@ function renderCompletedChildrenBlock(children: CompletedChildRef[]): string {
     ``,
     `Synthesize what they shipped. If the parent task is now satisfied,`,
     `produce the closing summary and let the task auto-close. If more work`,
-    `is needed, request another DELEGATE/HIRE.`,
+    `is needed, request another DELEGATE.`,
   );
   return lines.join("\n");
 }
@@ -205,16 +196,6 @@ export async function buildTaskPrompt(
     `- If you can't finish solo, emit ONE of these BLOCK MARKERS in your`,
     `  reply (the server parses the JSON body and acts on it):`,
     ``,
-    `    [[OCCA:HIRE]]`,
-    `    {`,
-    `      "targetRole": "<one of: ${HIRE_ROLE_CATALOG.join(", ")}>",`,
-    `      "targetName": "<a name for the new agent, e.g. Aria>",`,
-    `      "title": "<short task title for their first assignment>",`,
-    `      "description": "<full detail of what they should do>",`,
-    `      "acceptanceCriteria": "<optional: what 'done' looks like>"`,
-    `    }`,
-    `    [[/OCCA:HIRE]]`,
-    ``,
     `    [[OCCA:DELEGATE]]`,
     `    {`,
     `      "targetAgentId": "<uuid from 'Available reports' below>",`,
@@ -231,27 +212,19 @@ export async function buildTaskPrompt(
     `    }`,
     `    [[/OCCA:BLOCK]]`,
     ``,
-    `    [[OCCA:ASK]]`,
-    `    {`,
-    `      "question": "<what you need to know>",`,
-    `      "mentionAgentId": "<optional uuid from Available reports>"`,
-    `    }`,
-    `    [[/OCCA:ASK]]`,
-    ``,
     `  When to use which:`,
-    `    HIRE     — no one on the team has the role you need.`,
     `    DELEGATE — someone in Available reports can do the job.`,
     `    BLOCK    — you're waiting on other tasks to complete first.`,
-    `    ASK      — you're stuck and need a question answered. Mention a`,
-    `               specific agent if you know who to ask; the server wakes`,
-    `               them on this task. Otherwise the human answers.`,
     `  Emit at most ONE such block per turn. The block can sit anywhere in`,
     `  your reply — the server parses + strips it before persisting.`,
+    ``,
+    `  For mid-task clarification questions, do NOT emit a block — POST to`,
+    `  /api/agents/me/actions/emit with type "RequestInfo" instead. The`,
+    `  server posts a comment AND parks the task in 'review' so the human`,
+    `  is unblocked of the kanban card. See the OCCA Runtime skill.`,
     `- Do not add meta-commentary — focus on the task deliverable.`,
     ``,
     renderReportsBlock(reports),
-    ``,
-    renderHireCatalogBlock(),
     ``,
     ...(completedChildren.length > 0
       ? [renderCompletedChildrenBlock(completedChildren), ``]

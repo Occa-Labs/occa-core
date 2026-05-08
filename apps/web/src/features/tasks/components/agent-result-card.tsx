@@ -7,7 +7,7 @@ import { MarkdownViewer } from "@/components/ui/markdown-viewer";
 import { tracesApi } from "@/lib/api";
 import { stripOccaMarkers } from "@occa/shared/markers";
 import type { ContentBlock } from "@occa/shared/types";
-import { formatResultTimestamp } from "./_shared";
+import { formatResultTimestamp } from "../utils";
 
 export function AgentResultCard({
   block,
@@ -53,23 +53,24 @@ export function AgentResultCard({
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="w-full text-left glass-light rounded-xl border border-white/10 hover:border-white/20 hover:bg-white/5 p-3 transition-colors group"
+        className="w-full text-left pl-4 pr-2 pt-3.5 pb-2 mt-2 -mb-1 border-l border-white/10 hover:border-white/25 hover:bg-white/[0.02] transition-colors group"
       >
         <div className="flex items-center gap-2 mb-1.5">
-          <Sparkles className="size-3.5 text-blue-300/80" />
-          <span className="text-[11px] font-medium text-white/80">
-            {block.agentName}
+          <Sparkles className="size-3 text-blue-300/70" />
+          <span className="text-[11px] text-white/70">
+            <span className="font-medium text-white/85">{block.agentName}</span>
+            <span className="text-white/30"> returned a deliverable</span>
           </span>
           <span className="text-[10px] text-white/30">
             · {formatResultTimestamp(block.timestamp)}
           </span>
-          <span className="ml-auto text-[10px] text-white/30 group-hover:text-white/60 transition-colors">
-            Click to expand
-          </span>
         </div>
-        <p className="text-xs text-white/60 leading-relaxed line-clamp-3">
+        <p className="text-xs text-white/65 leading-relaxed line-clamp-4">
           {block.preview}
         </p>
+        <div className="mt-1.5 text-[10px] text-white/30 group-hover:text-white/60 transition-colors text-right">
+          Open full output →
+        </div>
       </button>
 
       <Modal

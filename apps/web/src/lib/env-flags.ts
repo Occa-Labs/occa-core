@@ -48,8 +48,7 @@ export const IS_DEV_MODE: boolean =
 // need an entry). Production-only kill-switches can also live here.
 export const FEATURES = {
   // Task manager (per-company task board, assign/reassign/close).
-  // Hidden in production until the assignment pipeline lands.
-  tasks: !IS_PRODUCTION_MODE,
+  tasks: true,
   // Routines (per-agent scheduled wake-ups / cron). Dev-only for now.
   routines: IS_DEV_MODE,
   // Skill library. Hidden in production while the import / publish flow

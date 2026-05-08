@@ -8,12 +8,14 @@ import type {
   TaskStatus,
   TaskType,
 } from "@occa/shared/types";
+import { DetailField } from "./detail-field";
 import {
   EffortSelect,
   PrioritySelect,
   StatusSelect,
   TaskTypeSelect,
-} from "./_form-controls";
+} from "./form-controls";
+import { TagsEditor } from "./tags-editor";
 
 export interface NewTaskFormData {
   title: string;
@@ -48,14 +50,10 @@ export function NewTaskModal({
   const [effortLevel, setEffortLevel] = useState<EffortLevel>("m");
   const [agentId, setAgentId] = useState("");
   const [dueDate, setDueDate] = useState("");
-  const [tagsInput, setTagsInput] = useState("");
+  const [tags, setTags] = useState<string[]>([]);
 
   const submit = () => {
     if (!title.trim()) return;
-    const tags = tagsInput
-      .split(",")
-      .map((t) => t.trim())
-      .filter(Boolean);
     onConfirm({
       title: title.trim(),
       description: description.trim(),
@@ -73,10 +71,10 @@ export function NewTaskModal({
     <FloatingPanel
       title="New Task"
       onClose={onCancel}
-      width={420}
+      width={520}
       triggerRect={triggerRect}
     >
-      <div className="p-4 space-y-3">
+      <div className="px-5 py-4 space-y-3">
         <input
           autoFocus
           value={title}
@@ -89,7 +87,7 @@ export function NewTaskModal({
             if (e.key === "Escape") onCancel();
           }}
           placeholder="Task title…"
-          className="w-full bg-white/5 rounded-xl px-3 py-2 text-sm text-white/90 outline-none placeholder:text-white/30 focus:ring-1 focus:ring-white/20 border border-white/8"
+          className="w-full glass-light rounded-xl px-3 py-2 text-sm text-white/90 outline-none placeholder:text-white/30 focus:ring-1 focus:ring-white/20"
         />
 
         <textarea
@@ -98,50 +96,62 @@ export function NewTaskModal({
           onKeyDown={(e) => {
             if (e.key === "Escape") onCancel();
           }}
-          placeholder="Description (what should the agent do?)"
+          placeholder="Description — what should the agent do?"
           rows={3}
-          className="w-full bg-white/5 rounded-xl px-3 py-2 text-xs text-white/80 outline-none placeholder:text-white/30 focus:ring-1 focus:ring-white/20 resize-none border border-white/8"
+          className="w-full glass-light rounded-xl px-3 py-2 text-xs text-white/80 outline-none placeholder:text-white/30 focus:ring-1 focus:ring-white/20 resize-y leading-relaxed min-h-20"
         />
 
-        <div className="flex gap-2 flex-wrap">
-          <StatusSelect value={status} onChange={setStatus} />
-          <PrioritySelect value={priority} onChange={setPriority} />
-          <TaskTypeSelect value={taskType} onChange={setTaskType} />
-          <EffortSelect value={effortLevel} onChange={setEffortLevel} />
-        </div>
+        <hr className="border-white/8" />
 
-        <div className="flex gap-2">
+        <div className="grid grid-cols-2 gap-x-4 gap-y-2.5">
+          <DetailField label="Status">
+            <StatusSelect value={status} onChange={setStatus} />
+          </DetailField>
+
+          <DetailField label="Priority">
+            <PrioritySelect value={priority} onChange={setPriority} />
+          </DetailField>
+
+          <DetailField label="Type">
+            <TaskTypeSelect value={taskType} onChange={setTaskType} />
+          </DetailField>
+
+          <DetailField label="Effort">
+            <EffortSelect value={effortLevel} onChange={setEffortLevel} />
+          </DetailField>
+
           {agentList && agentList.length > 0 && (
-            <select
-              value={agentId}
-              onChange={(e) => setAgentId(e.target.value)}
-              className="flex-1 appearance-none bg-white/5 border border-white/8 rounded-xl px-3 py-2 text-xs text-white/70 cursor-pointer focus:outline-none focus:ring-1 focus:ring-white/20"
-            >
-              <option value="">Unassigned</option>
-              {agentList.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name} ({a.role.toUpperCase()})
-                </option>
-              ))}
-            </select>
+            <DetailField label="Assignee">
+              <select
+                value={agentId}
+                onChange={(e) => setAgentId(e.target.value)}
+                className="w-full appearance-none glass-light rounded-lg px-2 py-1 text-xs text-white/80 cursor-pointer focus:outline-none focus:ring-1 focus:ring-white/20"
+              >
+                <option value="">Unassigned</option>
+                {agentList.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                  </option>
+                ))}
+              </select>
+            </DetailField>
           )}
-          <input
-            type="date"
-            value={dueDate}
-            onChange={(e) => setDueDate(e.target.value)}
-            className="flex-1 bg-white/5 border border-white/8 rounded-xl px-3 py-2 text-xs text-white/70 outline-none focus:ring-1 focus:ring-white/20"
-          />
-        </div>
 
-        <input
-          value={tagsInput}
-          onChange={(e) => setTagsInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Escape") onCancel();
-          }}
-          placeholder="Tags (comma-separated)"
-          className="w-full bg-white/5 border border-white/8 rounded-xl px-3 py-2 text-xs text-white/80 outline-none placeholder:text-white/30 focus:ring-1 focus:ring-white/20"
-        />
+          <DetailField label="Due">
+            <input
+              type="date"
+              value={dueDate}
+              onChange={(e) => setDueDate(e.target.value)}
+              className="w-full glass-light rounded-lg px-2 py-1 text-xs text-white/70 cursor-pointer focus:outline-none focus:ring-1 focus:ring-white/20"
+            />
+          </DetailField>
+
+          <div className="col-span-2">
+            <DetailField label="Tags" align="start">
+              <TagsEditor tags={tags} onChange={setTags} />
+            </DetailField>
+          </div>
+        </div>
 
         <div className="flex justify-end gap-2 pt-1">
           <button

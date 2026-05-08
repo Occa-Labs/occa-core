@@ -1,5 +1,5 @@
 // Parser + dispatcher for OCCA block markers found in an agent reply.
-// Lifts `[[OCCA:HIRE]]` etc. out of free text via @occa/shared/markers,
+// Lifts `[[OCCA:DELEGATE]]` etc. out of free text via @occa/shared/markers,
 // then routes each block to its per-token handler. The dispatcher
 // service threads `ActionBlockDeps` through so handlers stay free of
 // cross-feature imports.
@@ -10,10 +10,8 @@ import {
   type ActionBlockOutcome,
 } from "../../domain/action-blocks/schemas";
 import {
-  handleAskBlock,
   handleBlockBlock,
   handleDelegateBlock,
-  handleHireBlock,
   type ActionBlockDeps,
   type ActionBlockHandlerArgs,
 } from "./handlers";
@@ -79,14 +77,10 @@ async function routeBlock(
   deps: ActionBlockDeps,
 ): Promise<ActionBlockOutcome> {
   switch (token) {
-    case "HIRE":
-      return handleHireBlock(args);
     case "DELEGATE":
       return handleDelegateBlock(args, deps);
     case "BLOCK":
       return handleBlockBlock(args);
-    case "ASK":
-      return handleAskBlock(args);
     default:
       log.warn({ token }, "unknown action-block token, ignored");
       return { kind: "ignored", reason: "unknown_token" };

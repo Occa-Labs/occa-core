@@ -1,7 +1,7 @@
 // Gateway URL normalization helpers.
 //
 // The OpenClaw gateway is reached via WebSocket but the public-facing form
-// (Hire-Agent modal input, browser bookmarks, docs) typically uses `https://`.
+// (Deploy-Agent modal input, browser bookmarks, docs) typically uses `https://`.
 // Internal storage on `agents.adapter_config.gatewayUrl` ends up as `wss://`
 // after the adapter rewrites the scheme. That asymmetry breaks naive
 // equality filters when matching "is there an agent already paired on this

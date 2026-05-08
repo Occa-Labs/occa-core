@@ -1,12 +1,11 @@
 // Per-token zod schemas for the OCCA action-block markers
-// `[[OCCA:HIRE]] {...} [[/OCCA:HIRE]]` etc. Today the parser in
+// `[[OCCA:DELEGATE]] {...} [[/OCCA:DELEGATE]]` etc. Today the parser in
 // task-dispatcher.ts validates these inline with ad-hoc string checks;
 // centralising into zod gives uniform error reporting and a stable
 // payload type per token.
 
 import { z } from "zod";
 import { LIMITS } from "../../../../lib/limits";
-import { ROLE_ORDER } from "@occa/shared";
 
 const titleField = z.string().trim().min(1).max(LIMITS.TITLE);
 const descriptionField = z.string().trim().min(1).max(LIMITS.DESCRIPTION);
@@ -15,14 +14,6 @@ const acceptanceField = z
   .trim()
   .max(LIMITS.DESCRIPTION_SHORT)
   .optional();
-
-export const hireBlockPayload = z.object({
-  targetRole: z.enum(ROLE_ORDER),
-  targetName: z.string().trim().min(1).max(LIMITS.NAME),
-  title: titleField,
-  description: descriptionField,
-  acceptanceCriteria: acceptanceField,
-});
 
 export const delegateBlockPayload = z.object({
   targetAgentId: z.string().uuid(),
@@ -36,18 +27,14 @@ export const blockBlockPayload = z.object({
   reason: z.string().trim().max(LIMITS.REASON).optional(),
 });
 
-export const askBlockPayload = z.object({
-  question: z.string().trim().min(1).max(LIMITS.DESCRIPTION),
-  mentionAgentId: z.string().uuid().nullable().optional(),
-});
+// ASK marker removed per task-system-design.md Action catalog — agents
+// route clarification questions through RequestInfo (HTTP back-channel)
+// which posts a comment AND pauses the task so it lands in `review`.
 
-export type HireBlockPayload = z.infer<typeof hireBlockPayload>;
 export type DelegateBlockPayload = z.infer<typeof delegateBlockPayload>;
 export type BlockBlockPayload = z.infer<typeof blockBlockPayload>;
-export type AskBlockPayload = z.infer<typeof askBlockPayload>;
 
 export type ActionBlockOutcome =
   | { kind: "ignored"; reason: string }
   | { kind: "approval_created" }
-  | { kind: "ask_posted" }
-  | { kind: "blocked"; blockerIds: string[] };
+  | { kind: "blocked"; blockerIds: string[]; reason?: string };

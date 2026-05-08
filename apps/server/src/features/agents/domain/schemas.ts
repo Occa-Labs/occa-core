@@ -7,7 +7,6 @@ import {
   SKILL_SYNC_ACTIONS,
   type AgentChatRequest,
 } from "@occa/shared/types";
-import { AGENT_ROLES } from "@occa/shared/role-catalog";
 import { LIMITS } from "../../../lib/limits";
 import { roleSchema } from "../../../lib/role-schema";
 
@@ -103,9 +102,11 @@ export const listAgentActivityQuery = z.object({
 
 // ── Agent-driven approvals (POST /api/agents/me/approvals) ───────────────
 //
-// `delegate` and `hire` are spawn primitives the agent uses from its
-// runtime to ask the operator for permission to continue. The agent's
-// own ID + company come from the token middleware; clients never pass
+// `delegate` is the only spawn primitive — agents may assign work to
+// other existing agents in their subtree, subject to user approval.
+// (Hire was removed: bringing brand-new agents onto the team needs a
+// proper context-handoff design before re-enabling.) The agent's own
+// ID + company come from the token middleware; clients never pass
 // them. We snapshot the agent's most-recent running trace's taskId
 // into the payload as `parentTaskId` if the agent omitted one, so the
 // eventual child task is always linked into the graph.
@@ -118,26 +119,9 @@ export const delegatePayloadSchema = z.object({
   parentTaskId: z.string().uuid().nullable().optional(),
 });
 
-// Hire targets a role from the catalog so workspace templates resolve.
-// AGENT_ROLES is suggestion-list today (open vocabulary at the schema
-// level), but for hires we constrain to the catalog so each new agent
-// has role-appropriate workspace files + auto-assigned skills.
-export const hirePayloadSchema = z.object({
-  targetRole: z.enum(AGENT_ROLES),
-  targetName: z.string().trim().min(1).max(LIMITS.NAME),
-  title: z.string().trim().min(1).max(LIMITS.TITLE),
-  description: z.string().trim().min(1).max(LIMITS.DESCRIPTION),
-  acceptanceCriteria: z.string().trim().max(LIMITS.DESCRIPTION_SHORT).optional(),
-  parentTaskId: z.string().uuid().nullable().optional(),
-});
-
 export const approvalCreateBody = z.discriminatedUnion("actionType", [
   z.object({
     actionType: z.literal("delegate"),
     payload: delegatePayloadSchema,
-  }),
-  z.object({
-    actionType: z.literal("hire"),
-    payload: hirePayloadSchema,
   }),
 ]);

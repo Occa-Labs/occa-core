@@ -1,8 +1,8 @@
 "use client";
 
 import type { TaskDTO } from "@occa/shared/types";
-import { STATUS_COLUMNS } from "./_shared";
-import { PriorityBadge } from "./_form-controls";
+import { STATUS_COLUMNS } from "../types";
+import { PriorityBadge } from "./form-controls";
 
 export function ListView({
   tasks,

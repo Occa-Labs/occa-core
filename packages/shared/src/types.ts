@@ -217,8 +217,8 @@ export interface AgentDTO {
   externalAgentId: string | null;
   desiredSkills: string[];
   // Reports-to / manager link. NULL = top-level (typically the CEO,
-  // reporting to the human owner). Drives the hire-approval scope rule:
-  // an agent may only request hires inside its own subtree.
+  // reporting to the human owner). Drives the delegate-approval scope
+  // rule: an agent may only delegate to targets inside its own subtree.
   parentAgentId: string | null;
   createdAt: string;
   activityState: AgentActivityState;
@@ -227,10 +227,10 @@ export interface AgentDTO {
   connectionCheckedAt: string | null;
   connectionError: string | null;
   // Background provisioning state — populated by the kickoff async flow.
-  // 'ready' for any agent created via the direct hire route.
+  // 'ready' for any agent created via the direct deploy route.
   provisioningState: AgentProvisioningState;
   provisioningError: string | null;
-  // 3D office seat anchor ID. Stable per agent — assigned once at hire
+  // 3D office seat anchor ID. Stable per agent — assigned once at deploy
   // time. NULL only for legacy rows pre-migration; the frontend falls
   // back to a hash-based pick from FALLBACK_WORKSTATIONS when null.
   workstationId: string | null;
@@ -503,6 +503,11 @@ export interface TaskDTO {
   createdByAgentId: string | null;
   // Delegation contract — what "done" looks like, set on agent-created tasks.
   acceptanceCriteria: string | null;
+  // Soft-archive — non-null timestamp means the task has been shelved
+  // (not the same as `done`). Hidden from the default board; surfaced
+  // only when the user toggles "Show archived". Reversible.
+  archivedAt: string | null;
+  archiveReason: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -527,6 +532,45 @@ export interface ListTasksResponse {
 
 export interface TaskResponse {
   task: TaskDTO;
+}
+
+// ── Task event log (timeline) ────────────────────────────────────────
+//
+// Append-only mirror of the on-server `task_events` table. Per-task
+// sequence is monotonic so the UI can render events in order without a
+// secondary sort. Payload shape varies by `eventType` — consumers should
+// narrow on `eventType` before reading payload fields. See
+// `apps/server/src/features/tasks/domain/task-events.ts` for the full
+// per-event payload contracts.
+export type TaskEventTypeDTO =
+  | "task_created"
+  | "task_assigned"
+  | "task_status_changed"
+  | "agent_trace_started"
+  | "agent_trace_finished"
+  | "agent_action_emitted"
+  | "comment_added"
+  | "task_blocked"
+  | "task_unblocked"
+  | "task_archived"
+  | "task_unarchived";
+
+export type TaskEventActorTypeDTO = "user" | "agent" | "system";
+
+export interface TaskEventDTO {
+  id: string;
+  taskId: string;
+  sequence: number;
+  eventType: TaskEventTypeDTO;
+  actorType: TaskEventActorTypeDTO;
+  actorId: string | null;
+  payload: Record<string, unknown>;
+  traceId: string | null;
+  createdAt: string;
+}
+
+export interface ListTaskEventsResponse {
+  events: TaskEventDTO[];
 }
 
 // ── Task comments — agent ↔ agent + user ↔ agent thread ─────────────
@@ -866,7 +910,7 @@ export interface ListActivityResponse {
 // Free-form action discriminator. Known actions are listed in
 // APPROVAL_ACTION_TYPES; the schema accepts any string so future action
 // kinds can land without a migration.
-export const APPROVAL_ACTION_TYPES = ["delegate", "hire"] as const;
+export const APPROVAL_ACTION_TYPES = ["delegate"] as const;
 export type ApprovalActionType =
   | (typeof APPROVAL_ACTION_TYPES)[number]
   | (string & {});
@@ -893,25 +937,10 @@ export interface DelegatePayload {
   parentTaskId?: string | null;
 }
 
-// Payload schema for actionType === "hire" — bring an entirely new agent
-// onto the team. On approve, server runs the full create-pipeline
-// (provision OpenClaw + seed workspace + auto-assign skills + enqueue
-// skill installs) then creates a child task assigned to the new agent and
-// dispatches it. The new agent's `parentAgentId` becomes the requester's
-// id so the org tree grows naturally from hire actions.
-export interface HirePayload {
-  targetRole: AgentRole; // must be a value from AGENT_ROLES
-  targetName: string;
-  title: string;
-  description: string;
-  acceptanceCriteria?: string;
-  parentTaskId?: string | null;
-}
-
 // Body for the agent-self approval submission endpoint.
 export interface AgentApprovalCreateRequest {
   actionType: ApprovalActionType;
-  payload: DelegatePayload | HirePayload | Record<string, unknown>;
+  payload: DelegatePayload | Record<string, unknown>;
 }
 
 export interface AgentApprovalCreateResponse {
@@ -962,3 +991,21 @@ export const SKILL_SYNC_ACTIONS = [
   "reinstall",
 ] as const;
 export type SkillSyncAction = (typeof SKILL_SYNC_ACTIONS)[number];
+
+
+// ── Workflows ────────────────────────────────────────────────────────
+export interface WorkflowDTO {
+  id: string;
+  companyId: string;
+  yamlId: string;
+  name: string;
+  description: string | null;
+  yamlText: string;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ListWorkflowsResponse {
+  workflows: WorkflowDTO[];
+}

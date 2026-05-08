@@ -4,7 +4,7 @@
 // This file owns the lifecycle. Side-effects per phase live in the
 // services/repositories it composes:
 //   - prompt-builder.ts builds the message
-//   - action-blocks/parser.ts handles HIRE/DELEGATE/BLOCK/ASK markers
+//   - action-blocks/parser.ts handles DELEGATE/BLOCK markers
 //   - cascade.ts wakes parents on done
 //   - events.ts persists task_event rows
 //   - trace-events-bus pushes live SSE updates (existing system)
@@ -163,32 +163,43 @@ export async function dispatchTask(
   );
 
   let approvalsRequested = 0;
-  let askPosted = false;
   let blockedBy: string[] | null = null;
+  let blockedReason: string | undefined;
   for (const r of processed) {
     if (r.outcome.kind === "approval_created") approvalsRequested += 1;
-    if (r.outcome.kind === "ask_posted") askPosted = true;
-    if (r.outcome.kind === "blocked") blockedBy = r.outcome.blockerIds;
+    if (r.outcome.kind === "blocked") {
+      blockedBy = r.outcome.blockerIds;
+      blockedReason = r.outcome.reason;
+    }
 
-    if (r.outcome.kind !== "ignored") {
-      void appendTaskEventBestEffort({
-        companyId: taskRow.companyId,
-        taskId: taskRow.id,
-        eventType: "agent_action_emitted",
-        actorType: "agent",
-        actorId: agentRow.id,
-        payload: {
-          actionType: r.token,
-          channel: "block_marker",
-          outcome: r.outcome.kind,
-          ...(r.outcome.kind === "blocked"
-            ? { blockerIds: r.outcome.blockerIds }
-            : {}),
-          actionPayload: r.body ?? null,
-        },
-        traceId,
-      });
-    } else {
+    // Emit `agent_action_emitted` for every parsed marker, including
+    // ignored ones. Ignored outcomes (invalid payload, scope failure,
+    // self-blocker, etc.) are real audit signal — the agent tried to
+    // emit something and we refused. Future workflow / janitor agents
+    // need this to detect deviation patterns. The trace-event lifecycle
+    // emission stays for live SSE consumers; the task-event row is the
+    // durable audit copy.
+    void appendTaskEventBestEffort({
+      companyId: taskRow.companyId,
+      taskId: taskRow.id,
+      eventType: "agent_action_emitted",
+      actorType: "agent",
+      actorId: agentRow.id,
+      payload: {
+        actionType: r.token,
+        channel: "block_marker",
+        outcome: r.outcome.kind,
+        ...(r.outcome.kind === "blocked"
+          ? { blockerIds: r.outcome.blockerIds }
+          : {}),
+        ...(r.outcome.kind === "ignored"
+          ? { reason: r.outcome.reason }
+          : {}),
+        actionPayload: r.body ?? null,
+      },
+      traceId,
+    });
+    if (r.outcome.kind === "ignored") {
       publishTraceEvent(traceId, {
         seq: seqRef.current++,
         eventType: "lifecycle",
@@ -203,7 +214,6 @@ export async function dispatchTask(
   const nextStatus = nextStatusAfterDispatch({
     approvalsRequested,
     blockedBy,
-    askPosted,
     needsReview,
   });
 
@@ -215,6 +225,7 @@ export async function dispatchTask(
     cleanReply: stripOccaMarkers(result.reply),
     nextStatus,
     blockedBy,
+    blockedReason,
   });
 
   publishTraceEvent(traceId, {
@@ -466,6 +477,7 @@ interface CloseSucceededArgs {
   cleanReply: string;
   nextStatus: TaskStatus;
   blockedBy: string[] | null;
+  blockedReason: string | undefined;
 }
 
 async function closeSucceededTrace(args: CloseSucceededArgs): Promise<void> {
@@ -531,7 +543,10 @@ async function closeSucceededTrace(args: CloseSucceededArgs): Promise<void> {
       eventType: "task_blocked",
       actorType: "agent",
       actorId: agentRow.id,
-      payload: { blockedByTaskIds: args.blockedBy },
+      payload: {
+        blockedByTaskIds: args.blockedBy,
+        ...(args.blockedReason ? { reason: args.blockedReason } : {}),
+      },
       traceId,
     });
   }

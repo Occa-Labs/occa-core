@@ -1,5 +1,5 @@
 // Typed-action HTTP back-channel — POST /api/agents/me/actions/emit.
-// Counterpart to block markers (HIRE/DELEGATE/BLOCK/ASK) for actions
+// Counterpart to block markers (DELEGATE/BLOCK) for actions
 // that need real-time validation and idempotency: EmitFollowUp,
 // RequestInfo. Auth via the standard agent bearer token; per-action
 // payload schemas are discriminated by `type`.

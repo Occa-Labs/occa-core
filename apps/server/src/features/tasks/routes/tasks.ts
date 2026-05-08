@@ -3,7 +3,7 @@
 import { Router, type Request, type Response } from "express";
 import { ERROR_CODES } from "@occa/shared/error-codes";
 import { StatusCodes } from "http-status-codes";
-import type { TaskDTO } from "@occa/shared/types";
+import type { TaskDTO, TaskStatus } from "@occa/shared/types";
 import { childLogger } from "../../../lib/logger";
 import { requireAuth } from "../../../middleware/auth";
 import { enqueueTaskDispatch } from "../../../infra/queue/task-worker";
@@ -17,6 +17,7 @@ import {
   updateTask,
 } from "../repositories/tasks";
 import { createTaskBody, updateTaskBody } from "../domain/schemas";
+import { isUserStatusTransitionAllowed } from "../domain/status-transitions";
 import { appendTaskEventBestEffort } from "../services/events";
 import { toTaskDTO, userCompanyId } from "./helpers";
 
@@ -30,7 +31,10 @@ router.get("/", requireAuth, async (req: Request, res: Response) => {
     res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.NO_COMPANY });
     return;
   }
-  const rows = await listTasksByCompany(companyId);
+  // `include_archived=1` opts the response into archived rows. Default is
+  // active-only so the kanban board doesn't have to filter client-side.
+  const includeArchived = req.query.include_archived === "1";
+  const rows = await listTasksByCompany(companyId, { includeArchived });
   const names = await agentNameMap(companyId);
   const tasksDto: TaskDTO[] = rows.map((r) =>
     toTaskDTO(
@@ -143,12 +147,24 @@ router.patch("/:id", requireAuth, async (req: Request, res: Response) => {
     return;
   }
 
+  // Archived tasks are read-only — must unarchive before editing.
+  if (existing.archivedAt) {
+    res.status(StatusCodes.LOCKED).json({
+      error: ERROR_CODES.TASK_ARCHIVED,
+      reason: "Task is archived. Unarchive it before editing.",
+    });
+    return;
+  }
+
   // Lock: while agent is running, only allow status/blocks updates (from
   // dispatcher itself). Reject user edits to title, agent assignment, etc.
+  const isDispatcherUpdate =
+    existing.status === "in_progress" &&
+    existing.linkedTraceId !== null &&
+    parsed.data.status !== undefined &&
+    Object.keys(parsed.data).every((k) => ["status", "blocks"].includes(k));
+
   if (existing.status === "in_progress" && existing.linkedTraceId) {
-    const isDispatcherUpdate =
-      parsed.data.status !== undefined &&
-      Object.keys(parsed.data).every((k) => ["status", "blocks"].includes(k));
     if (!isDispatcherUpdate) {
       res.status(StatusCodes.LOCKED).json({
         error: ERROR_CODES.TASK_LOCKED,
@@ -158,14 +174,42 @@ router.patch("/:id", requireAuth, async (req: Request, res: Response) => {
     }
   }
 
-  if (parsed.data.assignedAgentId !== undefined && parsed.data.assignedAgentId) {
-    const ok = await deploymentInCompany(companyId, parsed.data.assignedAgentId);
-    if (!ok) {
-      res
-        .status(StatusCodes.BAD_REQUEST)
-        .json({ error: "agent_not_in_company" });
+  // FSM: reject manual transitions that would put the task into an
+  // inconsistent state (e.g. user setting `in_progress` without dispatch,
+  // or walking `done` back into a working state). Dispatcher path bypasses
+  // because it's the system, not a user override. The cast on
+  // `existing.status` is safe — schema-level CHECK keeps the column to
+  // valid `TaskStatus` values, but drizzle types it as `string`.
+  if (
+    parsed.data.status !== undefined &&
+    parsed.data.status !== existing.status &&
+    !isDispatcherUpdate
+  ) {
+    if (
+      !isUserStatusTransitionAllowed(
+        existing.status as TaskStatus,
+        parsed.data.status,
+      )
+    ) {
+      res.status(StatusCodes.BAD_REQUEST).json({
+        error: ERROR_CODES.INVALID_STATUS_TRANSITION,
+        from: existing.status,
+        to: parsed.data.status,
+      });
       return;
     }
+  }
+
+  if (
+    parsed.data.assignedAgentId !== undefined &&
+    parsed.data.assignedAgentId !== existing.assignedDeploymentId
+  ) {
+    res.status(StatusCodes.FORBIDDEN).json({
+      error: ERROR_CODES.TASK_REASSIGN_DISABLED,
+      reason:
+        "Reassigning a task to a different agent is disabled. Cross-agent context handoff is not yet implemented.",
+    });
+    return;
   }
 
   const fields: Parameters<typeof updateTask>[1] = {};
@@ -201,22 +245,6 @@ router.patch("/:id", requireAuth, async (req: Request, res: Response) => {
   });
 
   if (
-    parsed.data.assignedAgentId !== undefined &&
-    parsed.data.assignedAgentId !== existing.assignedDeploymentId
-  ) {
-    void appendTaskEventBestEffort({
-      companyId,
-      taskId: row.id,
-      eventType: "task_assigned",
-      actorType: "user",
-      actorId: req.user!.userId,
-      payload: {
-        deploymentId: row.assignedDeploymentId,
-        previousDeploymentId: existing.assignedDeploymentId,
-      },
-    });
-  }
-  if (
     parsed.data.status !== undefined &&
     parsed.data.status !== existing.status
   ) {
@@ -232,16 +260,6 @@ router.patch("/:id", requireAuth, async (req: Request, res: Response) => {
         reason: "user_edit",
       },
     });
-  }
-
-  const agentJustAssigned =
-    parsed.data.assignedAgentId &&
-    parsed.data.assignedAgentId !== existing.assignedDeploymentId &&
-    row.status !== "in_progress";
-  if (agentJustAssigned) {
-    enqueueTaskDispatch(row.id).catch((err) =>
-      log.error({ err, taskId: row.id }, "enqueue task dispatch failed"),
-    );
   }
 });
 

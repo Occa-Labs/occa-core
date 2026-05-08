@@ -18,36 +18,63 @@ export const REVIEW_STATES = new Set<TaskStatus>(["review"]);
 export const ADVANCEABLE_STATES = new Set<TaskStatus>(["todo", "in_progress"]);
 
 export interface DispatchOutcomeFlags {
-  // Agent emitted at least one HIRE / DELEGATE that produced a pending
+  // Agent emitted at least one DELEGATE that produced a pending
   // approval — task parks in `review` until the human decides.
   approvalsRequested: number;
   // BLOCK action flagged blockers — overrides everything else.
   blockedBy: string[] | null;
-  // ASK action posted a comment — same parking rule as approvals.
-  askPosted: boolean;
   // [[OCCA:REVIEW]] single-tag marker found in the reply.
   needsReview: boolean;
 }
 
 // Single source of truth for "what status should this task be in after
-// the agent's reply?" Matches the legacy decision tree from
-// task-dispatcher.ts:533-548 exactly:
-//   BLOCK   → `blocked` (overrides everything else)
-//   REVIEW  → `review`
-//   approval/ask pending → `review`
-//   default → `done`
+// the agent's reply?" Decision tree:
+//   BLOCK    → `blocked` (overrides everything else)
+//   REVIEW   → `review`
+//   approval pending (DELEGATE) → `review`
+//   default  → `done`
+//
+// Clarification questions don't show up here: per task-system-design.md
+// they go through RequestInfo HTTP, which pauses the task itself.
 export function nextStatusAfterDispatch(
   flags: DispatchOutcomeFlags,
 ): TaskStatus {
   if (flags.blockedBy && flags.blockedBy.length > 0) return "blocked";
   if (flags.needsReview) return "review";
-  if (flags.approvalsRequested > 0 || flags.askPosted) return "review";
+  if (flags.approvalsRequested > 0) return "review";
   return "done";
 }
 
 // Outcome label for the `agent_trace_finished` event payload. Mirrors
-// the next-status decision but in the trace lifecycle vocabulary.
-export function traceOutcomeFor(status: TaskStatus): string {
+// the next-status decision but in the trace lifecycle vocabulary —
+// design doc spec enumerates exactly 4 values: success | error | review
+// | blocked. The `error` branch is set directly by the failed-trace
+// path (not via this fn). Anything that lands here outside the 3
+// success-side states is a programming error.
+export type AgentTraceOutcome = "success" | "error" | "review" | "blocked";
+
+// Whitelist of manual status transitions a user is allowed to drive
+// from the task-detail dropdown. Anything not in this map is rejected
+// at the route layer — keeps `in_progress` from being set without a
+// dispatch, and keeps `done` from being walked back into a working
+// state (rerun handles re-execution explicitly).
+const ALLOWED_USER_TRANSITIONS: Record<TaskStatus, ReadonlySet<TaskStatus>> = {
+  todo: new Set<TaskStatus>(["review", "done"]),
+  in_progress: new Set<TaskStatus>(["todo", "review", "done"]),
+  review: new Set<TaskStatus>(["todo", "done"]),
+  blocked: new Set<TaskStatus>(["todo", "review", "done"]),
+  done: new Set<TaskStatus>([]), // terminal — must rerun or unarchive
+};
+
+export function isUserStatusTransitionAllowed(
+  from: TaskStatus,
+  to: TaskStatus,
+): boolean {
+  if (from === to) return true;
+  return ALLOWED_USER_TRANSITIONS[from]?.has(to) ?? false;
+}
+
+export function traceOutcomeFor(status: TaskStatus): AgentTraceOutcome {
   switch (status) {
     case "done":
       return "success";
@@ -56,6 +83,8 @@ export function traceOutcomeFor(status: TaskStatus): string {
     case "blocked":
       return "blocked";
     default:
-      return "other";
+      throw new Error(
+        `traceOutcomeFor: unexpected nextStatus "${status}" — dispatcher should not transition to this from a successful trace`,
+      );
   }
 }

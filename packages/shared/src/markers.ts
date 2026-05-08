@@ -7,7 +7,7 @@
 //      Used for boolean signals (REVIEW, BLOCKED).
 //
 // 2. Block markers: `[[OCCA:TOKEN]]\n<JSON body>\n[[/OCCA:TOKEN]]`
-//      Used for structured action requests (HIRE, DELEGATE) where the
+//      Used for structured action requests (DELEGATE, BLOCK) where the
 //      agent ships a payload alongside the intent. The dispatcher parses
 //      the JSON body and creates an approval row server-side, mirroring
 //      what would happen if the agent had POSTed to /api/agents/me/approvals.
@@ -15,8 +15,7 @@
 //      where the agent cannot reliably make outbound HTTP calls.
 //
 // Examples:
-//   [[OCCA:REVIEW]]                       — flag review needed
-//   [[OCCA:HIRE]] {...} [[/OCCA:HIRE]]    — request to hire a new agent
+//   [[OCCA:REVIEW]]                            — flag review needed
 //   [[OCCA:DELEGATE]] {...} [[/OCCA:DELEGATE]] — request to delegate to existing agent
 
 export const OCCA_MARKER_REGEX = /\[\[OCCA:[A-Z_]+\]\]/g;
@@ -32,7 +31,7 @@ export function hasOccaMarker(text: string, token: string): boolean {
 }
 
 export interface OccaActionBlock {
-  /** The token portion, e.g. "HIRE" or "DELEGATE". */
+  /** The token portion, e.g. "DELEGATE" or "BLOCK". */
   token: string;
   /** Parsed JSON body if valid; null when the body wasn't valid JSON. */
   body: Record<string, unknown> | null;

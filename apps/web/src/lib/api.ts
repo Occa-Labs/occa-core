@@ -1,6 +1,7 @@
 import type {
   AgentResponse,
   AgentSkillSyncAction,
+  ApprovalDTO,
   ApprovalStatus,
   AuthUser,
   CancelTraceRequest,
@@ -18,8 +19,10 @@ import type {
   ListAgentsResponse,
   ListRoutinesResponse,
   ListTraceEventsResponse,
+  ListTaskCommentsResponse,
   ListTracesResponse,
   ListSkillsResponse,
+  ListTaskEventsResponse,
   ListTasksResponse,
   OpenclawAdapterConfig,
   CreateTaskCommentRequest,
@@ -361,7 +364,10 @@ export const companiesApi = {
 };
 
 export const tasksApi = {
-  list: () => request<ListTasksResponse>("/api/tasks"),
+  list: (opts?: { includeArchived?: boolean }) => {
+    const qs = opts?.includeArchived ? "?include_archived=1" : "";
+    return request<ListTasksResponse>(`/api/tasks${qs}`);
+  },
   create: (input: CreateTaskRequest) =>
     request<TaskResponse>("/api/tasks", {
       method: "POST",
@@ -376,11 +382,22 @@ export const tasksApi = {
     request<{ ok: boolean }>(`/api/tasks/${id}`, { method: "DELETE" }),
   rerun: (id: string) =>
     request<TaskResponse>(`/api/tasks/${id}/rerun`, { method: "POST" }),
+  comments: (id: string) =>
+    request<ListTaskCommentsResponse>(`/api/tasks/${id}/comments`),
   addComment: (id: string, input: CreateTaskCommentRequest) =>
     request<TaskCommentResponse>(`/api/tasks/${id}/comments`, {
       method: "POST",
       body: JSON.stringify(input),
     }),
+  events: (id: string) =>
+    request<ListTaskEventsResponse>(`/api/tasks/${id}/events`),
+  archive: (id: string, input: { reason?: string }) =>
+    request<TaskResponse>(`/api/tasks/${id}/archive`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  unarchive: (id: string) =>
+    request<TaskResponse>(`/api/tasks/${id}/unarchive`, { method: "POST" }),
 };
 
 export const skillsApi = {
@@ -950,6 +967,12 @@ export const kickoffApi = {
     ),
 };
 
+export interface ApprovalEditablePayload {
+  title?: string;
+  description?: string;
+  acceptanceCriteria?: string | null;
+}
+
 export const approvalsApi = {
   list: (opts?: { status?: ApprovalStatus }) => {
     const qs = opts?.status ? `?status=${opts.status}` : "";
@@ -963,5 +986,10 @@ export const approvalsApi = {
     request<DecideApprovalResponse>(`/api/approvals/${id}/decide`, {
       method: "POST",
       body: JSON.stringify({ decision, rejectionReason }),
+    }),
+  patch: (id: string, payload: ApprovalEditablePayload) =>
+    request<{ approval: ApprovalDTO }>(`/api/approvals/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ payload }),
     }),
 };

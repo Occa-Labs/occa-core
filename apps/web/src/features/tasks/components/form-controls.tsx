@@ -1,9 +1,12 @@
 "use client";
 
-// Small reusable form controls used by NewTaskModal + TaskDetail. They
-// share the glass-light styling and thin-pill geometry; extracting them
-// keeps the parent files focused on layout instead of input chrome.
+// Small reusable form controls + display primitives for the tasks
+// feature. Form selects (StatusSelect / PrioritySelect / etc.) live
+// alongside their read-only counterparts (PriorityBadge / PriorityDot /
+// MetaChip) because they share the same `glass-light` styling family
+// and the same source-of-truth tables in `../types.ts`.
 
+import type { ReactNode } from "react";
 import type {
   EffortLevel,
   TaskPriority,
@@ -11,7 +14,12 @@ import type {
   TaskType,
 } from "@occa/shared/types";
 import { EFFORT_LEVELS, TASK_TYPES } from "@occa/shared/types";
-import { PRIORITY_CONFIG, STATUS_COLUMNS } from "./_shared";
+import {
+  EFFORT_LABELS,
+  PRIORITY_CONFIG,
+  STATUS_COLUMNS,
+  TASK_TYPE_LABELS,
+} from "../types";
 
 export function PriorityBadge({ priority }: { priority: TaskPriority }) {
   const cfg = PRIORITY_CONFIG[priority];
@@ -20,6 +28,39 @@ export function PriorityBadge({ priority }: { priority: TaskPriority }) {
       className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide ${cfg.color}`}
     >
       {cfg.label}
+    </span>
+  );
+}
+
+// Compact priority signal for the kanban card — just a colored dot. The
+// label is dropped because the dot color already encodes the level
+// (white→blue→amber→red) and the card real-estate is too tight for a
+// label badge alongside the title.
+export function PriorityDot({ priority }: { priority: TaskPriority }) {
+  const cfg = PRIORITY_CONFIG[priority];
+  return (
+    <span
+      className={`inline-block size-2 rounded-full ${cfg.dot}`}
+      title={`${cfg.label} priority`}
+    />
+  );
+}
+
+// Generic small pill used for task metadata on the card (type, effort,
+// task number). Single source of truth for the chip geometry so cards
+// look consistent without duplicating the className across siblings.
+export function MetaChip({
+  children,
+  mono,
+}: {
+  children: ReactNode;
+  mono?: boolean;
+}) {
+  return (
+    <span
+      className={`inline-flex items-center text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-white/50 ${mono ? "font-mono" : ""}`}
+    >
+      {children}
     </span>
   );
 }
@@ -73,15 +114,6 @@ export function PrioritySelect({
   );
 }
 
-export const TASK_TYPE_LABELS: Record<TaskType, string> = {
-  feature: "Feature",
-  bug: "Bug",
-  research: "Research",
-  docs: "Docs",
-  chore: "Chore",
-  other: "Other",
-};
-
 export function TaskTypeSelect({
   value,
   onChange,
@@ -103,14 +135,6 @@ export function TaskTypeSelect({
     </select>
   );
 }
-
-export const EFFORT_LABELS: Record<EffortLevel, string> = {
-  xs: "XS",
-  s: "S",
-  m: "M",
-  l: "L",
-  xl: "XL",
-};
 
 export function EffortSelect({
   value,

@@ -69,7 +69,7 @@ export const companies = pgTable(
     pausedReason: text("paused_reason"),
 
     // Kickoff lifecycle — drives the post-onboarding "CEO discovery → bulk
-    // hire" flow. Stays at 'not_started' until the user completes the
+    // deploy" flow. Stays at 'not_started' until the user completes the
     // kickoff dialog; flips through 'provisioning' → 'completed'.
     kickoffState: text("kickoff_state").notNull().default("not_started"),
     kickoffStartedAt: timestamp("kickoff_started_at", { withTimezone: true }),
@@ -447,6 +447,12 @@ export const tasks = pgTable(
     // Nullable now: tasks created by agents (via approved DELEGATE) have
     // `createdByAgentId` set instead. Either one or the other is non-null.
     createdByUserId: uuid("created_by_user_id").references(() => users.id),
+    // Soft-archive — non-null timestamp = task is shelved (different from
+    // `done`, which means completed). Hidden from default board, opt-in
+    // visibility via "Show archived" toggle. Reversible (set to null to
+    // unarchive). Free-text reason captured at archive time for context.
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+    archiveReason: text("archive_reason"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -457,6 +463,11 @@ export const tasks = pgTable(
   (t) => [
     index("idx_tasks_company_status").on(t.companyId, t.status),
     uniqueIndex("uniq_tasks_company_number").on(t.companyId, t.taskNumber),
+    // Default-board lookups always filter `archived_at IS NULL`. Partial
+    // index covers that path without bloating size on archived rows.
+    index("idx_tasks_company_active")
+      .on(t.companyId, t.status)
+      .where(sql`archived_at IS NULL`),
   ],
 );
 
@@ -1032,5 +1043,38 @@ export const taskComments = pgTable(
   (t) => [
     index("idx_task_comments_task").on(t.taskId),
     index("idx_task_comments_company_created").on(t.companyId, t.createdAt),
+  ],
+);
+
+// ── Workflows — auto follow-up rules (per-company) ────────────────────
+// Hooks that fire on `task.completed` events; the workflow engine (Phase
+// 6, not yet built) reads these and decides whether to spawn child
+// tasks. `yamlText` is the canonical editable form; `parsedDefinition`
+// is the validated jsonb cache, written atomically with yamlText so they
+// can never disagree. Slug (`yamlId`) is unique per company so users can
+// reference workflows by stable id from prompts / runtime.
+export const workflows = pgTable(
+  "workflows",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    yamlId: text("yaml_id").notNull(),
+    name: text("name").notNull(),
+    description: text("description"),
+    yamlText: text("yaml_text").notNull(),
+    parsedDefinition: jsonb("parsed_definition").notNull(),
+    enabled: boolean("enabled").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("uniq_workflows_company_yaml_id").on(t.companyId, t.yamlId),
+    index("idx_workflows_company_enabled").on(t.companyId, t.enabled),
   ],
 );

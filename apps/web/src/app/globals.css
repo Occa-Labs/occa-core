@@ -122,6 +122,16 @@ body {
     border: 1px solid rgba(255, 255, 255, 0.06);
   }
 
+  /* Light tint — content sitting ON TOP of a dark glass surface
+     (kanban cards, table rows, inline pills, selects). White-tinted
+     instead of dark like the rest of the family because the underlying
+     surface is already dark; this lifts the foreground without adding
+     another opaque layer. */
+  .glass-light {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
   /* Elevated — modals, popovers */
   .glass-elevated {
     background: var(--surface-bg-elev);

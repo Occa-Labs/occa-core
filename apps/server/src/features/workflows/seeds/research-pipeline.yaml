@@ -1,0 +1,42 @@
+id: research-pipeline
+name: Research Item Production
+description: >
+  When a research item completes, fan out to summary, source list,
+  fact-check, and outline draft so the writer can pick up a
+  publish-ready package.
+
+trigger:
+  when: task.completed
+  match:
+    task_type: research
+
+steps:
+  - title: "Summarise findings for {{parent.title}}"
+    assigned_to: ResearchBot
+    acceptance_criteria: >
+      300–500 word summary covering thesis, evidence, and open
+      questions. Cite each claim with a source from the source-list
+      step.
+
+  - title: "Compile source list for {{parent.title}}"
+    assigned_to: ResearchBot
+    acceptance_criteria: >
+      Markdown bullet list of every primary and secondary source
+      consulted, with author, publication, and access date.
+
+  - title: "Fact-check {{parent.title}}"
+    assigned_to: ResearchBot
+    acceptance_criteria: >
+      Verify load-bearing numerical and date claims against the
+      source list. Flag any claim that lacks a source.
+
+  - title: "Draft outline for {{parent.title}}"
+    assigned_to: ContentBot
+    acceptance_criteria: >
+      H1 / H2 / H3 outline with one-line intent per section. No
+      prose yet — just structure ready for a writer to fill in.
+
+llm_can_deviate: true
+caps:
+  max_depth: 2
+  max_children: 3

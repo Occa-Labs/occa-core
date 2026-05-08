@@ -57,6 +57,10 @@ export const ERROR_CODES = {
   // Task
   TASK_NOT_FOUND: "task_not_found",
   TASK_LOCKED: "task_locked",
+  TASK_ARCHIVED: "task_archived",
+  TASK_NOT_ARCHIVED: "task_not_archived",
+  TASK_REASSIGN_DISABLED: "task_reassign_disabled",
+  INVALID_STATUS_TRANSITION: "invalid_status_transition",
   COMMENT_FAILED: "comment_failed",
 
   // Trace
@@ -100,6 +104,11 @@ export const ERROR_CODES = {
   GATEWAY_LIST_FAILED: "gateway_list_failed",
   DEVICE_PAIRING_REQUIRED: "device_pairing_required",
   OPENCLAW_AGENT_ID_CONFLICT: "openclaw_agent_id_conflict",
+
+  // Workflow (Phase 5 storage; Phase 6 engine adds runtime errors)
+  WORKFLOW_NOT_FOUND: "workflow_not_found",
+  WORKFLOW_YAML_INVALID: "workflow_yaml_invalid",
+  WORKFLOW_ID_CONFLICT: "workflow_id_conflict",
 
   // SSH / dev
   SSH_CONFIG_MISSING: "ssh_config_missing",

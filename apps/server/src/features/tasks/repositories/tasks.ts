@@ -2,7 +2,7 @@
 // or mutate tasks through these helpers — keeps Drizzle out of the rest
 // of the feature.
 
-import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import {
   agentIdentities,
   deployments,
@@ -30,12 +30,46 @@ export async function findTaskInCompany(
   return row ?? null;
 }
 
-export async function listTasksByCompany(companyId: string): Promise<TaskRow[]> {
+export async function listTasksByCompany(
+  companyId: string,
+  opts: { includeArchived?: boolean } = {},
+): Promise<TaskRow[]> {
+  const conditions = [eq(tasks.companyId, companyId)];
+  if (!opts.includeArchived) conditions.push(isNull(tasks.archivedAt));
   return db
     .select()
     .from(tasks)
-    .where(eq(tasks.companyId, companyId))
+    .where(and(...conditions))
     .orderBy(desc(tasks.updatedAt));
+}
+
+export async function archiveTask(
+  taskId: string,
+  reason: string | null,
+): Promise<TaskRow | null> {
+  const [row] = await db
+    .update(tasks)
+    .set({
+      archivedAt: new Date(),
+      archiveReason: reason,
+      updatedAt: new Date(),
+    })
+    .where(and(eq(tasks.id, taskId), isNull(tasks.archivedAt)))
+    .returning();
+  return row ?? null;
+}
+
+export async function unarchiveTask(taskId: string): Promise<TaskRow | null> {
+  const [row] = await db
+    .update(tasks)
+    .set({
+      archivedAt: null,
+      archiveReason: null,
+      updatedAt: new Date(),
+    })
+    .where(and(eq(tasks.id, taskId), sql`${tasks.archivedAt} IS NOT NULL`))
+    .returning();
+  return row ?? null;
 }
 
 export async function deleteTaskInCompany(

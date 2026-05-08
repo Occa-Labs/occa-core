@@ -6,9 +6,8 @@ import {
   useMemo,
   useRef,
   useState,
-  type ReactNode,
 } from "react";
-import { Bell, Bot, Check, X } from "lucide-react";
+import { ArrowRight, Bell, Bot } from "lucide-react";
 import type { AgentDTO, ApprovalDTO } from "@occa/shared/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -16,8 +15,15 @@ import { Card } from "@/components/ui/card";
 import { FloatingPanel } from "@/components/ui/floating-panel";
 import { MarkdownViewer } from "@/components/ui/markdown-viewer";
 import { surface } from "@/components/ui/tokens";
-import { useApprovals } from "@/hooks/use-approvals";
+import { useApprovalsList } from "@/features/approvals/api/use-approvals-list";
 import { useMe } from "@/hooks/use-me";
+import {
+  MARKDOWN_PAYLOAD_KEYS,
+  SYSTEM_PAYLOAD_KEYS,
+  humanizeApprovalAction,
+  relativeTime,
+  stringifyPayloadValue,
+} from "@/features/approvals/utils";
 import { cn } from "@/lib/utils";
 
 interface NotificationCenterProps {
@@ -26,6 +32,9 @@ interface NotificationCenterProps {
    *  inside the TopMenuBar. The popup still anchors to the bell via
    *  position: relative, so the placement code below stays as-is. */
   embedded?: boolean;
+  /** Bubbled up to OsShell — clicking "Open in Approvals" deep-links into
+   *  the Approvals window with the requested approval pre-selected. */
+  onOpenApprovals?: (approvalId: string) => void;
 }
 
 // Wallet button is at right-4 top-4 with width ~ 95-130px depending on state.
@@ -36,9 +45,11 @@ const BELL_OFFSET_PX = 140;
 export function NotificationCenter({
   enabled,
   embedded = false,
+  onOpenApprovals,
 }: NotificationCenterProps) {
   const me = useMe(enabled);
-  const { approvals, decide } = useApprovals(enabled && me.company !== null);
+  const list = useApprovalsList(enabled && me.company !== null, "pending");
+  const approvals = list.data ?? [];
   const [bellOpen, setBellOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [triggerRect, setTriggerRect] = useState<DOMRect | null>(null);
@@ -147,7 +158,14 @@ export function NotificationCenter({
           agentById={agentById}
           triggerRect={triggerRect}
           onClose={closeDetail}
-          onDecide={decide}
+          onOpenApprovals={
+            onOpenApprovals
+              ? () => {
+                  onOpenApprovals(selectedApproval.id);
+                  closeDetail();
+                }
+              : undefined
+          }
         />
       )}
     </>
@@ -285,7 +303,7 @@ function NotificationCard({
 
   const agentName = agent?.name ?? "Agent";
   const agentRole = agent?.role ?? null;
-  const actionLabel = humanizeAction(
+  const actionLabel = humanizeApprovalAction(
     approval.actionType,
     approval.payload,
     agentById,
@@ -318,17 +336,11 @@ interface NotificationDetailProps {
   agentById: Map<string, AgentDTO>;
   triggerRect: DOMRect | null;
   onClose: () => void;
-  onDecide: (
-    id: string,
-    decision: "approve" | "reject",
-    rejectionReason?: string,
-  ) => Promise<boolean>;
+  /** When provided, renders an "Open in Approvals →" button that hands
+   *  control to the dedicated Approvals window. The notification surface
+   *  stays info-only — approve/reject lives in Approvals window. */
+  onOpenApprovals?: () => void;
 }
-
-type DetailMode =
-  | { kind: "idle" }
-  | { kind: "rejecting" }
-  | { kind: "submitting" };
 
 function NotificationDetail({
   approval,
@@ -336,40 +348,11 @@ function NotificationDetail({
   agentById,
   triggerRect,
   onClose,
-  onDecide,
+  onOpenApprovals,
 }: NotificationDetailProps) {
-  const [mode, setMode] = useState<DetailMode>({ kind: "idle" });
-  const [rejectReason, setRejectReason] = useState("");
-
-  const handleApprove = useCallback(async () => {
-    setMode({ kind: "submitting" });
-    const ok = await onDecide(approval.id, "approve");
-    if (!ok) setMode({ kind: "idle" });
-    // On success: the parent removes this approval from the list and
-    // unmounts the detail; no manual close needed.
-  }, [approval.id, onDecide]);
-
-  const handleStartReject = useCallback(() => {
-    setMode({ kind: "rejecting" });
-  }, []);
-
-  const handleCancelReject = useCallback(() => {
-    setRejectReason("");
-    setMode({ kind: "idle" });
-  }, []);
-
-  const handleSendReject = useCallback(async () => {
-    const reason = rejectReason.trim();
-    if (!reason) return;
-    setMode({ kind: "submitting" });
-    const ok = await onDecide(approval.id, "reject", reason);
-    if (!ok) setMode({ kind: "rejecting" });
-  }, [approval.id, onDecide, rejectReason]);
-
-  const submitting = mode.kind === "submitting";
   const agentName = agent?.name ?? "Agent";
   const agentRole = agent?.role ?? null;
-  const actionLabel = humanizeAction(
+  const actionLabel = humanizeApprovalAction(
     approval.actionType,
     approval.payload,
     agentById,
@@ -394,58 +377,15 @@ function NotificationDetail({
 
         <PayloadDetail payload={approval.payload} />
 
-        {mode.kind === "rejecting" ? (
-          <div className="space-y-2">
-            <textarea
-              autoFocus
-              value={rejectReason}
-              onChange={(e) => setRejectReason(e.target.value)}
-              placeholder="Reason for rejection…"
-              rows={3}
-              className={cn(
-                "w-full resize-none rounded-lg border border-white/10",
-                "bg-black/25 px-2.5 py-2 text-[12px] text-white/85",
-                "placeholder:text-white/30 focus:border-white/25 focus:outline-none",
-              )}
-            />
-            <div className="flex items-center justify-end gap-2">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={handleCancelReject}
-                disabled={submitting}
-              >
-                <X className="size-3" />
-                Cancel
-              </Button>
-              <Button
-                variant="danger"
-                size="sm"
-                disabled={submitting || rejectReason.trim().length === 0}
-                onClick={handleSendReject}
-              >
-                {submitting ? "Sending…" : "Send"}
-              </Button>
-            </div>
-          </div>
-        ) : (
-          <div className="flex items-center justify-end gap-2">
+        {onOpenApprovals && (
+          <div className="flex items-center justify-end">
             <Button
-              variant="ghost"
+              variant="primary"
               size="sm"
-              onClick={handleStartReject}
-              disabled={submitting}
+              onClick={onOpenApprovals}
             >
-              Reject
-            </Button>
-            <Button
-              variant="success"
-              size="sm"
-              onClick={() => void handleApprove()}
-              disabled={submitting}
-            >
-              <Check className="size-3" />
-              {submitting ? "Approving…" : "Approve"}
+              Open in Approvals
+              <ArrowRight className="size-3" />
             </Button>
           </div>
         )}
@@ -500,26 +440,15 @@ function CardHeaderRow({
   );
 }
 
-// Keys whose string values render as markdown in the detail view. Agents
-// write description / acceptance / summary as prose with lists, code, and
-// links — rendering them as plain text strips the formatting. Anything
-// else (uuids, role slugs, names) stays as a plain monoline.
-const MARKDOWN_KEYS = new Set([
-  "description",
-  "acceptanceCriteria",
-  "summary",
-  "note",
-  "rejectionReason",
-  "failureReason",
-]);
-
-// Detail view of the full payload — keys laid out vertically with values
-// wrapping (vs the compact single-line preview on the card). Used inside
-// the FloatingPanel where horizontal space is generous. Rich-text keys
-// (see MARKDOWN_KEYS) render through MarkdownViewer; everything else
-// uses a plain stringified value.
+// Detail view of the payload — keys laid out vertically with values
+// wrapping (vs the compact single-line preview on the card). Rich-text
+// keys (see MARKDOWN_PAYLOAD_KEYS in features/approvals/utils) render
+// through MarkdownViewer; system-stamped keys (spawnedTaskId, failureReason,
+// etc.) are filtered out so the user sees only the request fields.
 function PayloadDetail({ payload }: { payload: Record<string, unknown> }) {
-  const entries = Object.entries(payload);
+  const entries = Object.entries(payload).filter(
+    ([k]) => !SYSTEM_PAYLOAD_KEYS.has(k),
+  );
   if (entries.length === 0) {
     return (
       <Card variant="recessed" padding="sm">
@@ -539,7 +468,8 @@ function PayloadDetail({ payload }: { payload: Record<string, unknown> }) {
 }
 
 function PayloadField({ label, value }: { label: string; value: unknown }) {
-  const isMarkdown = MARKDOWN_KEYS.has(label) && typeof value === "string";
+  const isMarkdown =
+    MARKDOWN_PAYLOAD_KEYS.has(label) && typeof value === "string";
   return (
     <div className="flex flex-col gap-1">
       <span className="text-[10px] uppercase tracking-wide text-white/35">
@@ -554,85 +484,9 @@ function PayloadField({ label, value }: { label: string; value: unknown }) {
         />
       ) : (
         <span className="wrap-break-word text-white/85">
-          {stringifyValue(value)}
+          {stringifyPayloadValue(value)}
         </span>
       )}
     </div>
   );
-}
-
-function stringifyValue(v: unknown): string {
-  if (v === null || v === undefined) return "—";
-  if (typeof v === "string") return v;
-  if (typeof v === "number" || typeof v === "boolean") return String(v);
-  try {
-    return JSON.stringify(v, null, 2);
-  } catch {
-    return String(v);
-  }
-}
-
-// ── Formatters ────────────────────────────────────────────────────────────────
-
-// Best-effort humanization. Approvals carry a free-form `actionType` string;
-// when the actionType is a known structured kind (currently `delegate`,
-// `hire`) we pull typed fields and resolve referenced agent IDs to names.
-// Otherwise we fall back to `payload.summary` then a slug → "Wants to …"
-// rendering.
-function humanizeAction(
-  actionType: string,
-  payload: Record<string, unknown>,
-  agentById: Map<string, AgentDTO>,
-): string {
-  if (actionType === "delegate") {
-    const targetId =
-      typeof payload.targetAgentId === "string" ? payload.targetAgentId : null;
-    const title = typeof payload.title === "string" ? payload.title.trim() : "";
-    const targetName = targetId
-      ? (agentById.get(targetId)?.name ?? null)
-      : null;
-    if (targetName && title)
-      return `Wants to delegate to ${targetName}: "${title}"`;
-    if (targetName) return `Wants to delegate to ${targetName}`;
-    if (title) return `Wants to delegate: ${title}`;
-    return "Wants to delegate to another agent";
-  }
-
-  if (actionType === "hire") {
-    const targetRole =
-      typeof payload.targetRole === "string" ? payload.targetRole : "";
-    const targetName =
-      typeof payload.targetName === "string" ? payload.targetName.trim() : "";
-    const title = typeof payload.title === "string" ? payload.title.trim() : "";
-    if (targetName && targetRole && title)
-      return `Wants to deploy ${targetName} (${targetRole}) for "${title}"`;
-    if (targetName && targetRole)
-      return `Wants to deploy ${targetName} (${targetRole})`;
-    if (targetRole) return `Wants to deploy a new ${targetRole}`;
-    return "Wants to deploy a new agent";
-  }
-
-  const summary =
-    typeof payload.summary === "string" ? payload.summary.trim() : "";
-  if (summary) return summary;
-  const pretty = actionType
-    .split(/[._-]+/)
-    .filter(Boolean)
-    .join(" ");
-  return pretty ? `Wants to ${pretty.toLowerCase()}` : "Awaiting your decision";
-}
-
-function relativeTime(iso: string): string {
-  const then = new Date(iso).getTime();
-  const now = Date.now();
-  const sec = Math.max(0, Math.round((now - then) / 1000));
-  if (sec < 5) return "just now";
-  if (sec < 60) return `${sec}s ago`;
-  const min = Math.round(sec / 60);
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.round(min / 60);
-  if (hr < 24) return `${hr}h ago`;
-  const day = Math.round(hr / 24);
-  if (day < 7) return `${day}d ago`;
-  return new Date(iso).toLocaleDateString();
 }

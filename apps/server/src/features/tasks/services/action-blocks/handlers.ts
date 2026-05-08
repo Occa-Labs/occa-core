@@ -1,5 +1,5 @@
-// Per-token side-effect handlers for `[[OCCA:HIRE]]…[[/OCCA:HIRE]]`,
-// DELEGATE, BLOCK, ASK markers. Each handler:
+// Per-token side-effect handlers for `[[OCCA:DELEGATE]]…`,
+// `[[OCCA:BLOCK]]…` markers. Each handler:
 //   - validates the parsed body via the domain zod schema
 //   - performs the side-effect (insert approval row / write blockers /
 //     post comment)
@@ -12,21 +12,14 @@
 // rather than direct import. The composition root (queue worker that
 // invokes the dispatcher) wires the dep.
 
-import { eq, inArray } from "drizzle-orm";
-import {
-  agentIdentities,
-  approvals,
-  deployments,
-  tasks,
-} from "@occa/shared/schema";
+import { inArray } from "drizzle-orm";
+import { approvals, tasks } from "@occa/shared/schema";
 import type { OccaActionBlock } from "@occa/shared/markers";
 import { db } from "../../../../infra/database/client";
 import { childLogger } from "../../../../lib/logger";
 import {
-  askBlockPayload,
   blockBlockPayload,
   delegateBlockPayload,
-  hireBlockPayload,
   type ActionBlockOutcome,
 } from "../../domain/action-blocks/schemas";
 import { createTaskComment } from "../comments";
@@ -43,8 +36,8 @@ export interface ScopeCheck {
 
 export interface ActionBlockDeps {
   // Cross-feature port: validates whether `requesterId` may delegate to
-  // `targetId` (i.e. target sits in requester's hire subtree). Wired in
-  // by the composition root from features/agents/services/deployment-
+  // `targetId` (i.e. target sits in requester's subtree). Wired in by
+  // the composition root from features/agents/services/deployment-
   // hierarchy.canDeploy. Kept as an injected port to respect the no-
   // cross-feature-import layer rule.
   canDeploy: (requesterId: string, targetId: string) => Promise<ScopeCheck>;
@@ -55,28 +48,6 @@ export interface ActionBlockHandlerArgs {
   agentId: string; // requesting deployment
   companyId: string;
   currentTaskId: string;
-}
-
-export async function handleHireBlock(
-  args: ActionBlockHandlerArgs,
-): Promise<ActionBlockOutcome> {
-  const parsed = hireBlockPayload.safeParse(args.block.body);
-  if (!parsed.success) {
-    log.warn(
-      { detail: parsed.error.flatten() },
-      "HIRE block rejected: invalid payload",
-    );
-    return { kind: "ignored", reason: "invalid_payload" };
-  }
-  const dp = parsed.data;
-
-  await db.insert(approvals).values({
-    companyId: args.companyId,
-    requestedByDeploymentId: args.agentId,
-    actionType: "hire",
-    payload: { ...dp, parentTaskId: args.currentTaskId },
-  });
-  return { kind: "approval_created" };
 }
 
 export async function handleDelegateBlock(
@@ -158,52 +129,5 @@ export async function handleBlockBlock(
     }
   }
 
-  return { kind: "blocked", blockerIds: validIds };
-}
-
-export async function handleAskBlock(
-  args: ActionBlockHandlerArgs,
-): Promise<ActionBlockOutcome> {
-  const parsed = askBlockPayload.safeParse(args.block.body);
-  if (!parsed.success) {
-    log.warn(
-      { detail: parsed.error.flatten() },
-      "ASK block rejected: invalid payload",
-    );
-    return { kind: "ignored", reason: "invalid_payload" };
-  }
-  const { question, mentionAgentId } = parsed.data;
-
-  let composedBody = question;
-  if (mentionAgentId) {
-    const [target] = await db
-      .select({
-        id: deployments.id,
-        name: agentIdentities.name,
-        companyId: deployments.companyId,
-      })
-      .from(deployments)
-      .innerJoin(
-        agentIdentities,
-        eq(deployments.agentIdentityId, agentIdentities.id),
-      )
-      .where(eq(deployments.id, mentionAgentId))
-      .limit(1);
-    if (target && target.companyId === args.companyId) {
-      composedBody = `@${target.name} ${question}`;
-    }
-  }
-
-  try {
-    await createTaskComment({
-      taskId: args.currentTaskId,
-      companyId: args.companyId,
-      authorAgentId: args.agentId,
-      body: composedBody,
-    });
-  } catch (err) {
-    log.error({ err }, "ASK comment insert failed");
-    return { kind: "ignored", reason: "comment_insert_failed" };
-  }
-  return { kind: "ask_posted" };
+  return { kind: "blocked", blockerIds: validIds, reason };
 }

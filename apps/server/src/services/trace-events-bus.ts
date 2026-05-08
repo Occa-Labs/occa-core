@@ -15,9 +15,9 @@ export interface TraceLifecycleEvent {
   seq: number;
   eventType: "lifecycle";
   // `started`/`completed`/`failed` cover the trace lifecycle itself.
-  // `approval_requested` fires when the dispatcher detects a HIRE or
-  // DELEGATE block in the agent's reply. `action_block_*` cover error
-  // paths from block parsing.
+  // `approval_requested` fires when the dispatcher detects a DELEGATE
+  // block in the agent's reply. `action_block_*` cover error paths from
+  // block parsing.
   phase:
     | "started"
     | "completed"

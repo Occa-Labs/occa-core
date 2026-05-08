@@ -21,7 +21,10 @@ import { and, eq, sql } from "drizzle-orm";
 import { agentActionIdempotency, tasks } from "@occa/shared/schema";
 import type { AgentAuthContext } from "../../../middleware/agent-auth";
 import { db } from "../../../infra/database/client";
-import { createTaskRecord } from "../../../infra/database/task-creation";
+import {
+  createTaskRecord,
+  type TaskTx,
+} from "../../../infra/database/task-creation";
 import { LIMITS } from "../../../lib/limits";
 import { childLogger } from "../../../lib/logger";
 import { appendTaskEventBestEffort } from "../../tasks/services/events";
@@ -105,6 +108,44 @@ async function recordIdempotency(
     });
 }
 
+// Returns true if this caller claimed the slot, false if a concurrent
+// same-key request beat us to it. Used inside a transaction so the
+// caller can roll the side-effect back when the slot is already taken.
+async function tryClaimIdempotency(
+  tx: TaskTx,
+  deploymentId: string,
+  actionType: string,
+  idempotencyKey: string,
+  resourceType: string,
+  resourceId: string,
+): Promise<boolean> {
+  const inserted = await tx
+    .insert(agentActionIdempotency)
+    .values({
+      deploymentId,
+      actionType,
+      idempotencyKey,
+      resourceType,
+      resourceId,
+    })
+    .onConflictDoNothing({
+      target: [
+        agentActionIdempotency.deploymentId,
+        agentActionIdempotency.actionType,
+        agentActionIdempotency.idempotencyKey,
+      ],
+    })
+    .returning({ id: agentActionIdempotency.id });
+  return inserted.length > 0;
+}
+
+class IdempotencyRaceLost extends Error {
+  constructor() {
+    super("idempotency_race_lost");
+    this.name = "IdempotencyRaceLost";
+  }
+}
+
 async function computeTaskDepth(taskId: string): Promise<number> {
   const result = await db.execute<{ depth: number }>(sql`
     WITH RECURSIVE chain AS (
@@ -175,30 +216,60 @@ export async function emitFollowUp(
     ? [{ type: "paragraph" as const, text: req.payload.acceptanceCriteria }]
     : [];
 
-  const newTask = await createTaskRecord({
-    companyId: agent.companyId,
-    title: req.payload.title,
-    blocks,
-    status: "todo",
-    priority: req.payload.priority ?? "medium",
-    taskType: req.payload.taskType ?? "other",
-    effortLevel: req.payload.effortLevel ?? "m",
-    tags: [],
-    dueDate: null,
-    assignedDeploymentId: null,
-    parentTaskId: req.parentTaskId,
-    createdByUserId: null,
-    createdByDeploymentId: agent.agentId,
-    acceptanceCriteria: req.payload.acceptanceCriteria ?? null,
-  });
-
-  await recordIdempotency(
-    agent.agentId,
-    "EmitFollowUp",
-    req.idempotencyKey,
-    "task",
-    newTask.id,
-  );
+  // Atomic: child task insert + idempotency slot claim. If a concurrent
+  // same-key request claimed the slot first, throw to roll the task
+  // insert back — prevents orphan tasks that wouldn't be returned on
+  // retry. The thrown sentinel is caught below.
+  let newTask;
+  try {
+    newTask = await db.transaction(async (tx) => {
+      const created = await createTaskRecord(
+        {
+          companyId: agent.companyId,
+          title: req.payload.title,
+          blocks,
+          status: "todo",
+          priority: req.payload.priority ?? "medium",
+          taskType: req.payload.taskType ?? "other",
+          effortLevel: req.payload.effortLevel ?? "m",
+          tags: [],
+          dueDate: null,
+          assignedDeploymentId: null,
+          parentTaskId: req.parentTaskId,
+          createdByUserId: null,
+          createdByDeploymentId: agent.agentId,
+          acceptanceCriteria: req.payload.acceptanceCriteria ?? null,
+        },
+        tx,
+      );
+      const claimed = await tryClaimIdempotency(
+        tx,
+        agent.agentId,
+        "EmitFollowUp",
+        req.idempotencyKey,
+        "task",
+        created.id,
+      );
+      if (!claimed) throw new IdempotencyRaceLost();
+      return created;
+    });
+  } catch (err) {
+    if (err instanceof IdempotencyRaceLost) {
+      const winner = await lookupIdempotencyHit(
+        agent.agentId,
+        "EmitFollowUp",
+        req.idempotencyKey,
+      );
+      if (winner) {
+        return { taskId: winner.resourceId, alreadyExisted: true };
+      }
+      // Lost the race but winner row vanished — extremely unlikely
+      // (would require a concurrent delete), but bubble up rather than
+      // pretend success.
+      throw err;
+    }
+    throw err;
+  }
 
   void appendTaskEventBestEffort({
     companyId: agent.companyId,
@@ -253,12 +324,15 @@ export async function requestInfo(
     return { commentId: hit.resourceId, alreadyExisted: true };
   }
 
-  const [task] = await db
-    .select({ id: tasks.id, companyId: tasks.companyId })
+  // Fast-fail: bail out before creating a comment if the task is in a
+  // different company. Re-checked under FOR UPDATE below, but this
+  // saves an orphan comment in the obvious mis-routed case.
+  const [precheck] = await db
+    .select({ companyId: tasks.companyId })
     .from(tasks)
     .where(eq(tasks.id, req.taskId))
     .limit(1);
-  if (!task || task.companyId !== agent.companyId) {
+  if (!precheck || precheck.companyId !== agent.companyId) {
     throw new AgentActionError("task_not_in_company");
   }
 
@@ -278,6 +352,55 @@ export async function requestInfo(
     result.comment.id,
   );
 
+  // Pause the task per task-system-design.md Action catalog: "Pause
+  // task, emit comment_added, notify user". Flip to `review` from any
+  // active state — a closed task stays closed (no resurrect). Skip the
+  // status change + event emission when the task is already in `review`
+  // or `done` to keep the timeline tidy.
+  //
+  // FOR UPDATE row-lock serialises us against the dispatcher: it stops
+  // a concurrent status flip from clobbering our pause (or vice versa).
+  // The status read happens inside the lock so our decision uses fresh
+  // state, not whatever we read seconds ago in the precheck.
+  let pausedTo: string | null = null;
+  let priorStatus: string | null = null;
+  await db.transaction(async (tx) => {
+    const [locked] = await tx
+      .select({ status: tasks.status })
+      .from(tasks)
+      .where(eq(tasks.id, req.taskId))
+      .for("update")
+      .limit(1);
+    if (!locked) return;
+    priorStatus = locked.status;
+    if (locked.status === "todo" || locked.status === "in_progress") {
+      await tx
+        .update(tasks)
+        .set({
+          status: "review",
+          linkedTraceId: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(tasks.id, req.taskId));
+      pausedTo = "review";
+    }
+  });
+  if (pausedTo) {
+    void appendTaskEventBestEffort({
+      companyId: agent.companyId,
+      taskId: req.taskId,
+      eventType: "task_status_changed",
+      actorType: "agent",
+      actorId: agent.agentId,
+      payload: {
+        from: priorStatus,
+        to: "review",
+        reason: "request_info",
+        commentId: result.comment.id,
+      },
+    });
+  }
+
   void appendTaskEventBestEffort({
     companyId: agent.companyId,
     taskId: req.taskId,
@@ -288,6 +411,7 @@ export async function requestInfo(
       actionType: "RequestInfo",
       channel: "http",
       commentId: result.comment.id,
+      pausedTo,
     },
   });
 
@@ -296,8 +420,9 @@ export async function requestInfo(
       agentId: agent.agentId,
       taskId: req.taskId,
       commentId: result.comment.id,
+      pausedTo,
     },
-    "RequestInfo posted comment",
+    "RequestInfo posted comment + paused task",
   );
 
   return { commentId: result.comment.id, alreadyExisted: false };

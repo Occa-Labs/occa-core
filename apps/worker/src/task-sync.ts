@@ -207,4 +207,20 @@ export async function syncTaskOnTraceSucceeded(args: {
       traceId: args.traceId,
     });
   }
+  // Mirror the server dispatcher's REVIEW-marker emission so cron-driven
+  // traces also land an `agent_action_emitted` row in the audit log.
+  // DELEGATE / BLOCK parsing in this path is still TODO — the worker
+  // would need access to the action-block handlers (see agent-protocol
+  // "Known limitations").
+  if (needsReview) {
+    void appendTaskEventBestEffort({
+      companyId: row.companyId,
+      taskId: args.taskId,
+      eventType: "agent_action_emitted",
+      actorType: "agent",
+      actorId: args.agentId,
+      payload: { actionType: "REVIEW", channel: "block_marker" },
+      traceId: args.traceId,
+    });
+  }
 }

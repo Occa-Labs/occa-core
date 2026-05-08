@@ -12,10 +12,13 @@
     "./error-codes": "./src/error-codes.ts",
     "./markers": "./src/markers.ts",
     "./role-catalog": "./src/role-catalog.ts",
-    "./seating": "./src/seating.ts"
+    "./seating": "./src/seating.ts",
+    "./task-events": "./src/task-events.ts",
+    "./workflows": "./src/workflows.ts"
   },
   "dependencies": {
     "drizzle-orm": "^0.44.0",
+    "yaml": "^2.8.4",
     "zod": "^3.23.8"
   }
 }

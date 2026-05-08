@@ -4,8 +4,7 @@
 //
 // Today supported actions:
 //   - delegate — agent X requests to delegate a sub-task to agent Y
-//                (requires Y to be inside X's hire subtree)
-//   - hire     — any agent in the company may request a new hire
+//                (requires Y to be inside X's subtree)
 //
 // The agent's own ID + company come from the token middleware; clients
 // never pass them. We snapshot the agent's most-recent running trace's
@@ -43,9 +42,9 @@ router.post(
     }
     const { actionType, payload } = parsed.data;
 
-    // Both delegate and hire snapshot the requester's running task as
-    // parentTaskId if the caller omitted one, so the eventual child task
-    // is always linked into the graph.
+    // Delegate snapshots the requester's running task as parentTaskId if
+    // the caller omitted one, so the eventual child task is always linked
+    // into the graph.
     const resolveParentTaskId = async (
       explicit: string | null | undefined,
     ): Promise<string | null> => {
@@ -83,29 +82,6 @@ router.post(
           requestedByDeploymentId: agentId,
           actionType: "delegate",
           payload: { ...dp, parentTaskId },
-        })
-        .returning({ id: approvals.id });
-
-      const body: AgentApprovalCreateResponse = { approvalId: row.id };
-      res.status(StatusCodes.CREATED).json(body);
-      return;
-    }
-
-    if (actionType === "hire") {
-      // Hire authority: any agent in the company may request a hire.
-      // The new agent's parentAgentId becomes the requester so the org
-      // tree builds organically. Role validation already happened at
-      // the Zod layer (AGENT_ROLES enum).
-      const hp = payload;
-      const parentTaskId = await resolveParentTaskId(hp.parentTaskId);
-
-      const [row] = await db
-        .insert(approvals)
-        .values({
-          companyId,
-          requestedByDeploymentId: agentId,
-          actionType: "hire",
-          payload: { ...hp, parentTaskId },
         })
         .returning({ id: approvals.id });
 
