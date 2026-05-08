@@ -17,9 +17,9 @@ interface KickoffSummaryDialogProps {
   onContinue: () => void;
 }
 
-// Final post-kickoff screen. Lists every hire (excluding the CEO, who
+// Final post-kickoff screen. Lists every deployment (excluding the CEO, who
 // existed before kickoff) with its provisioning state — ready, failed,
-// or still pending. Failed hires can be retried via the existing
+// or still pending. Failed deployments can be retried via the existing
 // reprovision endpoint without leaving the flow. Mounts only on the
 // in-session edge `kickoffState=provisioning → completed` (see
 // useSetupWorkflow); refreshing past it skips straight to `live`.
@@ -28,9 +28,9 @@ export function KickoffSummaryDialog({
   onAgentReady,
   onContinue,
 }: KickoffSummaryDialogProps) {
-  const hires = agents.filter((a) => a.role !== CEO_ROLE);
-  const ready = hires.filter((a) => a.provisioningState === "ready").length;
-  const failedCount = hires.filter(
+  const deployments = agents.filter((a) => a.role !== CEO_ROLE);
+  const ready = deployments.filter((a) => a.provisioningState === "ready").length;
+  const failedCount = deployments.filter(
     (a) => a.provisioningState === "failed",
   ).length;
 
@@ -83,13 +83,13 @@ export function KickoffSummaryDialog({
               Team is ready
             </h2>
             <p className="mt-1 text-sm text-white/60">
-              {ready} of {hires.length} hires provisioned
-              {failedCount > 0 ? ` — ${failedCount} failed` : ""}.
+              {ready} of {deployments.length} agents provisioned
+              {failedCount > 0 ? `. ${failedCount} failed` : ""}.
             </p>
           </header>
 
           <div className="space-y-1.5 max-h-80 overflow-y-auto pr-1">
-            {hires.map((agent) => {
+            {deployments.map((agent) => {
               const state = agent.provisioningState;
               const isRetrying = retrying.has(agent.id);
               const retryError = retryErrors[agent.id];

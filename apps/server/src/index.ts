@@ -16,7 +16,10 @@ import { registerTaskWorker } from "./infra/queue/task-worker";
 import authRouter from "./features/auth/routes";
 import meRouter from "./routes/me";
 import adaptersRouter from "./routes/adapters";
-import tasksRouter from "./routes/tasks";
+import {
+  tasksFeatureRouter,
+  agentTaskCommentsRouter,
+} from "./features/tasks/routes";
 import skillsRouter from "./features/skills/routes";
 import agentsRouter from "./features/agents/routes";
 import companiesRouter from "./features/companies/routes";
@@ -37,8 +40,9 @@ app.use(httpLogger);
 app.use("/api/auth", authRouter);
 app.use("/api/me", meRouter);
 app.use("/api/adapters", adaptersRouter);
-app.use("/api/tasks", tasksRouter);
+app.use("/api/tasks", tasksFeatureRouter);
 app.use("/api/skills", skillsRouter);
+app.use("/api/agents", agentTaskCommentsRouter);
 app.use("/api/agents", agentsRouter);
 app.use("/api/companies", companiesRouter);
 app.use("/api/chain", chainRouter);

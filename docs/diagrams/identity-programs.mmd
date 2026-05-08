@@ -1,32 +1,48 @@
+%% OCCA program ↔ account-ownership map
+%% Source of truth: treasury-program-design.md (§1, §2 Trace architecture, §3, §11)
+%% Note: Trace Anchor is NOT a separate program — `commit_daily_anchor` lives in Registry.
+
 flowchart LR
-    subgraph Programs["5 OCCA Programs"]
+    subgraph Programs["4 OCCA Programs"]
         REG[Registry Program]
         TRP[Treasury Program]
-        TAP[Trace Anchor Program]
         MKT[Marketplace Program]
         REP[Reputation Program]
     end
 
+    %% Registry-owned accounts (incl. daily anchor since Trace Anchor is merged in)
     REG --> CO[CompanyAccount]
-    REG --> AG[AgentAccount]
+    REG --> AI[AgentIdentity]
+    REG --> DE[Deployment]
     REG --> SK[SkillAccount]
     REG --> RT[RoutineAccount]
+    REG --> DA[DailyAnchorAccount<br/><i>commit_daily_anchor</i>]
 
+    %% Identity split FK relations within Registry
+    DE -.->|agent_identity| AI
+    DE -.->|company| CO
+
+    %% Treasury-owned accounts (4 PDAs per §3)
     TRP --> TR[TreasuryAccount]
     TRP --> PO[PolicyAccount]
+    TRP --> OA["OperationsAccount<br/><i>kind: Disbursement / Anchor</i>"]
+    TRP --> PFA[ProtocolFeeAccount<br/><i>singleton</i>]
 
-    TAP --> TA[TraceAnchorAccount]
-
+    %% Marketplace-owned accounts
     MKT --> CT[ContractAccount]
     MKT --> LS[ListingAccount]
     MKT --> LC[LicenseAccount]
 
-    REP -.->|reads only| AG
-    REP -.->|reads only| TA
+    %% Cross-program reads (Reputation is read-only)
+    REP -.->|reads only| AI
+    REP -.->|reads only| DA
     REP -.->|reads only| CT
 
-    classDef prog fill:#e1f5ff,stroke:#01579b,stroke-width:2px
-    classDef acc fill:#fff,stroke:#666
+    %% Cross-program signer authorization
+    REG -.->|"validates signer<br/>against"| OA
 
-    class REG,TRP,TAP,MKT,REP prog
-    class CO,AG,SK,RT,TR,PO,TA,CT,LS,LC acc
+    classDef prog fill:#1a3a5c,stroke:#5b9bd5,color:#dde8f5,stroke-width:2px
+    classDef acc fill:#2a2a2a,stroke:#888888,color:#dddddd
+
+    class REG,TRP,MKT,REP prog
+    class CO,AI,DE,SK,RT,DA,TR,PO,OA,PFA,CT,LS,LC acc

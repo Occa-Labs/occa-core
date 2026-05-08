@@ -15,6 +15,10 @@ interface TopMenuBarProps {
    *  persists across the OsShell mount. */
   viewMode3d: boolean;
   onToggleViewMode: () => void;
+  /** Hide the 3D/2D toggle outside of the live OS phase. The toggle
+   *  controls scene rendering inside OsShell — exposing it during
+   *  onboarding/kickoff implies a feature that doesn't apply yet. */
+  viewModeToggleEnabled: boolean;
 }
 
 // macOS-style top menu bar. Spans the full width: OCCA logo pinned to
@@ -25,6 +29,7 @@ export function TopMenuBar({
   notificationsEnabled,
   viewMode3d,
   onToggleViewMode,
+  viewModeToggleEnabled,
 }: TopMenuBarProps) {
   return (
     <div className="fixed inset-x-3 top-2 z-110 flex items-center justify-between text-white/70 pointer-events-none">
@@ -39,11 +44,13 @@ export function TopMenuBar({
       <div className="pointer-events-auto flex items-center gap-3">
         <ChainBadge />
         <FpsIndicator embedded />
-        <ViewModeToggle
-          enabled={viewMode3d}
-          onToggle={onToggleViewMode}
-          embedded
-        />
+        {viewModeToggleEnabled && (
+          <ViewModeToggle
+            enabled={viewMode3d}
+            onToggle={onToggleViewMode}
+            embedded
+          />
+        )}
         <NotificationCenter enabled={notificationsEnabled} embedded />
         <WalletConnectOverlay embedded />
       </div>

@@ -6,6 +6,7 @@ import type {
   TaskStatus,
 } from "@occa/shared/types";
 import { db } from "./db";
+import { appendTaskEventBestEffort } from "./task-events";
 
 // Auto-advance kanban status based on trace lifecycle:
 //  - `todo` → `in_progress` when a trace starts against the task
@@ -22,9 +23,17 @@ const PREVIEW_MAX_CHARS = 280;
 
 async function loadTaskStatusAndBlocks(
   taskId: string,
-): Promise<{ status: TaskStatus; blocks: ContentBlock[] } | null> {
+): Promise<{
+  status: TaskStatus;
+  blocks: ContentBlock[];
+  companyId: string;
+} | null> {
   const [row] = await db
-    .select({ status: tasks.status, blocks: tasks.blocks })
+    .select({
+      status: tasks.status,
+      blocks: tasks.blocks,
+      companyId: tasks.companyId,
+    })
     .from(tasks)
     .where(eq(tasks.id, taskId))
     .limit(1);
@@ -32,6 +41,7 @@ async function loadTaskStatusAndBlocks(
   return {
     status: row.status as TaskStatus,
     blocks: (row.blocks as ContentBlock[] | null) ?? [],
+    companyId: row.companyId,
   };
 }
 
@@ -62,6 +72,7 @@ async function appendBlocks(
 
 export async function syncTaskOnTraceStart(
   taskId: string | null,
+  ctx?: { traceId: string; deploymentId: string },
 ): Promise<void> {
   if (!taskId) return;
   const row = await loadTaskStatusAndBlocks(taskId);
@@ -69,6 +80,28 @@ export async function syncTaskOnTraceStart(
   // Kick it off the backlog/todo column once; never regress completed work.
   if (row.status === "todo") {
     await setTaskStatus(taskId, ["todo"], "in_progress");
+    if (ctx) {
+      void appendTaskEventBestEffort({
+        companyId: row.companyId,
+        taskId,
+        eventType: "task_status_changed",
+        actorType: "system",
+        actorId: "system",
+        payload: { from: "todo", to: "in_progress", reason: "trace_started" },
+        traceId: ctx.traceId,
+      });
+    }
+  }
+  if (ctx) {
+    void appendTaskEventBestEffort({
+      companyId: row.companyId,
+      taskId,
+      eventType: "agent_trace_started",
+      actorType: "agent",
+      actorId: ctx.deploymentId,
+      payload: { traceId: ctx.traceId, deploymentId: ctx.deploymentId },
+      traceId: ctx.traceId,
+    });
   }
 }
 
@@ -150,4 +183,28 @@ export async function syncTaskOnTraceSucceeded(args: {
   // Only advance from active states — never resurrect a user-cancelled or
   // already-closed task.
   await setTaskStatus(args.taskId, ["todo", "in_progress"], target);
+
+  void appendTaskEventBestEffort({
+    companyId: row.companyId,
+    taskId: args.taskId,
+    eventType: "agent_trace_finished",
+    actorType: "agent",
+    actorId: args.agentId,
+    payload: {
+      traceId: args.traceId,
+      outcome: needsReview ? "review" : "success",
+    },
+    traceId: args.traceId,
+  });
+  if (target !== row.status) {
+    void appendTaskEventBestEffort({
+      companyId: row.companyId,
+      taskId: args.taskId,
+      eventType: "task_status_changed",
+      actorType: "system",
+      actorId: "system",
+      payload: { from: row.status, to: target, reason: "trace_succeeded" },
+      traceId: args.traceId,
+    });
+  }
 }

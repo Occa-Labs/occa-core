@@ -10,6 +10,7 @@
 
 import { Router } from "express";
 import selfActionsRouter from "./self-actions";
+import agentActionsRouter from "./agent-actions";
 import chatRouter from "./chat";
 import skillSyncsRouter from "./skill-syncs";
 import tracesRouter from "./traces";
@@ -20,6 +21,7 @@ const router: Router = Router();
 
 // /me/* — agent-token authenticated, must precede /:id-prefixed routes.
 router.use(selfActionsRouter);
+router.use(agentActionsRouter);
 
 // /:id-scoped — order between these doesn't matter (paths are distinct).
 router.use(chatRouter);

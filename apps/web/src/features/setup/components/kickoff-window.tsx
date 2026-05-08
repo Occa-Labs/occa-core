@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Loader2,
   Check,
@@ -12,6 +12,7 @@ import {
 import { AppWindow } from "@/components/ui/app-window";
 import { Button } from "@/components/ui/button";
 import { Badge, type BadgeVariant } from "@/components/ui/badge";
+import { surface } from "@/components/ui/tokens";
 import {
   ApiError,
   kickoffApi,
@@ -23,13 +24,16 @@ import { useBatchAnchorAgents } from "@/features/chain/hooks/use-batch-anchor-ag
 import { useAnchorWallet } from "@/features/chain/hooks/use-anchor-wallet";
 import { prettifyAnchorError } from "@/features/chain/lib/anchor-errors";
 
-interface HiringWindowProps {
+interface KickoffWindowProps {
   companyId: string;
   /** Fires after kickoff finishes (state → completed) — parent should
    *  refresh `me` and unmount this window. */
   onCompleted: () => void;
   /** Fires after kickoff/reset succeeds — parent should refresh `me`. */
   onReset: () => void;
+  /** User clicked "Skip for now" on the AnchorPanel. Parent persists the
+   *  decision per-company and routes the user into OS with a banner. */
+  onAnchorSkip: () => void;
 }
 
 const ROLE_ABBREVIATIONS: Record<string, string> = {
@@ -56,11 +60,12 @@ function roleLabel(slug: string): string {
     .join(" ");
 }
 
-export function HiringWindow({
+export function KickoffWindow({
   companyId,
   onCompleted,
   onReset,
-}: HiringWindowProps) {
+  onAnchorSkip,
+}: KickoffWindowProps) {
   const [agents, setAgents] = useState<KickoffAgentStatus[]>([]);
   const [phase, setPhase] =
     useState<KickoffStatusFrame["kickoffState"]>("provisioning");
@@ -70,12 +75,12 @@ export function HiringWindow({
   const [confirmingReset, setConfirmingReset] = useState(false);
 
   // Batch on-chain anchoring runs AFTER kickoff finishes provisioning.
-  // We hold completion (don't fire onCompleted) until the user either
-  // anchors the team or explicitly skips — anchoring binds every hire
-  // to a Solana keypair derived from one wallet signature.
+  // We hold completion (don't fire onCompleted) until the anchor is
+  // actually broadcast. The "Skip for now" path is hoisted to the
+  // parent (see onAnchorSkip) so the decision persists across refresh
+  // and a reminder banner can be rendered in OsShell.
   const anchor = useBatchAnchorAgents();
   const walletStatus = useAnchorWallet();
-  const [anchorSkipped, setAnchorSkipped] = useState(false);
   const preparedRef = useRef(false);
 
   useEffect(() => {
@@ -107,40 +112,43 @@ export function HiringWindow({
       });
 
     return () =>
-      ctrl.abort(new DOMException("HiringWindow unmount", "AbortError"));
+      ctrl.abort(new DOMException("KickoffWindow unmount", "AbortError"));
   }, [companyId]);
 
   const ready = agents.filter((a) => a.provisioningState === "ready").length;
   const failed = agents.filter((a) => a.provisioningState === "failed").length;
   const total = agents.length;
 
-  // Auto-prepare batch anchor as soon as kickoff finishes. Idempotent
-  // server-side: re-running just returns the existing reservations.
-  useEffect(() => {
-    if (phase !== "completed") return;
-    if (preparedRef.current) return;
+  // Just-in-time prepare — runs when the user clicks Anchor, NOT on
+  // kickoff completion. Auto-preparing too early leaves the prepared
+  // tx sitting around with a Solana blockhash that lives ~60s; if the
+  // user takes any time to read the panel before clicking sign, the
+  // blockhash expires and confirm fails with `BlockhashNotFound`.
+  const prepareIfNeeded = useCallback(async () => {
     if (anchor.stage !== "idle") return;
     if (agents.length === 0) return;
     preparedRef.current = true;
-    void anchor.prepare({
+    await anchor.prepare({
       companyId,
       agentIds: agents.map((a) => a.id),
     });
-  }, [phase, agents, anchor, companyId]);
+  }, [anchor, agents, companyId]);
 
-  // Once anchoring resolves (complete or skipped), forward to the parent.
+  // Once anchoring resolves (broadcast complete), forward to the parent.
+  // The skip path no longer routes through this effect — it goes
+  // straight to onAnchorSkip in the AnchorPanel handler below.
   useEffect(() => {
     if (phase !== "completed") return;
-    if (anchor.stage === "complete" || anchorSkipped) {
+    if (anchor.stage === "complete") {
       onCompleted();
     }
-  }, [phase, anchor.stage, anchorSkipped, onCompleted]);
+  }, [phase, anchor.stage, onCompleted]);
 
   const subtitle = streamError
     ? "Stream error"
     : phase === "completed"
-      ? anchor.stage === "complete" || anchorSkipped
-        ? "Team ready — entering OCCA…"
+      ? anchor.stage === "complete"
+        ? "Team ready. Entering OCCA…"
         : "Team provisioned · anchor on Solana to finish"
       : `${ready}/${total || "?"} ready${failed > 0 ? ` · ${failed} failed` : ""}`;
 
@@ -166,7 +174,7 @@ export function HiringWindow({
 
   return (
     <AppWindow
-      title="Hiring kickoff team"
+      title="Deploying kickoff team"
       subtitle={subtitle}
       defaultSize={{ w: 640, h: 580 }}
       disableClose
@@ -184,15 +192,15 @@ export function HiringWindow({
                     : "Setting up"}
               </div>
               <div className="text-[11px] text-white/50 mt-0.5">
-                Each hire pairs a device key, restarts the gateway, and seeds
-                their workspace files. ~30s per hire.
+                Each deployment pairs a device key, restarts the gateway, and seeds
+                their workspace files. ~30s per deployment.
               </div>
             </div>
             <ProgressRing ready={ready} total={total || 1} failed={failed} />
           </div>
         </div>
 
-        {/* Per-hire list */}
+        {/* Per-deployment list */}
         <div className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-2">
           {streamError && (
             <div className="text-[12px] text-red-300/85 bg-red-500/10 rounded-lg px-3 py-2">
@@ -202,34 +210,42 @@ export function HiringWindow({
           {agents.length === 0 && !streamError && (
             <div className="flex items-center gap-2 text-[12px] text-white/50 py-4">
               <Loader2 className="size-3.5 animate-spin" />
-              Loading hires…
+              Loading deployments…
             </div>
           )}
           {agents.map((a) => (
-            <HireCard key={a.id} agent={a} />
+            <DeploymentCard key={a.id} agent={a} />
           ))}
 
-          {/* Anchor-on-Solana CTA — only after kickoff completes. Skipped
-           *  cleanly when there's nothing to anchor (totalNew === 0). */}
-          {phase === "completed" && !anchorSkipped && (
+          {/* Anchor-on-Solana CTA — shown after kickoff completes. Skip
+           *  is hoisted to the parent so the decision persists across
+           *  refresh and OsShell can render a reminder banner. */}
+          {phase === "completed" && (
             <AnchorPanel
               anchorStage={anchor.stage}
               anchorError={
                 anchor.error
-                  ? prettifyAnchorError(anchor.error.code).headline
+                  ? {
+                      code: anchor.error.code,
+                      ...prettifyAnchorError(anchor.error.code),
+                    }
                   : null
               }
               anchorTotal={anchor.totalNew}
               walletReady={walletStatus.kind === "ready"}
               walletStatus={walletStatus.kind}
-              onSign={() => {
+              onSign={async () => {
                 if (walletStatus.kind !== "ready") return;
-                void anchor.signAndRegister({
+                // Prepare just-in-time so the Solana blockhash hasn't
+                // expired by the time we submit. If prepare already ran
+                // (e.g. retry path), this is a no-op via the stage gate.
+                await prepareIfNeeded();
+                await anchor.signAndRegister({
                   companyId,
                   wallet: walletStatus.wallet,
                 });
               }}
-              onSkip={() => setAnchorSkipped(true)}
+              onSkip={onAnchorSkip}
               onRetry={() => {
                 anchor.reset();
                 preparedRef.current = false;
@@ -247,7 +263,7 @@ export function HiringWindow({
           )}
           <div className="flex items-center justify-between">
             <span className="text-[11px] text-white/45">
-              Stuck? Reset drops the hires + restarts the kickoff dialog.
+              Stuck? Reset drops the deployments + restarts the kickoff dialog.
             </span>
             {!confirmingReset ? (
               <Button
@@ -332,7 +348,7 @@ function ProgressRing({
   );
 }
 
-function HireCard({ agent }: { agent: KickoffAgentStatus }) {
+function DeploymentCard({ agent }: { agent: KickoffAgentStatus }) {
   const state = agent.provisioningState;
   const variant: BadgeVariant =
     state === "ready" ? "success" : state === "failed" ? "error" : "default";
@@ -362,27 +378,30 @@ function HireCard({ agent }: { agent: KickoffAgentStatus }) {
     .join("")
     .toUpperCase();
 
+  const isReady = state === "ready";
+  const isFailed = state === "failed";
   return (
     <div
       className={`
-        rounded-xl border px-3 py-2.5 flex items-center gap-3
+        rounded-xl px-3 py-2.5 flex items-center gap-3
         ${
-          state === "failed"
-            ? "bg-red-500/8 border-red-400/25"
-            : state === "ready"
-              ? "bg-emerald-500/8 border-emerald-400/25"
-              : "bg-white/4 border-white/10"
+          isFailed
+            ? "bg-red-500/8 border border-red-400/25"
+            : isReady
+              ? ""
+              : "bg-white/4 border border-white/10"
         }
       `}
+      style={isReady ? surface.base : undefined}
     >
       <div
         className={`
           size-9 shrink-0 rounded-full flex items-center justify-center
           text-[11px] font-semibold
           ${
-            state === "ready"
-              ? "bg-emerald-400/15 text-emerald-100"
-              : state === "failed"
+            isReady
+              ? "bg-white/10 text-white"
+              : isFailed
                 ? "bg-red-400/15 text-red-100"
                 : "bg-white/8 text-white/70"
           }
@@ -396,10 +415,18 @@ function HireCard({ agent }: { agent: KickoffAgentStatus }) {
       </div>
 
       <div className="flex-1 min-w-0">
-        <div className="text-[13px] font-medium text-white/90 truncate">
+        <div
+          className={`text-[13px] font-medium truncate ${
+            isReady ? "text-white" : "text-white/90"
+          }`}
+        >
           {agent.name}
         </div>
-        <div className="text-[11px] text-white/50 truncate">
+        <div
+          className={`text-[11px] truncate ${
+            isReady ? "text-white/55" : "text-white/50"
+          }`}
+        >
           {roleLabel(agent.role)}
         </div>
         {agent.provisioningError && (
@@ -419,7 +446,7 @@ function HireCard({ agent }: { agent: KickoffAgentStatus }) {
 
 // ── Anchor-on-Solana panel (post-kickoff) ─────────────────────────────────
 //
-// Renders a single inline CTA inside the HiringWindow once kickoff
+// Renders a single inline CTA inside the KickoffWindow once kickoff
 // finishes. Captures one wallet signature → hook derives N keypairs →
 // server batches register_agent into a single (or chunked) tx.
 //
@@ -443,7 +470,7 @@ function AnchorPanel({
     | "deriving-keypairs"
     | "registering"
     | "complete";
-  anchorError: string | null;
+  anchorError: { code: string; headline: string; hint: string } | null;
   anchorTotal: number;
   walletReady: boolean;
   walletStatus: "loading" | "no-wallet" | "mismatch" | "ready";
@@ -452,8 +479,8 @@ function AnchorPanel({
   onRetry: () => void;
 }) {
   // Don't render if there's literally nothing to anchor — saves the user
-  // from a confusing "0 hires" CTA when prepare returned all already-
-  // registered.
+  // from a confusing "0 deployments" CTA when prepare returned all
+  // already-registered.
   if (anchorStage === "complete") {
     return (
       <div className="rounded-xl border border-emerald-400/30 bg-emerald-500/8 px-4 py-3 flex items-center gap-3">
@@ -494,15 +521,25 @@ function AnchorPanel({
           </div>
           <div className="text-[11px] text-white/55 mt-0.5">
             One signature derives an on-chain keypair for{" "}
-            {anchorTotal > 0 ? `all ${anchorTotal} hires` : "every hire"}. Your
+            {anchorTotal > 0 ? `all ${anchorTotal} deployments` : "every deployment"}. Your
             private key never leaves your wallet.
           </div>
         </div>
       </div>
 
       {anchorError && (
-        <div className="text-[11px] text-red-300/85 bg-red-500/10 rounded-md px-2.5 py-1.5">
-          {anchorError}
+        <div className="rounded-lg border border-rose-400/25 bg-rose-500/8 px-3 py-2.5 space-y-1.5">
+          <div className="flex items-start gap-2">
+            <p className="text-[11px] text-rose-200/95 leading-snug flex-1 min-w-0">
+              {anchorError.headline}
+            </p>
+            <span className="font-mono text-[10px] text-rose-300/80 bg-rose-500/15 px-1.5 py-0.5 rounded shrink-0">
+              {anchorError.code}
+            </span>
+          </div>
+          <p className="text-[11px] text-white/65 leading-relaxed">
+            {anchorError.hint}
+          </p>
         </div>
       )}
 

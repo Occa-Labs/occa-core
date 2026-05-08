@@ -605,11 +605,11 @@ function humanizeAction(
       typeof payload.targetName === "string" ? payload.targetName.trim() : "";
     const title = typeof payload.title === "string" ? payload.title.trim() : "";
     if (targetName && targetRole && title)
-      return `Wants to hire ${targetName} (${targetRole}) for "${title}"`;
+      return `Wants to deploy ${targetName} (${targetRole}) for "${title}"`;
     if (targetName && targetRole)
-      return `Wants to hire ${targetName} (${targetRole})`;
-    if (targetRole) return `Wants to hire a new ${targetRole}`;
-    return "Wants to hire a new agent";
+      return `Wants to deploy ${targetName} (${targetRole})`;
+    if (targetRole) return `Wants to deploy a new ${targetRole}`;
+    return "Wants to deploy a new agent";
   }
 
   const summary =

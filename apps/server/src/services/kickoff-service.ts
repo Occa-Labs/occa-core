@@ -1,6 +1,6 @@
 /**
  * Kickoff orchestrator — drives the post-onboarding "CEO discovery → bulk
- * hire → background provisioning → team meeting" flow.
+ * deploy → background provisioning → team meeting" flow.
  *
  * Surface area:
  *   - startKickoff(): validates input, patches company fields from the
@@ -106,9 +106,9 @@ export const KICKOFF_ROLE_CATALOG: Record<AgentRole, RoleTemplate> =
     ]),
   );
 
-/** Cap on how many hires the kickoff dialog can pick at once. The user can
+/** Cap on how many deployments the kickoff dialog can pick at once. The user can
  *  always grow the team afterwards via the Agents window. */
-export const KICKOFF_MAX_HIRES = 3;
+export const KICKOFF_MAX_DEPLOYMENTS = 3;
 
 // Legacy presets kept as a fallback — the new tag picker UI sends `roles[]`
 // directly. If a caller passes `preset` instead, it resolves to one of these.
@@ -131,14 +131,14 @@ export interface KickoffStartInput {
   brandVoice: string | null;
   contentPillars: string[];
   // Execution
-  rolesToHire: AgentRole[]; // resolved from preset OR à-la-carte picks
+  rolesToDeploy: AgentRole[]; // resolved from preset OR à-la-carte picks
 }
 
 // ── Orchestrator entry ───────────────────────────────────────────────────────
 
 export interface StartKickoffResult {
   ok: true;
-  hiredAgentIds: string[];
+  deployedAgentIds: string[];
 }
 
 /**
@@ -157,7 +157,7 @@ export async function startKickoff(
   log.info(
     {
       companyId,
-      roles: input.rolesToHire,
+      roles: input.rolesToDeploy,
       niche: input.niche ?? null,
       audience: !!input.audience,
       voice: !!input.brandVoice,
@@ -166,7 +166,7 @@ export async function startKickoff(
   );
 
   // Load the company + the existing CEO. The CEO row carries the gateway
-  // adapter config (URL, apiKey, deviceKeypair) that every new hire reuses.
+  // adapter config (URL, apiKey, deviceKeypair) that every new deployment reuses.
   const [company] = await db
     .select()
     .from(companies)
@@ -178,7 +178,7 @@ export async function startKickoff(
   }
 
   // Idempotency — re-entering kickoff after a failed attempt is allowed,
-  // but we don't want to double-hire if a previous run already created
+  // but we don't want to double-deploy if a previous run already created
   // the agents.
   if (company.kickoffState === "provisioning") {
     log.warn(
@@ -213,7 +213,7 @@ export async function startKickoff(
     await upsertCompanyProfile({ companyId, patch: profilePatch });
   }
 
-  // Find the existing CEO so new hires can reuse its adapter credentials
+  // Find the existing CEO so new deployments can reuse its adapter credentials
   // (gatewayUrl, apiKey, deviceKeypair, deviceToken). Without this, each
   // new agent would prompt OpenClaw for its own pair approval — exactly
   // the UX problem we solved earlier with persistent device tokens.
@@ -253,26 +253,26 @@ export async function startKickoff(
   // Insert pending agent rows. Each row is a real agents table entry with
   // provisioning_state='pending'. The async loop will fill in
   // externalAgentId + flip state to 'ready' once OpenClaw acknowledges.
-  const hiredIds: string[] = [];
-  for (const role of input.rolesToHire) {
+  const deployedIds: string[] = [];
+  for (const role of input.rolesToDeploy) {
     const tpl = KICKOFF_ROLE_CATALOG[role];
     if (!tpl) {
       log.warn({ role }, "skipping unknown role");
       continue;
     }
 
-    // Assign a 3D seat for this hire. Done per-iteration (sequential)
-    // so each new agent's seat reflects all earlier hires in this batch.
+    // Assign a 3D seat for this deployment. Done per-iteration (sequential)
+    // so each new agent's seat reflects all earlier deployments in this batch.
     const workstationId = await assignSeatForCompany({
       companyId,
       role: tpl.key,
     });
     if (!workstationId) {
-      log.warn({ role: tpl.key }, "office full — skipping kickoff hire");
+      log.warn({ role: tpl.key }, "office full — skipping kickoff deployment");
       continue;
     }
 
-    // 3-table insert per hire: identity → deployment → runtime profile.
+    // 3-table insert per deployment: identity → deployment → runtime profile.
     // Identity ownerWallet comes from companies.ownerWallet (placeholder
     // if chain isn't registered yet). deploymentIndex serializes against
     // the unique (company_id, deployment_index) constraint.
@@ -343,26 +343,26 @@ export async function startKickoff(
 
       return deployment;
     });
-    hiredIds.push(inserted.id);
+    deployedIds.push(inserted.id);
     log.info(
       { deploymentId: inserted.id, role: tpl.key, name: tpl.defaultName },
-      "inserted pending hire",
+      "inserted pending deployment",
     );
   }
 
   log.info(
-    { hiresQueued: hiredIds.length },
+    { deploymentsQueued: deployedIds.length },
     "kickoff state set to provisioning, handing off to background worker",
   );
 
   // Spawn async work; do NOT await. We deliberately drop the promise so
   // the HTTP request returns quickly. Errors land in the per-agent row's
   // provisioning_error column + show in the SSE stream.
-  void processKickoffProvisioning(companyId, hiredIds).catch((err) => {
+  void processKickoffProvisioning(companyId, deployedIds).catch((err) => {
     log.error({ err, companyId }, "background provisioning crashed");
   });
 
-  return { ok: true, hiredAgentIds: hiredIds };
+  return { ok: true, deployedAgentIds: deployedIds };
 }
 
 // ── Async provisioning loop ──────────────────────────────────────────────────
@@ -379,7 +379,7 @@ export async function processKickoffProvisioning(
 ): Promise<void> {
   const startedAt = Date.now();
   log.info(
-    { companyId, hires: agentIds.length },
+    { companyId, deployments: agentIds.length },
     "background provisioning starting",
   );
 
@@ -408,7 +408,7 @@ export async function processKickoffProvisioning(
     )
     .limit(1);
   if (!ceoRow) {
-    log.warn("CEO missing, cannot provision new hires");
+    log.warn("CEO missing, cannot provision new deployments");
     return;
   }
   const ceoAdapter = ceoRow.adapterConfig as Record<string, unknown>;
@@ -418,10 +418,10 @@ export async function processKickoffProvisioning(
     typeof ceoAdapter.deviceToken === "string"
       ? ceoAdapter.deviceToken
       : undefined;
-  // CRITICAL: reuse CEO's keypair across all hires. Generating a fresh
-  // keypair per hire creates a new "device" on the gateway → each one
+  // CRITICAL: reuse CEO's keypair across all deployments. Generating a fresh
+  // keypair per deployment creates a new "device" on the gateway → each one
   // requires manual pairing approval → the user is blocked. By sharing
-  // CEO's already-paired keypair, every hire connects under the same
+  // CEO's already-paired keypair, every deployment connects under the same
   // device identity and is differentiated only by externalAgentId.
   // This mirrors the regular onboarding pattern (users.pendingDeviceKeypair).
   const ceoKeypairSerialized = ceoAdapter.deviceKeypair;
@@ -580,7 +580,7 @@ export async function processKickoffProvisioning(
     }
   }
 
-  // Whether all succeeded or some failed, mark kickoff complete. Failed hires
+  // Whether all succeeded or some failed, mark kickoff complete. Failed deployments
   // stay in the team with provisioning_state='failed' — the user can reset
   // and re-pick if desired.
   await db
@@ -603,7 +603,7 @@ export async function processKickoffProvisioning(
   );
 }
 
-interface PendingHire {
+interface PendingDeployment {
   id: string;
   companyId: string;
   role: string;
@@ -611,7 +611,7 @@ interface PendingHire {
 }
 
 async function provisionOne(
-  agentRow: PendingHire,
+  agentRow: PendingDeployment,
   gatewayUrl: string,
   apiKey: string,
   ceoKeypair: Awaited<ReturnType<typeof deserializeKeypair>>,
@@ -620,7 +620,7 @@ async function provisionOne(
 ): Promise<void> {
   // Reuse CEO's already-paired keypair. The gateway treats every connect
   // under this keypair as the same device — no fresh pair approval. The
-  // new hire is differentiated only by externalAgentId. Same pattern as
+  // new deployment is differentiated only by externalAgentId. Same pattern as
   // users.pendingDeviceKeypair in the regular onboarding flow.
   const keypair = ceoKeypair;
   let deviceToken = ceoDeviceToken;
@@ -629,7 +629,7 @@ async function provisionOne(
       deviceIdPrefix: keypair.deviceId.slice(0, 12),
       hasToken: !!deviceToken,
     },
-    "reusing CEO keypair for hire",
+    "reusing CEO keypair for deployment",
   );
 
   log.info("validating device keypair against gateway");
@@ -667,7 +667,7 @@ async function provisionOne(
     "provisioning agent on gateway (triggers gateway restart, ~10-30s)",
   );
   // Bumped timeouts vs default — gateway is observed to take 15s+ for
-  // handshake under sequential-restart load. With CEO probe, four hire
+  // handshake under sequential-restart load. With CEO probe, four deployment
   // probes from the worker, and kickoff config.patch all hammering the
   // gateway in parallel, defaults (10s handshake / 60s restart) starve.
   const provision = await provisionAgent(
@@ -707,7 +707,7 @@ async function provisionOne(
     "gateway acked provision",
   );
 
-  // Persist CEO's serialized keypair onto the hire's row — every connect
+  // Persist CEO's serialized keypair onto the deployment's row — every connect
   // under this row will replay the same device identity.
   const serialized = ceoKeypairSerialized;
 
@@ -731,7 +731,7 @@ async function provisionOne(
     .where(eq(agentRuntimeProfile.deploymentId, agentRow.id));
 
   // Seed workspace files (skill catalog, README, etc) — same template
-  // pipeline used by the direct hire flow.
+  // pipeline used by the direct deploy flow.
   const [companyRow] = await db
     .select({ name: companies.name })
     .from(companies)
@@ -779,7 +779,7 @@ async function provisionOne(
   });
   log.info("workspace seeded");
   // Persist file inventory for the Agents window — same shape as the
-  // direct hire flow.
+  // direct deploy flow.
   await db.insert(deploymentWorkspaceFiles).values(
     rendered.map((f) => ({
       deploymentId: agentRow.id,

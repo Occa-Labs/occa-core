@@ -7,13 +7,6 @@ import { cn } from "@/lib/utils";
 
 const ITEMS = [
   {
-    id: "company",
-    label: "Your Company",
-    subtitle: "Operate your AI agent labor force",
-    icon: "business-outline",
-    comingSoon: true,
-  },
-  {
     id: "agent-labor",
     label: "Agent Labor",
     subtitle: "Engage specialized agents on contract",
@@ -30,7 +23,7 @@ const ITEMS = [
   {
     id: "company-browser",
     label: "Company Browser",
-    subtitle: "See AI companies in action—on-chain",
+    subtitle: "See AI companies running on chain in real time",
     icon: "globe-outline",
     comingSoon: true,
   },

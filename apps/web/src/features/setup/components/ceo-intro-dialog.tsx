@@ -33,7 +33,7 @@ function buildScript(ceoName: string, companyName: string) {
     },
     {
       speaker: ceoName,
-      text: "First thing — I'll figure out what matters and start. Plan in your inbox shortly.",
+      text: "First thing. I'll figure out what matters most and start there. Plan hits your inbox shortly.",
     },
   ];
 }

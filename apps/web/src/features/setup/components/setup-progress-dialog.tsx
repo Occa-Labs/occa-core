@@ -16,8 +16,8 @@ interface SetupProgressDialogProps {
   onRetry: () => void;
 }
 
-const NARRATION_DEFAULT = "Watch this — just a second.";
-const NARRATION_PAIRING = "Your turn — let's get OCCA approved in OpenClaw.";
+const NARRATION_DEFAULT = "Watch this. Just a second.";
+const NARRATION_PAIRING = "Your turn. Let's get OCCA approved in OpenClaw.";
 const TYPING_SPEED = 30;
 
 function CheckIcon() {
@@ -45,7 +45,7 @@ function prettifyError(code: string): { headline: string; hint: string } {
     case "company_already_exists":
       return {
         headline: "Company already exists.",
-        hint: "Server rejected the launch — a company is already bound to this wallet. Reload to continue.",
+        hint: "Server rejected the launch. A company is already bound to this wallet. Reload to continue.",
       };
     case "adapter_probe_failed":
       return {
@@ -80,12 +80,12 @@ function prettifyError(code: string): { headline: string; hint: string } {
     case "openclaw_agent_id_conflict":
       return {
         headline: "Agent id already taken on gateway.",
-        hint: "An OpenClaw agent with this id exists already — try retrying so a fresh id is picked.",
+        hint: "An OpenClaw agent with this id exists already. Retry so a fresh one is picked.",
       };
     case "network_error":
       return {
         headline: "Network error.",
-        hint: "Could not reach the OCCA server — check connectivity and that the backend is running.",
+        hint: "Could not reach the OCCA server. Check connectivity and confirm the backend is running.",
       };
     default:
       return {
@@ -161,7 +161,7 @@ export function SetupProgressDialog({
       case "provisioning-agent":
         return `Wiring ${ceoName} into the OpenClaw gateway…`;
       case "gateway-restarting":
-        return "Gateway is restarting to apply the new agent — hang tight, this can take a few seconds…";
+        return "Gateway is restarting to apply the new agent. Hang tight, this can take a few seconds…";
       default:
         return `Setting up ${companyName}, bringing ${ceoName} online…`;
     }
@@ -230,7 +230,7 @@ export function SetupProgressDialog({
                   }}
                 >
                   {isPairingStep
-                    ? "Waiting for you — approve OCCA"
+                    ? "Waiting for you. Approve OCCA."
                     : isError
                       ? prettifyError(errorMessage!).headline
                       : isComplete
@@ -252,7 +252,7 @@ export function SetupProgressDialog({
                     <p className="mt-1.5 text-[11px] text-amber-100/70 leading-relaxed">
                       Adding an agent to the gateway restarts OpenClaw. We're
                       holding the connection and will resume as soon as it's
-                      healthy again — usually 5–15s.
+                      healthy. Usually 5 to 15 seconds.
                     </p>
                   </div>
                 )}

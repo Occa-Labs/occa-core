@@ -105,7 +105,7 @@ export function AgentsTab({ agents, overrides, onUpdate }: AgentsTabProps) {
   if (agents.length === 0) {
     return (
       <div className="p-4 text-sm text-white/50">
-        No agents in this company yet. Hire someone via the Agents window first.
+        No agents in this company yet. Deploy one via the Agents window first.
       </div>
     );
   }

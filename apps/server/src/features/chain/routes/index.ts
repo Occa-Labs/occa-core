@@ -88,6 +88,21 @@ const confirmAgentBody = z
 
 const prepareIdentityBody = z.object({}).strict();
 
+// Combined identity + deployment registration in a single tx — used by
+// the kickoff batch flow to keep wallet popups at 1-per-agent (vs 2 per
+// agent if we ran identity + deployment as separate signatures).
+const prepareCombinedAgentBody = z.object({}).strict();
+
+const confirmCombinedAgentBody = z
+  .object({
+    signedTransaction: z.string().min(1),
+    blockhash: z.string().min(32).max(64),
+    lastValidBlockHeight: z.number().int().nonnegative(),
+    agentPubkey: z.string().min(32).max(48),
+    agentIndex: z.number().int().nonnegative(),
+  })
+  .strict();
+
 const confirmIdentityBody = z
   .object({
     signedTransaction: z.string().min(1),
@@ -428,18 +443,23 @@ router.post(
       return;
     }
 
-    // Real PDA already cached → nothing to do. Placeholder strings
-    // (`ag_pda_<48hex>`) are NOT NULL by schema; parse-check filters
-    // them out so we don't false-positive a "registered" identity.
+    // Real PDA already cached AND actually present on chain → nothing
+    // to do. Both checks needed: parse-check filters out `ag_pda_<hex>`
+    // placeholders, and the chain check filters out leftover pre-writes
+    // from a previous prepare that was never signed (DB cache looks
+    // real but chain is empty — re-prepare must mint a new keypair).
     if (identity.identityPda) {
       try {
         const pk = new PublicKey(identity.identityPda);
-        res.status(StatusCodes.OK).json({
-          alreadyRegistered: true,
-          identityPda: pk.toBase58(),
-          agentPubkey: identity.agentPubkey,
-        });
-        return;
+        if (await accountExists(pk)) {
+          res.status(StatusCodes.OK).json({
+            alreadyRegistered: true,
+            identityPda: pk.toBase58(),
+            agentPubkey: identity.agentPubkey,
+          });
+          return;
+        }
+        // pre-write leftover — fall through to fresh prepare
       } catch {
         // placeholder — fall through
       }
@@ -818,14 +838,22 @@ router.post(
       return;
     }
 
+    // Same parse-check pattern as the prepare side — placeholder
+    // strings (`dep_pda_<48hex>`) would otherwise silently short-circuit
+    // confirm and report success without broadcasting the signed tx.
     if (agent.deploymentPda) {
-      res.status(StatusCodes.OK).json({
-        alreadyRegistered: true,
-        agentPda: agent.deploymentPda,
-        agentIndex: agent.deploymentIndex,
-        agentChainTxSignature: agent.chainTxSignature,
-      });
-      return;
+      try {
+        const pk = new PublicKey(agent.deploymentPda);
+        res.status(StatusCodes.OK).json({
+          alreadyRegistered: true,
+          agentPda: pk.toBase58(),
+          agentIndex: agent.deploymentIndex,
+          agentChainTxSignature: agent.chainTxSignature,
+        });
+        return;
+      } catch {
+        /* placeholder — proceed with confirm */
+      }
     }
 
     const companyRow = await findCompanyById(agent.companyId);
@@ -882,6 +910,387 @@ router.post(
 
     res.status(StatusCodes.OK).json({
       alreadyRegistered: false,
+      agentPda: agentPda.toBase58(),
+      agentIndex,
+      ownerWallet: userWalletPk.toBase58(),
+      agentChainTxSignature: signature,
+    });
+  },
+);
+
+// ── Agent: register-combined (identity + deployment) ───────────────────────
+//
+// Single-signature variant of the identity → deployment chain. Combines
+// `register_agent_identity` + `create_deployment` into one Solana tx so
+// the kickoff batch flow only needs N signatures for N hires (instead
+// of 2N if identity + deployment ran separately).
+//
+// Tx size budget: each ix is small (<200 bytes incl. metadata strings).
+// Two ixs + signatures fit comfortably within Solana's 1232-byte cap
+// for typical inputs (role string, empty metadata uri).
+//
+// Skips the identity-half if the row already has a real identity_pda
+// (re-deployment of a portable identity to a new company under the
+// same wallet — Phase-2 territory; today every deployment also creates
+// a fresh identity).
+
+/**
+ * POST /api/chain/agents/:agentId/register-combined/prepare
+ *
+ * Builds one tx that registers the AgentIdentity (if not yet on chain)
+ * AND creates the Deployment. Pre-writes both PDAs to DB so confirm can
+ * match. Idempotent: real (non-placeholder) deployment_pda short-circuits
+ * to `alreadyRegistered: true`.
+ */
+router.post(
+  "/agents/:agentId/register-combined/prepare",
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const userId = req.user!.userId;
+    const agentId = req.params.agentId;
+
+    const parsed = prepareCombinedAgentBody.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res
+        .status(StatusCodes.BAD_REQUEST)
+        .json({ error: ERROR_CODES.INVALID_BODY });
+      return;
+    }
+
+    const agent = await findOwnedDeploymentByUserId({
+      userId,
+      deploymentId: agentId,
+    });
+    if (!agent) {
+      res
+        .status(StatusCodes.NOT_FOUND)
+        .json({ error: ERROR_CODES.AGENT_NOT_FOUND });
+      return;
+    }
+
+    // Short-circuit if the deployment_pda is already a real Solana
+    // pubkey. Placeholder strings (`dep_pda_<48hex>`) are NOT NULL by
+    // schema; parse-check filters them so we don't false-positive.
+    if (agent.deploymentPda) {
+      try {
+        const pk = new PublicKey(agent.deploymentPda);
+        res.status(StatusCodes.OK).json({
+          alreadyRegistered: true,
+          agentPda: pk.toBase58(),
+          agentIndex: agent.deploymentIndex,
+        });
+        return;
+      } catch {
+        /* placeholder — fall through */
+      }
+    }
+
+    const companyRow = await findCompanyById(agent.companyId);
+    if (!companyRow || !companyRow.companyPda) {
+      res
+        .status(StatusCodes.PRECONDITION_FAILED)
+        .json({ error: ERROR_CODES.COMPANY_NOT_FOUND });
+      return;
+    }
+
+    const operator = operatorOrFail(res);
+    if (!operator) return;
+
+    const userWalletPk = new PublicKey(req.user!.walletAddress);
+    const companyPda = new PublicKey(companyRow.companyPda);
+
+    const identityRow = await findIdentityById(agent.agentIdentityId);
+    if (!identityRow) {
+      res
+        .status(StatusCodes.NOT_FOUND)
+        .json({ error: ERROR_CODES.AGENT_NOT_FOUND });
+      return;
+    }
+
+    // Decide whether the identity needs to be created in this tx.
+    // Trust the DB row ONLY when the PDA actually exists on chain —
+    // a previous prepare may have pre-written the row but the user
+    // never signed, leaving the DB looking "real" while chain is empty.
+    // Without the chain check, the deployment ix would fail at runtime
+    // because its required identity PDA doesn't exist.
+    let identityPda: PublicKey;
+    let agentPubkey: PublicKey;
+    let needsIdentityIx = true;
+    if (identityRow.identityPda) {
+      try {
+        const candidatePda = new PublicKey(identityRow.identityPda);
+        const candidatePubkey = new PublicKey(identityRow.agentPubkey);
+        if (await accountExists(candidatePda)) {
+          identityPda = candidatePda;
+          agentPubkey = candidatePubkey;
+          needsIdentityIx = false;
+        } else {
+          // DB has placeholder-or-leftover values but chain is empty.
+          // Mint a fresh keypair so the prepared tx actually creates
+          // the identity.
+          const fresh = Keypair.generate();
+          agentPubkey = fresh.publicKey;
+          identityPda = deriveAgentIdentityPda(agentPubkey).pda;
+        }
+      } catch {
+        // Placeholder string — fresh keypair below.
+        const fresh = Keypair.generate();
+        agentPubkey = fresh.publicKey;
+        identityPda = deriveAgentIdentityPda(agentPubkey).pda;
+      }
+    } else {
+      const fresh = Keypair.generate();
+      agentPubkey = fresh.publicKey;
+      identityPda = deriveAgentIdentityPda(agentPubkey).pda;
+    }
+
+    // Allocate a free deployment_index. Same probe-loop as the legacy
+    // single-ix path so behaviour matches.
+    let agentIndex =
+      agent.deploymentIndex ?? (await nextAgentIndex(agent.companyId));
+    let agentPda: PublicKey | null = null;
+    for (let attempt = 0; attempt < 16; attempt += 1) {
+      const probe = deriveDeploymentPda(companyPda, agentIndex);
+      // eslint-disable-next-line no-await-in-loop
+      const exists = await accountExists(probe.pda);
+      if (!exists) {
+        agentPda = probe.pda;
+        break;
+      }
+      agentIndex += 1;
+    }
+    if (!agentPda) {
+      res
+        .status(StatusCodes.CONFLICT)
+        .json({ error: ERROR_CODES.CHAIN_TX_FAILED });
+      return;
+    }
+
+    if (agent.deploymentIndex !== agentIndex) {
+      await reserveAgentIndex({ agentId, agentIndex });
+    }
+
+    const instructions = [];
+    if (needsIdentityIx) {
+      const { instruction: identityIx } = buildRegisterAgentIdentityInstruction(
+        {
+          agentPubkey,
+          owner: userWalletPk,
+          payer: operator.publicKey,
+          name: identityRow.name,
+          metadataUri: identityRow.metadataUri ?? "",
+          metadataHash: identityRow.metadataHash
+            ? Buffer.from(identityRow.metadataHash, "hex")
+            : Buffer.alloc(32),
+        },
+      );
+      instructions.push(identityIx);
+    }
+    const { instruction: deploymentIx } = buildCreateDeploymentInstruction({
+      companyPda,
+      identityPda,
+      owner: userWalletPk,
+      payer: operator.publicKey,
+      deploymentIndex: agentIndex,
+      role: agent.role,
+      parentDeploymentIndex: agent.parentDeploymentIndex ?? null,
+      adapterId: PublicKey.default,
+      metadataUri: "",
+      metadataHash: Buffer.alloc(32),
+    });
+    instructions.push(deploymentIx);
+
+    let prepared: Awaited<ReturnType<typeof prepareOwnerSignedTx>>;
+    try {
+      prepared = await prepareOwnerSignedTx({
+        instructions,
+        feePayer: operator,
+      });
+    } catch (err) {
+      log.error(
+        { err, agentId, agentIndex },
+        "register-combined prepare failed",
+      );
+      res
+        .status(StatusCodes.BAD_GATEWAY)
+        .json({ error: ERROR_CODES.CHAIN_TX_FAILED });
+      return;
+    }
+
+    // Pre-write identity row (if it'll be created in this tx) so a
+    // racing prepare hits the parse-check above and short-circuits.
+    if (needsIdentityIx) {
+      await updateIdentityById({
+        identityId: identityRow.id,
+        patch: {
+          agentPubkey: agentPubkey.toBase58(),
+          identityPda: identityPda.toBase58(),
+        },
+      });
+    }
+
+    res.status(StatusCodes.OK).json({
+      alreadyRegistered: false,
+      identityPda: identityPda.toBase58(),
+      agentPubkey: agentPubkey.toBase58(),
+      agentPda: agentPda.toBase58(),
+      agentIndex,
+      includesIdentity: needsIdentityIx,
+      transaction: prepared.transactionBase64,
+      blockhash: prepared.blockhash,
+      lastValidBlockHeight: prepared.lastValidBlockHeight,
+    });
+  },
+);
+
+/**
+ * POST /api/chain/agents/:agentId/register-combined/confirm
+ *
+ * Submit the wallet-signed combined tx, verify both PDAs exist on
+ * chain, and persist chain_tx_signature on identity + deployment.
+ */
+router.post(
+  "/agents/:agentId/register-combined/confirm",
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const userId = req.user!.userId;
+    const agentId = req.params.agentId;
+
+    const parsed = confirmCombinedAgentBody.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res
+        .status(StatusCodes.BAD_REQUEST)
+        .json({ error: ERROR_CODES.INVALID_BODY });
+      return;
+    }
+    const {
+      signedTransaction,
+      blockhash,
+      lastValidBlockHeight,
+      agentPubkey,
+      agentIndex,
+    } = parsed.data;
+
+    const agent = await findOwnedDeploymentByUserId({
+      userId,
+      deploymentId: agentId,
+    });
+    if (!agent) {
+      res
+        .status(StatusCodes.NOT_FOUND)
+        .json({ error: ERROR_CODES.AGENT_NOT_FOUND });
+      return;
+    }
+
+    // Parse-check: real PDA already cached → racing confirm short-circuits.
+    if (agent.deploymentPda) {
+      try {
+        const pk = new PublicKey(agent.deploymentPda);
+        res.status(StatusCodes.OK).json({
+          alreadyRegistered: true,
+          agentPda: pk.toBase58(),
+          agentIndex: agent.deploymentIndex,
+          agentChainTxSignature: agent.chainTxSignature,
+        });
+        return;
+      } catch {
+        /* placeholder — proceed */
+      }
+    }
+
+    const companyRow = await findCompanyById(agent.companyId);
+    if (!companyRow || !companyRow.companyPda) {
+      res
+        .status(StatusCodes.PRECONDITION_FAILED)
+        .json({ error: ERROR_CODES.COMPANY_NOT_FOUND });
+      return;
+    }
+
+    let agentPubkeyPk: PublicKey;
+    try {
+      agentPubkeyPk = new PublicKey(agentPubkey);
+    } catch {
+      res
+        .status(StatusCodes.BAD_REQUEST)
+        .json({ error: ERROR_CODES.INVALID_BODY });
+      return;
+    }
+
+    const userWalletPk = new PublicKey(req.user!.walletAddress);
+    const companyPda = new PublicKey(companyRow.companyPda);
+    const { pda: identityPda } = deriveAgentIdentityPda(agentPubkeyPk);
+    const { pda: agentPda } = deriveDeploymentPda(companyPda, agentIndex);
+
+    let signature: string;
+    try {
+      signature = await submitSignedTx({
+        signedTransactionBase64: signedTransaction,
+        blockhash,
+        lastValidBlockHeight,
+      });
+    } catch (err) {
+      log.error({ err, agentId }, "register-combined submit failed");
+      res
+        .status(StatusCodes.BAD_GATEWAY)
+        .json({ error: ERROR_CODES.CHAIN_TX_FAILED });
+      return;
+    }
+
+    // Verify both PDAs landed. The combined tx must have produced
+    // identity + deployment atomically; either both exist or neither.
+    const [identityExists, deploymentExists] = await Promise.all([
+      accountExists(identityPda),
+      accountExists(agentPda),
+    ]);
+    if (!identityExists || !deploymentExists) {
+      log.error(
+        {
+          agentId,
+          signature,
+          identityPda: identityPda.toBase58(),
+          agentPda: agentPda.toBase58(),
+          identityExists,
+          deploymentExists,
+        },
+        "register-combined confirm: PDAs missing after confirmation",
+      );
+      res
+        .status(StatusCodes.BAD_GATEWAY)
+        .json({ error: ERROR_CODES.CHAIN_TX_FAILED });
+      return;
+    }
+
+    // Persist both halves. Identity gets its chain_tx_signature; the
+    // deployment row gets the same signature (one tx covered both ix).
+    await persistIdentityChainRegistration({
+      identityId: agent.agentIdentityId,
+      agentPubkey: agentPubkeyPk.toBase58(),
+      identityPda: identityPda.toBase58(),
+      ownerWallet: userWalletPk.toBase58(),
+      chainTxSignature: signature,
+    });
+    await persistAgentChainRegistration({
+      agentId,
+      agentPda: agentPda.toBase58(),
+      agentIndex,
+      ownerWallet: userWalletPk.toBase58(),
+      agentChainTxSignature: signature,
+    });
+
+    log.info(
+      {
+        agentId,
+        identityPda: identityPda.toBase58(),
+        agentPda: agentPda.toBase58(),
+        agentIndex,
+        signature,
+      },
+      "agent identity + deployment registered on-chain (combined)",
+    );
+
+    res.status(StatusCodes.OK).json({
+      alreadyRegistered: false,
+      identityPda: identityPda.toBase58(),
       agentPda: agentPda.toBase58(),
       agentIndex,
       ownerWallet: userWalletPk.toBase58(),

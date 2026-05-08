@@ -5,6 +5,14 @@ All notable changes to `occa-sdk` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-05-07
+
+Devnet program redeploy. No API changes — consumers only need to refresh the bundled IDL/program ID.
+
+### Changed
+
+- **Devnet `REGISTRY_PROGRAM_ID`** rotated to `occaTHMv5eYG5aZ85jimxTvHkBfsDCvndXC6J2k8kxr` after a fresh Registry redeploy. IDL `address` field updated to match.
+
 ## [0.2.0] - 2026-05-06
 
 Sync to OCCA Registry program v3. Introduces the **Deployment** primitive — Agent is now a standalone on-chain identity (`AgentIdentity`) bound to a Company through a separate `Deployment` PDA, replacing the v0.1.0 model where agents were directly company-scoped.
@@ -117,5 +125,6 @@ Initial release. Provided PDA helpers, instruction builders, and types for the O
 - Initial IDL bundle for Registry program v1
 - Devnet smoke script
 
+[0.2.1]: https://github.com/Occa-Labs/occa-core/compare/occa-sdk@0.2.0...occa-sdk@0.2.1
 [0.2.0]: https://github.com/Occa-Labs/occa-core/compare/occa-sdk@0.1.0...occa-sdk@0.2.0
 [0.1.0]: https://github.com/Occa-Labs/occa-core/releases/tag/occa-sdk@0.1.0

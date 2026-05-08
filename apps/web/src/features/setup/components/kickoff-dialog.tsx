@@ -58,14 +58,14 @@ const NICHE_OPTIONS = [
   { id: "ai_crypto", label: "AI × Crypto" },
   { id: "depin", label: "DePIN + infrastructure" },
   { id: "defi", label: "DeFi + on-chain markets" },
-  { id: "custom", label: "Custom — let me describe" },
+  { id: "custom", label: "Custom (let me describe)" },
 ] as const;
 
 const VOICE_OPTIONS = [
   { id: "calm", label: "Calm, framework-driven, dry humor" },
   { id: "punchy", label: "Punchy, contrarian, opinionated" },
   { id: "educational", label: "Educational, accessible, clear" },
-  { id: "custom", label: "Custom — let me describe" },
+  { id: "custom", label: "Custom (let me describe)" },
 ] as const;
 
 const TYPING_SPEED = 30;
@@ -98,7 +98,7 @@ export function KickoffDialog({
     enabled: step === "team",
   });
   const availableRoles: KickoffRoleEntry[] = rolesQuery.data?.roles ?? [];
-  const maxHires = rolesQuery.data?.maxHires ?? 3;
+  const maxDeployments = rolesQuery.data?.maxDeployments ?? 3;
   const rolesLoading = rolesQuery.isPending;
 
   // Surface fetch error onto the dialog's existing error state.
@@ -115,7 +115,7 @@ export function KickoffDialog({
   const toggleRole = (key: string) => {
     setSelectedRoles((prev) => {
       if (prev.includes(key)) return prev.filter((k) => k !== key);
-      if (prev.length >= maxHires) return prev;
+      if (prev.length >= maxDeployments) return prev;
       return [...prev, key];
     });
   };
@@ -294,7 +294,7 @@ export function KickoffDialog({
             roles={availableRoles}
             loading={rolesLoading}
             selected={selectedRoles}
-            maxHires={maxHires}
+            maxDeployments={maxDeployments}
             onToggle={toggleRole}
             onContinue={advance}
           />
@@ -308,7 +308,7 @@ export function KickoffDialog({
               </div>
             )}
             <Continue
-              label={submitting ? "Setting up…" : "Start hiring"}
+              label={submitting ? "Setting up…" : "Start deployment"}
               onClick={submit}
               disabled={submitting}
             />
@@ -392,7 +392,7 @@ const STEP_PROMPTS: Record<StepKey, (ceoName: string) => string> = {
   voice: () =>
     "How should we sound? Editorial voice across everything we ship.",
   team: () =>
-    "Last thing — how aggressive should we hire? You can grow the team later.",
+    "Last thing. How big should the kickoff team be? You can grow it later.",
   confirm: () =>
     "OK, I'll set up the team. Provisioning takes about a minute, then we'll do a kickoff meeting together.",
 };
@@ -459,14 +459,14 @@ function RolePicker({
   roles,
   loading,
   selected,
-  maxHires,
+  maxDeployments,
   onToggle,
   onContinue,
 }: {
   roles: KickoffRoleEntry[];
   loading: boolean;
   selected: string[];
-  maxHires: number;
+  maxDeployments: number;
   onToggle: (key: string) => void;
   onContinue: () => void;
 }) {
@@ -476,20 +476,20 @@ function RolePicker({
     items: roles.filter((r) => r.category === cat),
   })).filter((g) => g.items.length > 0);
 
-  const atCap = selected.length >= maxHires;
+  const atCap = selected.length >= maxDeployments;
 
   return (
     <>
       <div className="flex items-center justify-between">
         <span className="text-[11px] text-white/55">
-          Pick up to {maxHires}. They report to you; you can hire ICs later.
+          Pick up to {maxDeployments}. They report to you; you can deploy ICs later.
         </span>
         <span
           className={`text-[11px] font-semibold ${
             atCap ? "text-amber-300/90" : "text-white/65"
           }`}
         >
-          {selected.length}/{maxHires}
+          {selected.length}/{maxDeployments}
         </span>
       </div>
 

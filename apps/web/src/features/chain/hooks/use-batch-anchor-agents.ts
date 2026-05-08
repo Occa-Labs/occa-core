@@ -74,8 +74,9 @@ function toBase64(bytes: Uint8Array): string {
   return btoa(bin);
 }
 
-interface PreparedHire {
+interface PreparedDeployment {
   agentId: string;
+  agentPubkey: string;
   agentIndex: number;
   agentPda: string;
   transaction: string;
@@ -83,14 +84,15 @@ interface PreparedHire {
   lastValidBlockHeight: number;
 }
 
-interface AlreadyRegisteredHire {
+interface AlreadyRegisteredDeployment {
   agentId: string;
   agentPda: string;
   agentIndex: number;
 }
 
 /**
- * Batch hire anchor: one wallet popup → N register_agent txs.
+ * Batch deployment anchor: one wallet popup → N combined-tx
+ * (register_agent_identity + create_deployment) per agent.
  *
  * Flow per run:
  *   1. `prepare(companyId, agentIds)`:
@@ -116,8 +118,8 @@ export function useBatchAnchorAgents(): UseBatchAnchorAgentsResult {
 
   const prepRef = useRef<{
     companyId: string;
-    pending: PreparedHire[];
-    already: AlreadyRegisteredHire[];
+    pending: PreparedDeployment[];
+    already: AlreadyRegisteredDeployment[];
   } | null>(null);
 
   const reset = useCallback(() => {
@@ -154,11 +156,11 @@ export function useBatchAnchorAgents(): UseBatchAnchorAgentsResult {
       setStage("preparing");
       log("prepare start", { companyId, count: agentIds.length });
       try {
-        const pending: PreparedHire[] = [];
-        const already: AlreadyRegisteredHire[] = [];
+        const pending: PreparedDeployment[] = [];
+        const already: AlreadyRegisteredDeployment[] = [];
         for (const agentId of agentIds) {
           // eslint-disable-next-line no-await-in-loop
-          const res = await chainApi.prepareAgent(agentId);
+          const res = await chainApi.prepareCombinedAgent(agentId);
           if (res.alreadyRegistered) {
             already.push({
               agentId,
@@ -168,6 +170,7 @@ export function useBatchAnchorAgents(): UseBatchAnchorAgentsResult {
           } else {
             pending.push({
               agentId,
+              agentPubkey: res.agentPubkey,
               agentIndex: res.agentIndex,
               agentPda: res.agentPda,
               transaction: res.transaction,
@@ -273,18 +276,19 @@ export function useBatchAnchorAgents(): UseBatchAnchorAgentsResult {
         setStage("registering");
         const registered: BatchAnchorResult["registered"] = [];
         for (let i = 0; i < prep.pending.length; i += 1) {
-          const hire = prep.pending[i];
+          const dep = prep.pending[i];
           const signedBytes = signedBytesList[i];
           try {
             // eslint-disable-next-line no-await-in-loop
-            const res = await chainApi.confirmAgent(hire.agentId, {
+            const res = await chainApi.confirmCombinedAgent(dep.agentId, {
               signedTransaction: toBase64(signedBytes),
-              blockhash: hire.blockhash,
-              lastValidBlockHeight: hire.lastValidBlockHeight,
-              agentIndex: hire.agentIndex,
+              blockhash: dep.blockhash,
+              lastValidBlockHeight: dep.lastValidBlockHeight,
+              agentPubkey: dep.agentPubkey,
+              agentIndex: dep.agentIndex,
             });
             registered.push({
-              agentId: hire.agentId,
+              agentId: dep.agentId,
               agentPda: res.agentPda,
               agentIndex: res.agentIndex,
               agentChainTxSignature: res.agentChainTxSignature,

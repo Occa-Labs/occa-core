@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   AlertCircle,
   CheckCircle2,
+  Link2,
   Loader2,
   Plus,
   RefreshCw,
@@ -12,20 +13,23 @@ import { Modal } from "@/components/ui/modal";
 import { Autocomplete } from "@/components/ui/autocomplete";
 import { ApiError, adaptersApi, agentsApi } from "@/lib/api";
 import type { AgentDTO } from "@occa/shared/types";
+import { useBatchAnchorAgents } from "@/features/chain/hooks/use-batch-anchor-agents";
+import { useAnchorWallet } from "@/features/chain/hooks/use-anchor-wallet";
+import { prettifyAnchorError } from "@/features/chain/lib/anchor-errors";
 import { CSUITE_ROLES, ROLE_LABELS, ROLE_ORDER } from "./_shared";
 
-type HireStep = "form" | "probing" | "creating";
+type DeployStep = "form" | "probing" | "creating" | "anchoring";
 
-type HireStepKey =
+type DeployStepKey =
   | "creating_record"
   | "provisioning"
   | "gateway_restart"
   | "seeding_workspace"
   | "assigning_skills";
 
-type HireStepStatus = "pending" | "running" | "done" | "error";
+type DeployStepStatus = "pending" | "running" | "done" | "error";
 
-const HIRE_STEPS: { key: HireStepKey; label: string }[] = [
+const DEPLOY_STEPS: { key: DeployStepKey; label: string }[] = [
   { key: "creating_record", label: "Creating agent record" },
   { key: "provisioning", label: "Provisioning on gateway" },
   { key: "gateway_restart", label: "Waiting for gateway restart" },
@@ -35,7 +39,7 @@ const HIRE_STEPS: { key: HireStepKey; label: string }[] = [
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-const INITIAL_STEP_STATUSES: Record<HireStepKey, HireStepStatus> = {
+const INITIAL_STEP_STATUSES: Record<DeployStepKey, DeployStepStatus> = {
   creating_record: "pending",
   provisioning: "pending",
   gateway_restart: "pending",
@@ -43,22 +47,22 @@ const INITIAL_STEP_STATUSES: Record<HireStepKey, HireStepStatus> = {
   assigning_skills: "pending",
 };
 
-export function HireAgentModal({
+export function DeployAgentModal({
   open,
   onClose,
-  onHired,
+  onDeployed,
   agents,
 }: {
   open: boolean;
   onClose: () => void;
-  onHired: (agentId: string) => void;
+  onDeployed: (agentId: string) => void;
   agents: AgentDTO[];
 }) {
   const [name, setName] = useState("");
   const [role, setRole] = useState("");
   const [gatewayUrl, setGatewayUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
-  const [step, setStep] = useState<HireStep>("form");
+  const [step, setStep] = useState<DeployStep>("form");
   const [probeResult, setProbeResult] = useState<{
     ok: boolean;
     latencyMs?: number;
@@ -66,10 +70,29 @@ export function HireAgentModal({
   } | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [stepStatuses, setStepStatuses] = useState<
-    Record<HireStepKey, HireStepStatus>
+    Record<DeployStepKey, DeployStepStatus>
   >(INITIAL_STEP_STATUSES);
   const [spinnerFrame, setSpinnerFrame] = useState(0);
   const [failedAgentId, setFailedAgentId] = useState<string | null>(null);
+  // Holds the agent id returned by createStream once the SSE flow finishes.
+  // Anchor flow needs it; "Continue without anchoring" needs it to bubble
+  // the deploy up to the parent so reloadMe still fires.
+  const [createdAgentId, setCreatedAgentId] = useState<string | null>(null);
+
+  // Single-agent on-chain anchor reuses the batch hook (it transparently
+  // handles `pending.length === 1` with one signTransaction call).
+  const anchor = useBatchAnchorAgents();
+  const {
+    stage: anchorStage,
+    error: anchorError,
+    prepare: anchorPrepare,
+    signAndRegister: anchorSignAndRegister,
+    reset: anchorReset,
+  } = anchor;
+  const walletStatus = useAnchorWallet();
+  // Derive companyId from any existing agent in the company (CEO is always
+  // present whenever this modal can be opened post-onboarding).
+  const companyId = agents[0]?.companyId ?? null;
 
   const roleValid =
     role.trim().length > 0 &&
@@ -82,7 +105,7 @@ export function HireAgentModal({
   const busy = step !== "form";
 
   useEffect(() => {
-    if (step !== "creating") return;
+    if (step !== "creating" && step !== "anchoring") return;
     const id = setInterval(
       () => setSpinnerFrame((f) => (f + 1) % SPINNER_FRAMES.length),
       80,
@@ -93,7 +116,7 @@ export function HireAgentModal({
   // Reset all form + flow state whenever the modal closes. Without this the
   // component (which stays mounted under Modal's open=false branch) keeps
   // the previous run's step="creating" + all-done stepStatuses, so a second
-  // open shows "Finishing up…" with the Hire button disabled. Clearing on
+  // open shows "Finishing up…" with the Deploy button disabled. Clearing on
   // close also avoids leaking the previous gateway/api-key into a fresh form.
   useEffect(() => {
     if (open) return;
@@ -107,7 +130,9 @@ export function HireAgentModal({
     setStepStatuses({ ...INITIAL_STEP_STATUSES });
     setSpinnerFrame(0);
     setFailedAgentId(null);
-  }, [open]);
+    setCreatedAgentId(null);
+    anchorReset();
+  }, [open, anchorReset]);
 
   const handleProbe = useCallback(async () => {
     setStep("probing");
@@ -152,7 +177,7 @@ export function HireAgentModal({
     setSubmitError(msg);
     setFailedAgentId(body?.retryable && body.agentId ? body.agentId : null);
     setStepStatuses((prev) => {
-      const running = (Object.keys(prev) as HireStepKey[]).find(
+      const running = (Object.keys(prev) as DeployStepKey[]).find(
         (k) => prev[k] === "running",
       );
       if (!running) return prev;
@@ -181,16 +206,22 @@ export function HireAgentModal({
         (evt) => {
           setStepStatuses((prev) => ({
             ...prev,
-            [evt.step as HireStepKey]:
+            [evt.step as DeployStepKey]:
               evt.status === "running" ? "running" : "done",
           }));
         },
       );
-      onHired(res.agent.id);
+      // Hand off to the anchor flow instead of closing the modal. The
+      // effect below picks up `step === "anchoring"` + a resolved wallet
+      // and chains prepare → signAndRegister; the parent only learns
+      // about the new agent once anchor completes (or the user explicitly
+      // skips via "Continue without anchoring").
+      setCreatedAgentId(res.agent.id);
+      setStep("anchoring");
     } catch (e) {
       handleStreamError(e);
     }
-  }, [canCreate, name, role, gatewayUrl, apiKey, onHired, handleStreamError]);
+  }, [canCreate, name, role, gatewayUrl, apiKey, handleStreamError]);
 
   const handleRetry = useCallback(async () => {
     if (!failedAgentId) return;
@@ -201,26 +232,93 @@ export function HireAgentModal({
       const res = await agentsApi.reprovisionStream(failedAgentId, (evt) => {
         setStepStatuses((prev) => ({
           ...prev,
-          [evt.step as HireStepKey]:
+          [evt.step as DeployStepKey]:
             evt.status === "running" ? "running" : "done",
         }));
       });
-      onHired(res.agent.id);
+      setCreatedAgentId(res.agent.id);
+      setStep("anchoring");
     } catch (e) {
       handleStreamError(e);
     }
-  }, [failedAgentId, onHired, handleStreamError]);
+  }, [failedAgentId, handleStreamError]);
+
+  // ── Anchor flow ────────────────────────────────────────────────────────
+  // After the SSE create finishes we land in step="anchoring". When the
+  // wallet resolves to "ready" and the hook is still idle, fire prepare —
+  // the next effect chains signAndRegister as soon as prepare lands on
+  // ready-to-sign. Prepare runs just before the wallet popup appears so
+  // the Solana blockhash (~60s lifetime) doesn't expire while we wait
+  // (see kickoff bug #5).
+  useEffect(() => {
+    if (step !== "anchoring") return;
+    if (!createdAgentId || !companyId) return;
+    if (anchorStage !== "idle") return;
+    if (walletStatus.kind !== "ready") return;
+    void anchorPrepare({ companyId, agentIds: [createdAgentId] });
+  }, [
+    step,
+    createdAgentId,
+    companyId,
+    anchorStage,
+    walletStatus,
+    anchorPrepare,
+  ]);
+
+  useEffect(() => {
+    if (step !== "anchoring") return;
+    if (anchorStage !== "ready-to-sign") return;
+    if (walletStatus.kind !== "ready") return;
+    if (!companyId) return;
+    void anchorSignAndRegister({ companyId, wallet: walletStatus.wallet });
+  }, [step, anchorStage, walletStatus, companyId, anchorSignAndRegister]);
+
+  useEffect(() => {
+    if (step !== "anchoring") return;
+    if (anchorStage !== "complete") return;
+    if (!createdAgentId) return;
+    onDeployed(createdAgentId);
+  }, [step, anchorStage, createdAgentId, onDeployed]);
+
+  const handleAnchorRetry = useCallback(() => {
+    anchorReset();
+  }, [anchorReset]);
+
+  const handleAnchorSkip = useCallback(() => {
+    if (!createdAgentId) return;
+    // Agent is provisioned in DB+gateway; only the on-chain anchor is
+    // missing. AnchorReminderBanner in OsShell surfaces unanchored agents
+    // so the user can finish later from settings.
+    onDeployed(createdAgentId);
+  }, [createdAgentId, onDeployed]);
+
+  const anchorBusy =
+    anchorStage === "preparing" ||
+    anchorStage === "awaiting-signature" ||
+    anchorStage === "deriving-keypairs" ||
+    anchorStage === "registering";
 
   const footer = (
     <div className="flex items-center justify-end gap-3 px-5 py-3.5">
-      <button
-        onClick={onClose}
-        disabled={step === "creating"}
-        className="px-4 py-1.5 rounded-lg text-[12px] font-medium text-white/50 hover:text-white/80 transition-colors disabled:opacity-40"
-      >
-        Cancel
-      </button>
-      {step !== "creating" && (
+      {step === "anchoring" ? (
+        <button
+          onClick={handleAnchorSkip}
+          disabled={anchorBusy}
+          className="px-4 py-1.5 rounded-lg text-[12px] font-medium text-white/50 hover:text-white/80 transition-colors disabled:opacity-40"
+          title="You can anchor this agent later from settings."
+        >
+          Continue without anchoring
+        </button>
+      ) : (
+        <button
+          onClick={onClose}
+          disabled={step === "creating"}
+          className="px-4 py-1.5 rounded-lg text-[12px] font-medium text-white/50 hover:text-white/80 transition-colors disabled:opacity-40"
+        >
+          Cancel
+        </button>
+      )}
+      {step !== "creating" && step !== "anchoring" && (
         <button
           type="button"
           onClick={() => void handleCreate()}
@@ -239,21 +337,33 @@ export function HireAgentModal({
             </>
           ) : (
             <>
-              <Plus className="size-3.5" /> Hire agent
+              <Plus className="size-3.5" /> Deploy agent
             </>
           )}
+        </button>
+      )}
+      {step === "anchoring" && anchorError && (
+        <button
+          type="button"
+          onClick={handleAnchorRetry}
+          className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-[12px] font-semibold text-white transition-all"
+          style={{
+            background: "linear-gradient(150deg, #0ea5e9 0%, #0369a1 100%)",
+          }}
+        >
+          <RefreshCw className="size-3.5" /> Retry anchor
         </button>
       )}
     </div>
   );
 
-  const activeStep = HIRE_STEPS.find(
+  const activeStep = DEPLOY_STEPS.find(
     ({ key }) =>
       stepStatuses[key] === "running" || stepStatuses[key] === "error",
   );
 
   return (
-    <Modal open={open} onClose={onClose} title="Hire agent" footer={footer}>
+    <Modal open={open} onClose={onClose} title="Deploy agent" footer={footer}>
       <div className="px-5 py-6 space-y-6">
         {/* Identity */}
         <section className="space-y-3">
@@ -405,6 +515,26 @@ export function HireAgentModal({
           </div>
         )}
 
+        {/* Anchor step — runs after the SSE create finishes. The chain
+         *  flow opens a single wallet popup and submits the combined
+         *  identity + deployment tx. AnchorReminderBanner picks up
+         *  unanchored agents if the user skips. */}
+        {step === "anchoring" && (
+          <AnchorStepPanel
+            stage={anchorStage}
+            error={
+              anchorError
+                ? {
+                    code: anchorError.code,
+                    ...prettifyAnchorError(anchorError.code),
+                  }
+                : null
+            }
+            walletStatus={walletStatus.kind}
+            spinner={SPINNER_FRAMES[spinnerFrame]}
+          />
+        )}
+
         {/* Submit error + retry */}
         {submitError && (
           <div className="space-y-2">
@@ -430,5 +560,109 @@ export function HireAgentModal({
         )}
       </div>
     </Modal>
+  );
+}
+
+type AnchorStage =
+  | "idle"
+  | "preparing"
+  | "ready-to-sign"
+  | "awaiting-signature"
+  | "deriving-keypairs"
+  | "registering"
+  | "complete";
+
+function AnchorStepPanel({
+  stage,
+  error,
+  walletStatus,
+  spinner,
+}: {
+  stage: AnchorStage;
+  error: { code: string; headline: string; hint: string } | null;
+  walletStatus: "loading" | "no-wallet" | "mismatch" | "ready";
+  spinner: string;
+}) {
+  const busyLabel =
+    stage === "preparing"
+      ? "Reserving on-chain slot…"
+      : stage === "awaiting-signature"
+        ? "Waiting for wallet signature…"
+        : stage === "deriving-keypairs"
+          ? "Deriving keypair…"
+          : stage === "registering"
+            ? "Submitting on-chain tx…"
+            : stage === "complete"
+              ? "Anchored on Solana"
+              : walletStatus === "loading"
+                ? "Resolving wallet…"
+                : walletStatus !== "ready"
+                  ? "Wallet unavailable"
+                  : "Anchoring on Solana…";
+
+  return (
+    <div className="rounded-xl border border-white/10 bg-white/4 px-4 py-3 flex flex-col gap-3">
+      <div className="flex items-start gap-3">
+        <div className="size-8 shrink-0 rounded-full bg-cyan-400/15 flex items-center justify-center">
+          <Link2 className="size-4 text-cyan-200" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="text-[13px] font-medium text-white/90">
+            Anchor agent on Solana
+          </div>
+          <div className="text-[11px] text-white/55 mt-0.5">
+            One signature derives an on-chain keypair and registers the
+            agent in a single combined transaction.
+          </div>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-2.5">
+        <span className="font-mono text-[13px] text-white/60 select-none shrink-0">
+          {error ? (
+            <span className="text-red-400">✗</span>
+          ) : stage === "complete" ? (
+            <CheckCircle2 className="size-3.5 text-emerald-400" />
+          ) : (
+            spinner
+          )}
+        </span>
+        <span
+          className={`text-[12px] font-medium ${
+            error
+              ? "text-red-300/80"
+              : stage === "complete"
+                ? "text-emerald-300/85"
+                : "animate-text-shine"
+          }`}
+        >
+          {busyLabel}
+        </span>
+      </div>
+
+      {error && (
+        <div className="rounded-lg border border-rose-400/25 bg-rose-500/8 px-3 py-2.5 space-y-1.5">
+          <div className="flex items-start gap-2">
+            <p className="text-[11px] text-rose-200/95 leading-snug flex-1 min-w-0">
+              {error.headline}
+            </p>
+            <span className="font-mono text-[10px] text-rose-300/80 bg-rose-500/15 px-1.5 py-0.5 rounded shrink-0">
+              {error.code}
+            </span>
+          </div>
+          <p className="text-[11px] text-white/65 leading-relaxed">
+            {error.hint}
+          </p>
+        </div>
+      )}
+
+      {!error && walletStatus !== "ready" && walletStatus !== "loading" && (
+        <div className="text-[11px] text-amber-300/85 bg-amber-500/10 rounded-md px-2.5 py-1.5">
+          {walletStatus === "no-wallet"
+            ? "Connect a Solana wallet to anchor — or continue without anchoring and finish later."
+            : "Connected wallet doesn't match your OCCA identity. Reconnect with the original wallet, or continue without anchoring."}
+        </div>
+      )}
+    </div>
   );
 }

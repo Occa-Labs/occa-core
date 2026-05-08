@@ -83,8 +83,15 @@ export async function submitSignedTx(args: {
 }): Promise<string> {
   const conn = getConnection();
   const raw = Buffer.from(args.signedTransactionBase64, "base64");
+  // skipPreflight: true — Solana's preflight simulation uses the RPC
+  // node's view of the cluster, which on devnet often hasn't propagated
+  // a freshly-issued blockhash yet (~3-5s lag). That window is exactly
+  // when a user-signed tx submits, so preflight rejects with
+  // "Blockhash not found" even though the blockhash is valid. Skipping
+  // preflight sends the tx straight to the leader; any real ix error
+  // surfaces in `confirmTransaction` below.
   const sig = await conn.sendRawTransaction(raw, {
-    skipPreflight: false,
+    skipPreflight: true,
     preflightCommitment: "confirmed",
   });
   await conn.confirmTransaction(

@@ -59,8 +59,8 @@ export function RecoveryGatewayDialog({
               <p className="text-sm text-white/90 leading-relaxed">
                 Welcome back to <span className="font-medium">{company.name}</span>.
                 I restored <span className="font-medium">{ceoName}</span> from the
-                chain — your company &amp; CEO are intact. We just need to
-                re-pair the gateway on this device.
+                chain. Your company and CEO are intact. We just need to pair
+                the gateway again on this device.
               </p>
               <div className="space-y-2 pt-1">
                 <label className="block text-xs text-white/60">
@@ -91,7 +91,7 @@ export function RecoveryGatewayDialog({
               </div>
               {status.kind === "recovery-needed" && (
                 <p className="text-[11px] text-white/40">
-                  Adapter config is local-only — it never leaves this device
+                  Adapter config is local only. It never leaves this device
                   except to reach your gateway.
                 </p>
               )}

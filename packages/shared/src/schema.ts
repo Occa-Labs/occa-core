@@ -579,6 +579,77 @@ export const traceEvents = pgTable(
   ],
 );
 
+// ── Task events — per-task append-only timeline (EventStream) ─────────
+// Unified log of everything that happens to a task: status changes, trace
+// lifecycle, comments, agent actions. Append-only; no UPDATE/DELETE in
+// application code. Powers timeline UI, audit, and future workflow engine.
+// Runs alongside `traces` / `traceEvents` / `taskComments` — existing reads
+// stay on those tables; new consumers read here.
+export const taskEvents = pgTable(
+  "task_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    taskId: uuid("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    // Per-task monotonic counter, generated server-side inside append helper.
+    sequence: integer("sequence").notNull(),
+    eventType: text("event_type").notNull(),
+    // 'user' | 'agent' | 'system'
+    actorType: text("actor_type").notNull(),
+    // userId / deploymentId / 'system' — string to accommodate all three.
+    actorId: text("actor_id"),
+    payload: jsonb("payload")
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    traceId: uuid("trace_id").references((): AnyPgColumn => traces.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("uniq_task_events_task_seq").on(t.taskId, t.sequence),
+    index("idx_task_events_task_type").on(t.taskId, t.eventType),
+    index("idx_task_events_company_created").on(t.companyId, t.createdAt),
+  ],
+);
+
+// ── Agent action idempotency — dedupe POST /me/actions/emit replays ────
+// Agents retrying a failed HTTP action (network blip, dispatcher restart)
+// must produce the same resource exactly once. Caller supplies an
+// idempotencyKey unique per (deployment, actionType); we cache the result
+// id so retries return it without re-running the side-effect.
+export const agentActionIdempotency = pgTable(
+  "agent_action_idempotency",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    deploymentId: uuid("deployment_id")
+      .notNull()
+      .references((): AnyPgColumn => deployments.id, { onDelete: "cascade" }),
+    actionType: text("action_type").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    // Generic result pointer — taskId for EmitFollowUp, commentId for
+    // RequestInfo. Type-tagged so future actions can reuse the table.
+    resourceType: text("resource_type").notNull(),
+    resourceId: uuid("resource_id").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("uniq_agent_action_idempotency").on(
+      t.deploymentId,
+      t.actionType,
+      t.idempotencyKey,
+    ),
+  ],
+);
+
 // ── Deployment task sessions — adapter resume handles per (deployment, task) ──
 // Stores opaque sessionParams so an adapter can resume a prior
 // conversation/session rather than starting fresh on each run.

@@ -1,0 +1,40 @@
+%% Treasury Program — disburse_routine flow (batched payroll-style disbursement)
+%% Source: treasury-program-design.md §2 (Disbursement flow), §3.3 (OperationsAccount),
+%%         §4.4 (instructions), §5 (period rollover), §7 (class enforcement),
+%%         §11.1 (Agent Operating Fee, 300 bps)
+
+sequenceDiagram
+    autonumber
+    actor Op as Operator (FE)
+    participant Tre as Treasury Program
+    participant OA as OperationsAccount<br/>[Disbursement]
+    participant PA as PolicyAccount
+    participant TA as TreasuryAccount<br/>(custody)
+    participant Ag as AgentAccount.receiving_address
+    participant PFA as ProtocolFeeAccount
+
+    Note over Op: Operator clicks "Run Disbursement".<br/>FE batches N due agents into 1 tx<br/>(N × disburse_routine ix), signed by Disbursement Wallet.
+
+    rect rgb(35, 50, 70)
+    Note over Tre,PFA: Per-agent ix (× N in same atomic tx)
+
+    Op->>+Tre: disburse_routine(amount, dest, asset)
+
+    Tre->>OA: load + validate
+    Note over OA: signer == OA.signer?<br/>disburse_routine ∈ action_whitelist?<br/>¬revoked? ¬expired?<br/>rate-limit (lazy period reset)?
+
+    Tre->>PA: load + lazy period rollover
+    Note over PA: if month ≠ current_period_anchor:<br/>  reset routine_spent_this_period<br/>asset ∈ accepted_assets?
+
+    Note over Tre: fee = amount × agent_operating_fee_bps / 10_000<br/>(dest is AgentAccount.receiving_address<br/>under same company → Agent Operating Fee applies)
+
+    Tre->>PA: require routine_spent + amount + fee ≤ routine_budget<br/>routine_spent_this_period[asset] += (amount + fee)
+
+    Tre->>+TA: transfer (amount → Ag)  +  (fee → PFA)
+    TA-->>Ag: amount (full, no deduction)
+    TA-->>-PFA: fee (3% default)
+
+    Tre-->>-Op: ok
+    end
+
+    Note over Op,PFA: ⛓ Batched atomicity: all N succeed, or all revert.<br/>Errors per §8: OperationsRevoked, OperationsExpired,<br/>RateLimitExceeded, DiscriminatorNotWhitelisted,<br/>AssetNotAllowListed, BudgetExceeded, ArithmeticOverflow.

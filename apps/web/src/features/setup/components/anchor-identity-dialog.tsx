@@ -23,7 +23,7 @@ type ProgressStage =
   | "registering-identity"
   | "registering-agent";
 
-const NARRATION = "One more step — let's anchor this on Solana.";
+const NARRATION = "One more step. Let's anchor this on Solana.";
 const TYPING_SPEED = 30;
 
 // Sub-label rendered under the active step. Two variants per step:
@@ -40,7 +40,7 @@ const STEP_SUBLABEL_IDLE: Record<ProgressStage, string> = {
   "registering-identity":
     "Now your CEO's portable identity. Sign once more with your wallet.",
   "registering-agent":
-    "Last one — bind the identity to this company. One more signature.",
+    "Last one. Bind the identity to this company. One more signature.",
 };
 
 const STEPS: ReadonlyArray<{ key: ProgressStage; label: string }> = [
@@ -260,11 +260,30 @@ export function AnchorIdentityDialog({
       walletBlocker = "wallet_mismatch";
   }
 
-  const stageKey: ProgressStage = isErrored
-    ? ((status as Extract<typeof status, { kind: "anchor-error" }>)
-        .stage as ProgressStage)
-    : ((status as Extract<typeof status, { kind: "anchoring" }>)
-        .stage as ProgressStage);
+  // Map onboarding sub-stage → STEPS key. The onboarding state machine
+  // has finer-grained stages than the visible 3 steps (e.g.
+  // `awaiting-signature` is internal to Phase C), so we collapse them
+  // here. Unknown stages fall back to the first step so the UI never
+  // mis-highlights step 1 just because the lookup failed.
+  const stageKey: ProgressStage = (() => {
+    const raw = (
+      isErrored
+        ? (status as Extract<typeof status, { kind: "anchor-error" }>).stage
+        : (status as Extract<typeof status, { kind: "anchoring" }>).stage
+    ) as string;
+    if (raw === "registering-company") return "registering-company";
+    if (raw === "registering-identity") return "registering-identity";
+    // `awaiting-signature` + `deriving-keypair` only happen during the
+    // deployment phase today, so collapse them to step 3.
+    if (
+      raw === "awaiting-signature" ||
+      raw === "deriving-keypair" ||
+      raw === "registering-agent"
+    ) {
+      return "registering-agent";
+    }
+    return "registering-company";
+  })();
 
   const errorCode: AnchorErrorCode | null = isErrored
     ? ((status as Extract<typeof status, { kind: "anchor-error" }>)
@@ -417,20 +436,31 @@ export function AnchorIdentityDialog({
                         )}
 
                         {isErrorHere && pretty && (
-                          <div className="mt-1.5 space-y-1">
+                          <div className="mt-2 rounded-lg border border-rose-400/25 bg-rose-500/8 px-3 py-2.5 space-y-2">
                             <div className="flex items-start gap-2">
-                              <p className="text-[11px] text-rose-300/90 leading-snug flex-1 min-w-0">
+                              <p className="text-[11px] text-rose-200/95 leading-snug flex-1 min-w-0">
                                 {pretty.headline}
                               </p>
                               {errorCode && (
-                                <span className="font-mono text-[10px] text-rose-400/70 bg-rose-500/10 px-1.5 py-0.5 rounded shrink-0">
+                                <span className="font-mono text-[10px] text-rose-300/80 bg-rose-500/15 px-1.5 py-0.5 rounded shrink-0">
                                   {errorCode}
                                 </span>
                               )}
                             </div>
-                            <p className="text-[11px] text-white/55 leading-relaxed">
+                            <p className="text-[11px] text-white/65 leading-relaxed">
                               {pretty.hint}
                             </p>
+                            <div className="pt-0.5">
+                              <Button
+                                variant="primary"
+                                size="sm"
+                                onClick={onRetry}
+                                disabled={walletStatus.kind === "loading"}
+                              >
+                                <RefreshCw className="size-3" />
+                                Try again
+                              </Button>
+                            </div>
                           </div>
                         )}
 
@@ -443,20 +473,6 @@ export function AnchorIdentityDialog({
                             >
                               <KeyRound className="size-3" />
                               Sign with wallet
-                            </Button>
-                          </div>
-                        )}
-
-                        {isErrorHere && (
-                          <div className="mt-2">
-                            <Button
-                              variant="primary"
-                              size="sm"
-                              onClick={onRetry}
-                              disabled={walletStatus.kind === "loading"}
-                            >
-                              <RefreshCw className="size-3" />
-                              Try again
                             </Button>
                           </div>
                         )}
@@ -493,8 +509,8 @@ export function AnchorIdentityDialog({
                 <p className="mt-3 text-[11px] text-white/45 leading-relaxed flex items-start gap-1.5">
                   <Link2 className="w-3 h-3 mt-0.5 shrink-0" />
                   <span>
-                    Anchoring {ceoName} on Solana devnet — signed by your
-                    wallet, OCCA never holds the private key.
+                    Anchoring {ceoName} on Solana devnet. Signed by your
+                    wallet. OCCA never holds the private key.
                   </span>
                 </p>
               )}

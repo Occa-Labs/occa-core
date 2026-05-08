@@ -213,7 +213,7 @@ export function useOnboarding(authenticated: boolean): UseOnboardingResult {
       // SCOPE: only the CEO is "the onboarding agent". Kickoff hires (any
       // role !== "ceo") that fail provisioning are a separate concern and
       // must NOT push the user back into the onboarding flow — that bug
-      // hid the OsShell + HiringWindow whenever a kickoff had any failed
+      // hid the OsShell + KickoffWindow whenever a kickoff had any failed
       // hire row in the DB.
       const incompleteCeo = res.agents.find(
         (a) => a.role === CEO_ROLE && a.externalAgentId == null,
@@ -260,17 +260,22 @@ export function useOnboarding(authenticated: boolean): UseOnboardingResult {
       setPendingAgentId(null);
 
       if (res.company && res.agents.length > 0) {
-        // Phase A complete. Now check Phase B/C (on-chain anchor). The
-        // CEO is the onboarding agent; if its identity isn't yet a real
-        // on-chain PDA, resume into anchoring instead of dropping the
-        // user onto the desktop. The placeholder check is essential —
-        // `agent_identities.identity_pda` is NOT NULL by schema and
-        // starts as `ag_pda_<hex>`, which is truthy and would silently
-        // mask "anchor not done" as "anchor done".
+        // Phase A complete. Now check Phase B (identity) + Phase C
+        // (deployment) on chain. We use two signals:
+        //   • `agentPda` (= identity_pda) for the identity step — a
+        //     placeholder `ag_pda_<hex>` means identity wasn't even
+        //     prepared. Real value means identity exists in DB cache,
+        //     though it may have been pre-written and never broadcast
+        //     (handled separately in the chain anchor flow).
+        //   • `agentChainTxSignature` for the deployment step — only
+        //     set on confirm, so its presence is the reliable signal
+        //     that the deployment was actually broadcast on chain.
         const ceo = res.agents.find((a) => a.role === CEO_ROLE) ?? null;
         const needsAnchor =
           !res.company.companyPda ||
-          (ceo != null && !isRealAgentPda(ceo.agentPda));
+          (ceo != null &&
+            (!isRealAgentPda(ceo.agentPda) ||
+              ceo.agentChainTxSignature === null));
         if (needsAnchor && ceo) {
           setStatus({
             kind: "anchoring",

@@ -71,6 +71,11 @@ export const ERROR_CODES = {
   SIDE_EFFECT_FAILED: "side_effect_failed",
   UNSUPPORTED_ACTION_TYPE: "unsupported_action_type",
 
+  // Agent action HTTP back-channel (POST /api/agents/me/actions/emit)
+  TASK_DEPTH_EXCEEDED: "task_depth_exceeded",
+  TASK_CHILDREN_EXCEEDED: "task_children_exceeded",
+  TASK_NOT_IN_COMPANY: "task_not_in_company",
+
   // Routine
   TRIGGER_NOT_FOUND: "trigger_not_found",
   CRON_REQUIRED: "cron_required",
@@ -104,6 +109,10 @@ export const ERROR_CODES = {
   ALREADY_REGISTERED: "already_registered",
   CHAIN_TX_FAILED: "chain_tx_failed",
   OPERATOR_NOT_CONFIGURED: "operator_not_configured",
+  /** Caller's prerequisite chain accounts (company / CEO identity) are
+   *  still placeholders. Triggered by the kickoff guard so a user can't
+   *  start hiring before onboarding's anchor flow has completed. */
+  CHAIN_NOT_ANCHORED: "chain_not_anchored",
 } as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];

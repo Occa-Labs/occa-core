@@ -157,6 +157,11 @@ export function OfficeScene({
 
   const prevOnboarding = useRef(onboardingActive);
   const prevWalkPhase = useRef(walkPhase);
+  // Tracks external focus (focusedAgentRole / focusedWorkstationId), NOT
+  // cameraMode. Reading cameraMode for "was focused" misfires when meeting
+  // cinematic set agent-focus on its own — clobbers the meeting→null
+  // zoom-out with an idle reset on the same render.
+  const prevFocused = useRef(false);
   const guidePosRef = useRef(
     new THREE.Vector3(GUIDE_POSITION.x, GUIDE_POSITION.y, GUIDE_POSITION.z),
   );
@@ -192,19 +197,16 @@ export function OfficeScene({
   // in a cinematic). We skip transitions during onboarding/walk so the
   // cinematic isn't yanked by a stray click or a stale prop.
   useEffect(() => {
+    const isFocused = !!(focusedAgentRole || focusedWorkstationId);
+    const wasFocused = prevFocused.current;
+    prevFocused.current = isFocused;
     if (onboardingActive || walkPhase !== null) return;
-    if (focusedAgentRole || focusedWorkstationId) {
+    if (isFocused) {
       setCameraMode("agent-focus");
-    } else if (cameraMode === "agent-focus") {
+    } else if (wasFocused) {
       setCameraMode("idle");
     }
-  }, [
-    focusedAgentRole,
-    focusedWorkstationId,
-    onboardingActive,
-    walkPhase,
-    cameraMode,
-  ]);
+  }, [focusedAgentRole, focusedWorkstationId, onboardingActive, walkPhase]);
 
   const handleZoomOutComplete = useCallback(() => setCameraMode("idle"), []);
 

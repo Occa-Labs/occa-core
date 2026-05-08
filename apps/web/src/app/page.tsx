@@ -8,8 +8,10 @@ import { useSetupWorkflow } from "@/features/setup/hooks/use-setup-workflow";
 import { Spinner } from "@/components/ui/spinner";
 import { useViewMode } from "@/shell/view-mode-toggle";
 import { TopMenuBar } from "@/shell/top-menu-bar";
+import { DesktopOnlyGate } from "@/shell/desktop-only-gate";
 import { DevResetButton } from "@/components/dev-reset-button";
 import { LandingFab } from "@/features/auth/components/landing-fab";
+import { AnchorReminderBanner } from "@/features/setup/components/anchor-reminder-banner";
 import type { SceneAgent } from "@/features/theater/types";
 import { deriveAgentStatus } from "@/features/theater/utils";
 import { CEO_ROLE } from "@occa/shared/role-catalog";
@@ -46,7 +48,15 @@ export default function HomePage() {
   // page reads `phase` + `walkPhase` for OfficeScene, drills the hook
   // return into <SetupWorkflow> for the dialogs.
   const setup = useSetupWorkflow({ authenticated });
-  const { phase, walkPhase, onboardingActive, me, handleGuideArrived } = setup;
+  const {
+    phase,
+    walkPhase,
+    onboardingActive,
+    me,
+    handleGuideArrived,
+    showAnchorReminder,
+    handleAnchorResumeFromBanner,
+  } = setup;
 
   // Camera-ready gate: fires once the camera has finished lerping into the
   // onboarding position in front of Jia. Until then we suppress dialogs so
@@ -66,7 +76,7 @@ export default function HomePage() {
     if (cameraReady) return;
     if (
       phase === "kickoff-form" ||
-      phase === "hiring" ||
+      phase === "deploying-team" ||
       phase === "kickoff-complete"
     ) {
       setCameraReady(true);
@@ -256,6 +266,7 @@ export default function HomePage() {
   );
 
   return (
+    <DesktopOnlyGate>
     <main
       className="fixed inset-0 h-screen w-screen overflow-hidden"
       style={{ background: "var(--app-bg-scene)" }}
@@ -293,6 +304,7 @@ export default function HomePage() {
         notificationsEnabled={authenticated && phase === "live"}
         viewMode3d={view.enabled}
         onToggleViewMode={view.toggle}
+        viewModeToggleEnabled={phase === "live"}
       />
       {cameraReady && <SetupWorkflow setup={setup} />}
       {!authenticated && <LandingFab />}
@@ -311,9 +323,21 @@ export default function HomePage() {
           onToggleWalkRecord={handleToggleWalkRecord}
         />
       )}
+      {phase === "live" && showAnchorReminder && (
+        <AnchorReminderBanner
+          pendingCount={
+            me.agents.filter(
+              (a) =>
+                a.role !== CEO_ROLE && a.agentChainTxSignature === null,
+            ).length
+          }
+          onResume={handleAnchorResumeFromBanner}
+        />
+      )}
       {process.env.NODE_ENV === "development" &&
         authenticated &&
         phase !== "live" && <DevResetButton />}
     </main>
+    </DesktopOnlyGate>
   );
 }

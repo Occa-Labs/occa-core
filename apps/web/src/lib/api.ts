@@ -191,6 +191,40 @@ export interface ConfirmAgentOnChainResponse {
   agentChainTxSignature: string | null;
 }
 
+// Combined identity + deployment registration — kickoff batch path,
+// 1 wallet popup per hire (vs 2 if identity + deployment ran separately).
+export type PrepareCombinedAgentOnChainResponse =
+  | {
+      alreadyRegistered: true;
+      agentPda: string;
+      agentIndex: number;
+    }
+  | ({
+      alreadyRegistered: false;
+      identityPda: string;
+      agentPubkey: string;
+      agentPda: string;
+      agentIndex: number;
+      includesIdentity: boolean;
+    } & PreparedTx);
+
+export interface ConfirmCombinedAgentOnChainRequest {
+  signedTransaction: string;
+  blockhash: string;
+  lastValidBlockHeight: number;
+  agentPubkey: string;
+  agentIndex: number;
+}
+
+export interface ConfirmCombinedAgentOnChainResponse {
+  alreadyRegistered: boolean;
+  identityPda?: string;
+  agentPda: string;
+  agentIndex: number;
+  ownerWallet?: string;
+  agentChainTxSignature: string | null;
+}
+
 // Identity registration — Phase B in the chain anchor flow. Registers
 // the portable AgentIdentity PDA that `create_deployment` (Phase C)
 // requires to already exist on chain.
@@ -275,6 +309,19 @@ export const chainApi = {
   confirmAgent: (agentId: string, body: ConfirmAgentOnChainRequest) =>
     request<ConfirmAgentOnChainResponse>(
       `/api/chain/agents/${agentId}/register/confirm`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  prepareCombinedAgent: (agentId: string) =>
+    request<PrepareCombinedAgentOnChainResponse>(
+      `/api/chain/agents/${agentId}/register-combined/prepare`,
+      { method: "POST", body: JSON.stringify({}) },
+    ),
+  confirmCombinedAgent: (
+    agentId: string,
+    body: ConfirmCombinedAgentOnChainRequest,
+  ) =>
+    request<ConfirmCombinedAgentOnChainResponse>(
+      `/api/chain/agents/${agentId}/register-combined/confirm`,
       { method: "POST", body: JSON.stringify(body) },
     ),
   prepareSetOperatingWallet: (
@@ -770,7 +817,7 @@ export interface KickoffRoleEntry {
 
 export interface KickoffRolesResponse {
   roles: KickoffRoleEntry[];
-  maxHires: number;
+  maxDeployments: number;
 }
 
 export interface KickoffStartRequest {
@@ -785,7 +832,7 @@ export interface KickoffStartRequest {
 
 export interface KickoffStartResponse {
   ok: true;
-  hiredAgentIds: string[];
+  deployedAgentIds: string[];
 }
 
 export interface KickoffAgentStatus {

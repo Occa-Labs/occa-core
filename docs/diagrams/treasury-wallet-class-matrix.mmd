@@ -1,0 +1,64 @@
+%% Treasury Program — wallet × authorization class × instruction
+%% Source: treasury-program-design.md §2 (Phase 1 wallets), §3.3 (OperationsKind),
+%%         §4 (instruction surface), §7 (class enforcement)
+%% Phase: 1 (devnet). Per-agent Operations Key deferred to Phase 2+.
+
+flowchart LR
+
+    subgraph WALLETS["Phase 1 wallet identities (4)"]
+        direction TB
+        CA["<b>Controlling Authority</b><br/><i>operator main wallet</i><br/>cold / hardware"]
+        DW["<b>Disbursement Wallet</b><br/><i>operator-held only</i><br/>OCCA never sees privkey"]
+        AW["<b>Anchor Wallet</b><br/><i>shared key</i><br/>operator + OCCA backend"]
+        ARA["<b>Agent Receiving Address</b><br/><i>passive — destination only</i><br/>no signing"]
+    end
+
+    subgraph CLASSES["Authorization class"]
+        direction TB
+        PRIV["Privileged"]
+        DISC["Discretionary"]
+        ROUT["Routine"]
+    end
+
+    subgraph TIX["Treasury Program instructions"]
+        direction TB
+        SP["set_policy"]
+        REGOPS["register_company_operations<br/>register_agent_operations<br/>update_operations_capability<br/>revoke_operations<br/>close_operations"]
+        DPRIV["disburse_privileged<br/>(+ secondary if amt &gt; threshold)"]
+        DDIS["disburse_discretionary"]
+        DROUT["disburse_routine<br/>(batched disbursement)"]
+    end
+
+    subgraph RIX["Registry Program instruction"]
+        CDA["commit_daily_anchor<br/>(daily Merkle root)"]
+    end
+
+    %% Wallet → class (solid = direct signer; dotted = via OperationsAccount)
+    CA ==> PRIV
+    CA ==> DISC
+    DW -. via OperationsAccount[Disbursement] .-> ROUT
+    AW -. via OperationsAccount[Anchor] .-> ROUT
+
+    %% Class → instruction
+    PRIV --> SP
+    PRIV --> REGOPS
+    PRIV --> DPRIV
+    DISC --> DDIS
+    ROUT --> DROUT
+    ROUT --> CDA
+
+    %% Disbursement destinations may land on Agent Receiving Address.
+    %% Fee deduction (3%) routes to ProtocolFeeAccount when dest is an agent.
+    DROUT -. disbursement lands here .-> ARA
+    DDIS -. optional dest .-> ARA
+    DPRIV -. optional dest .-> ARA
+
+    classDef cold    fill:#1a3a5c,stroke:#5b9bd5,color:#dde8f5
+    classDef warm    fill:#5c4516,stroke:#d9a84a,color:#fff4dc
+    classDef hot     fill:#1a4a2e,stroke:#5fc784,color:#d4f0de
+    classDef passive fill:#2a2a2a,stroke:#888888,color:#dddddd
+
+    class CA cold
+    class DW warm
+    class AW hot
+    class ARA passive

@@ -1,0 +1,38 @@
+%% OCCA program ↔ account-ownership map (Variant A: trimmed, ~30% lighter)
+%% Stripped: inline annotations (kind, singleton), FK lines, cross-program signer edge.
+%% Detail-detail itu udah ada di treasury-account-schema, wallet-class-matrix,
+%% disbursement-flow, dan daily-anchor-flow.
+
+flowchart LR
+    subgraph Programs["4 OCCA Programs"]
+        REG[Registry Program]
+        TRP[Treasury Program]
+        MKT[Marketplace Program]
+        REP[Reputation Program]
+    end
+
+    REG --> CO[CompanyAccount]
+    REG --> AI[AgentIdentity]
+    REG --> DE[Deployment]
+    REG --> SK[SkillAccount]
+    REG --> RT[RoutineAccount]
+    REG --> DA[DailyAnchorAccount]
+
+    TRP --> TR[TreasuryAccount]
+    TRP --> PO[PolicyAccount]
+    TRP --> OA[OperationsAccount]
+    TRP --> PFA[ProtocolFeeAccount]
+
+    MKT --> CT[ContractAccount]
+    MKT --> LS[ListingAccount]
+    MKT --> LC[LicenseAccount]
+
+    REP -.->|reads| AI
+    REP -.->|reads| DA
+    REP -.->|reads| CT
+
+    classDef prog fill:#1a3a5c,stroke:#5b9bd5,color:#dde8f5,stroke-width:2px
+    classDef acc fill:#2a2a2a,stroke:#888888,color:#dddddd
+
+    class REG,TRP,MKT,REP prog
+    class CO,AI,DE,SK,RT,DA,TR,PO,OA,PFA,CT,LS,LC acc

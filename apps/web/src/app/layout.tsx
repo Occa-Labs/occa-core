@@ -7,7 +7,7 @@ import { AppProviders } from "@/lib/providers";
 const geist = Geist({ subsets: ["latin"], variable: "--font-sans" });
 
 export const metadata: Metadata = {
-  title: "OCCA — Operating Command Center for Agents",
+  title: "Onchain Command Center for Agents",
   description: "Web3-native SaaS for managing AI teams in a live 3D office",
 };
 

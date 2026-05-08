@@ -3,12 +3,17 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
+  Anchor,
   BarChart3,
   Building2,
+  Check,
+  Copy,
+  ExternalLink,
   Globe,
   Mail,
   Mic,
   Pause,
+  Pencil,
   Play,
   PlayCircle,
   Save,
@@ -23,6 +28,14 @@ import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useCompany } from "@/features/companies/api/use-company";
+import {
+  CLUSTER_LABEL,
+  explorerAddressUrl,
+  explorerTxUrl,
+  shortenAddress,
+  solscanAddressUrl,
+  solscanTxUrl,
+} from "@/lib/solana-explorer";
 import type {
   CompanyDTO,
   UpdateCompanyRequest,
@@ -46,6 +59,7 @@ type SectionId =
   | "contact"
   | "presence"
   | "crypto"
+  | "chain"
   | "overview";
 
 const SECTIONS: Array<{
@@ -55,6 +69,7 @@ const SECTIONS: Array<{
   hint: string;
 }> = [
   { id: "identity", label: "Identity", icon: Building2, hint: "Name, tagline, niche" },
+  { id: "chain", label: "On-chain", icon: Anchor, hint: "Registry, PDA, signatures" },
   { id: "voice", label: "Voice", icon: Mic, hint: "Editorial coverage + tone" },
   { id: "mission", label: "Mission", icon: Target, hint: "Mission, vision, audience" },
   { id: "output", label: "Output", icon: Sparkles, hint: "Offering + services" },
@@ -220,6 +235,9 @@ export function CompanyWindow({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [pauseConfirm, setPauseConfirm] = useState(false);
   const [pauseReason, setPauseReason] = useState("");
+  // Per-section edit toggle. null = read-only view across all sections.
+  // Switching section while editing auto-discards (effect below).
+  const [editingSection, setEditingSection] = useState<SectionId | null>(null);
   const lastLoadedId = useRef<string | null>(null);
 
   useEffect(() => {
@@ -231,6 +249,22 @@ export function CompanyWindow({
 
   const isPaused = !!company?.pausedAt;
   const isReadOnly = isPaused;
+  const isEditing = editingSection === active && !isReadOnly;
+  const canEdit =
+    !isReadOnly && active !== "overview" && active !== "chain";
+  const paneEditProps = {
+    canEdit,
+    editing: isEditing,
+    onEdit: () => setEditingSection(active),
+  };
+
+  // Auto-discard pending edits when user navigates to a different section.
+  useEffect(() => {
+    if (editingSection === null) return;
+    if (editingSection === active) return;
+    if (company) setForm(fromDTO(company));
+    setEditingSection(null);
+  }, [active, editingSection, company]);
 
   const dirty = useMemo(() => {
     if (!form || !company) return false;
@@ -245,11 +279,18 @@ export function CompanyWindow({
     setSaveError(null);
     try {
       await update(patch);
+      setEditingSection(null);
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : "save_failed");
     } finally {
       setSaving(false);
     }
+  };
+
+  const onCancelEdit = () => {
+    if (company) setForm(fromDTO(company));
+    setEditingSection(null);
+    setSaveError(null);
   };
 
   const onResume = async () => {
@@ -310,7 +351,7 @@ export function CompanyWindow({
 
             {company && form && (
               <>
-                {isPaused && active !== "overview" && (
+                {isPaused && active !== "overview" && active !== "chain" && (
                   <Alert variant="warning" className="mb-4">
                     <p className="font-semibold text-amber-300">
                       Read-only — company is paused
@@ -331,12 +372,13 @@ export function CompanyWindow({
                   <Pane
                     title="Identity"
                     desc="Public-facing brand basics every agent reads as context."
+                    {...paneEditProps}
                   >
                     <Field label="Display name" required>
                       <TextInput
                         value={form.name}
                         onChange={(v) => setForm({ ...form, name: v })}
-                        disabled={isReadOnly}
+                        disabled={!isEditing}
                         maxLength={64}
                       />
                     </Field>
@@ -344,7 +386,7 @@ export function CompanyWindow({
                       <TextInput
                         value={form.tagline}
                         onChange={(v) => setForm({ ...form, tagline: v })}
-                        disabled={isReadOnly}
+                        disabled={!isEditing}
                         maxLength={160}
                       />
                     </Field>
@@ -352,7 +394,7 @@ export function CompanyWindow({
                       <TextInput
                         value={form.niche}
                         onChange={(v) => setForm({ ...form, niche: v })}
-                        disabled={isReadOnly}
+                        disabled={!isEditing}
                         maxLength={120}
                       />
                     </Field>
@@ -360,19 +402,15 @@ export function CompanyWindow({
                       <TextInput
                         value={form.logoUrl}
                         onChange={(v) => setForm({ ...form, logoUrl: v })}
-                        disabled={isReadOnly}
+                        disabled={!isEditing}
                         placeholder="https://..."
                       />
                     </Field>
                     <Field label="Founded">
-                      <input
-                        type="date"
+                      <DateInput
                         value={form.foundedAt}
-                        onChange={(e) =>
-                          setForm({ ...form, foundedAt: e.target.value })
-                        }
-                        disabled={isReadOnly}
-                        className={inputCls}
+                        onChange={(v) => setForm({ ...form, foundedAt: v })}
+                        disabled={!isEditing}
                       />
                     </Field>
                   </Pane>
@@ -382,12 +420,13 @@ export function CompanyWindow({
                   <Pane
                     title="Voice & Editorial"
                     desc="Defines coverage scope and how every agent writes."
+                    {...paneEditProps}
                   >
                     <Field label="Coverage scope" hint="What we cover">
                       <Textarea
                         value={form.coverageScope}
                         onChange={(v) => setForm({ ...form, coverageScope: v })}
-                        disabled={isReadOnly}
+                        disabled={!isEditing}
                         rows={3}
                       />
                     </Field>
@@ -397,7 +436,7 @@ export function CompanyWindow({
                         onChange={(v) =>
                           setForm({ ...form, coverageExcluded: v })
                         }
-                        disabled={isReadOnly}
+                        disabled={!isEditing}
                         rows={2}
                       />
                     </Field>
@@ -407,7 +446,7 @@ export function CompanyWindow({
                         onChange={(v) =>
                           setForm({ ...form, contentPillars: v })
                         }
-                        disabled={isReadOnly}
+                        disabled={!isEditing}
                         placeholder="add pillar + Enter"
                       />
                     </Field>
@@ -418,7 +457,7 @@ export function CompanyWindow({
                       <Textarea
                         value={form.brandVoice}
                         onChange={(v) => setForm({ ...form, brandVoice: v })}
-                        disabled={isReadOnly}
+                        disabled={!isEditing}
                         rows={3}
                       />
                     </Field>
@@ -431,7 +470,7 @@ export function CompanyWindow({
                         onChange={(v) =>
                           setForm({ ...form, forbiddenWords: v })
                         }
-                        disabled={isReadOnly}
+                        disabled={!isEditing}
                         placeholder="leverage, vibrant, …"
                       />
                     </Field>
@@ -442,12 +481,13 @@ export function CompanyWindow({
                   <Pane
                     title="Mission & Audience"
                     desc="Why we exist, where we're going, who we serve."
+                    {...paneEditProps}
                   >
                     <Field label="Mission" hint="Why we exist">
                       <Textarea
                         value={form.mission}
                         onChange={(v) => setForm({ ...form, mission: v })}
-                        disabled={isReadOnly}
+                        disabled={!isEditing}
                         rows={3}
                       />
                     </Field>
@@ -455,7 +495,7 @@ export function CompanyWindow({
                       <Textarea
                         value={form.vision}
                         onChange={(v) => setForm({ ...form, vision: v })}
-                        disabled={isReadOnly}
+                        disabled={!isEditing}
                         rows={3}
                       />
                     </Field>
@@ -465,7 +505,7 @@ export function CompanyWindow({
                         onChange={(v) =>
                           setForm({ ...form, targetAudience: v })
                         }
-                        disabled={isReadOnly}
+                        disabled={!isEditing}
                         rows={2}
                       />
                     </Field>
@@ -473,7 +513,7 @@ export function CompanyWindow({
                       <ChipInput
                         values={form.usps}
                         onChange={(v) => setForm({ ...form, usps: v })}
-                        disabled={isReadOnly}
+                        disabled={!isEditing}
                         placeholder="add unique selling point"
                       />
                     </Field>
@@ -484,12 +524,13 @@ export function CompanyWindow({
                   <Pane
                     title="Output"
                     desc="What we make and sell. Agents reference this for BD + production."
+                    {...paneEditProps}
                   >
                     <Field label="Core offering" hint="What we make/sell">
                       <Textarea
                         value={form.coreOffering}
                         onChange={(v) => setForm({ ...form, coreOffering: v })}
-                        disabled={isReadOnly}
+                        disabled={!isEditing}
                         rows={3}
                       />
                     </Field>
@@ -499,7 +540,7 @@ export function CompanyWindow({
                         onChange={(v) =>
                           setForm({ ...form, serviceCatalog: v })
                         }
-                        disabled={isReadOnly}
+                        disabled={!isEditing}
                         placeholder="research, ghostwriting, advisory…"
                       />
                     </Field>
@@ -507,12 +548,16 @@ export function CompanyWindow({
                 )}
 
                 {active === "contact" && (
-                  <Pane title="Contact" desc="How people reach the company.">
+                  <Pane
+                    title="Contact"
+                    desc="How people reach the company."
+                    {...paneEditProps}
+                  >
                     <Field label="Primary email">
                       <TextInput
                         value={form.contactEmail}
                         onChange={(v) => setForm({ ...form, contactEmail: v })}
-                        disabled={isReadOnly}
+                        disabled={!isEditing}
                         placeholder="hello@…"
                         type="email"
                       />
@@ -521,7 +566,7 @@ export function CompanyWindow({
                       <TextInput
                         value={form.salesEmail}
                         onChange={(v) => setForm({ ...form, salesEmail: v })}
-                        disabled={isReadOnly}
+                        disabled={!isEditing}
                         placeholder="bd@…"
                         type="email"
                       />
@@ -530,7 +575,7 @@ export function CompanyWindow({
                       <TextInput
                         value={form.phone}
                         onChange={(v) => setForm({ ...form, phone: v })}
-                        disabled={isReadOnly}
+                        disabled={!isEditing}
                       />
                     </Field>
                   </Pane>
@@ -540,13 +585,14 @@ export function CompanyWindow({
                   <Pane
                     title="Presence"
                     desc="Owned media URLs + social handles."
+                    {...paneEditProps}
                   >
                     <SubGroup label="Web">
                       <Field label="Website">
                         <TextInput
                           value={form.websiteUrl}
                           onChange={(v) => setForm({ ...form, websiteUrl: v })}
-                          disabled={isReadOnly}
+                          disabled={!isEditing}
                           placeholder="https://…"
                         />
                       </Field>
@@ -554,7 +600,7 @@ export function CompanyWindow({
                         <TextInput
                           value={form.blogUrl}
                           onChange={(v) => setForm({ ...form, blogUrl: v })}
-                          disabled={isReadOnly}
+                          disabled={!isEditing}
                           placeholder="https://…"
                         />
                       </Field>
@@ -564,7 +610,7 @@ export function CompanyWindow({
                           onChange={(v) =>
                             setForm({ ...form, newsletterUrl: v })
                           }
-                          disabled={isReadOnly}
+                          disabled={!isEditing}
                           placeholder="https://…"
                         />
                       </Field>
@@ -572,7 +618,7 @@ export function CompanyWindow({
                         <TextInput
                           value={form.docsUrl}
                           onChange={(v) => setForm({ ...form, docsUrl: v })}
-                          disabled={isReadOnly}
+                          disabled={!isEditing}
                           placeholder="https://…"
                         />
                       </Field>
@@ -592,7 +638,7 @@ export function CompanyWindow({
                                 },
                               })
                             }
-                            disabled={isReadOnly}
+                            disabled={!isEditing}
                             placeholder={p.placeholder}
                           />
                         </Field>
@@ -605,6 +651,7 @@ export function CompanyWindow({
                   <Pane
                     title="Crypto-native"
                     desc="Wallet + chain coverage signals to Web3 audiences."
+                    {...paneEditProps}
                   >
                     <Field
                       label="Treasury address"
@@ -615,7 +662,7 @@ export function CompanyWindow({
                         onChange={(v) =>
                           setForm({ ...form, treasuryAddress: v })
                         }
-                        disabled={isReadOnly}
+                        disabled={!isEditing}
                         placeholder="0x… or Solana base58"
                       />
                     </Field>
@@ -625,12 +672,14 @@ export function CompanyWindow({
                         onChange={(v) =>
                           setForm({ ...form, chainsCovered: v })
                         }
-                        disabled={isReadOnly}
+                        disabled={!isEditing}
                         placeholder="Solana, Ethereum, Base…"
                       />
                     </Field>
                   </Pane>
                 )}
+
+                {active === "chain" && <ChainPane company={company} />}
 
                 {active === "overview" && (
                   <Pane
@@ -766,7 +815,7 @@ export function CompanyWindow({
             )}
           </div>
 
-          {company && form && !isReadOnly && (
+          {company && form && isEditing && (
             <div
               className="border-t border-white/5 px-5 py-3 flex items-center justify-between"
               style={{ background: "rgba(20,20,24,0.6)" }}
@@ -778,21 +827,19 @@ export function CompanyWindow({
                     Unsaved changes
                   </>
                 ) : (
-                  "All changes saved"
+                  "Editing — no changes yet"
                 )}
               </p>
               <div className="flex items-center gap-2">
-                {dirty && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setForm(fromDTO(company))}
-                    disabled={saving}
-                  >
-                    <X className="size-3" />
-                    Discard
-                  </Button>
-                )}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={onCancelEdit}
+                  disabled={saving}
+                >
+                  <X className="size-3" />
+                  Cancel
+                </Button>
                 <Button
                   variant="primary"
                   size="sm"
@@ -877,17 +924,31 @@ const inputCls =
 function Pane({
   title,
   desc,
+  canEdit,
+  editing,
+  onEdit,
   children,
 }: {
   title: string;
   desc?: string;
+  canEdit?: boolean;
+  editing?: boolean;
+  onEdit?: () => void;
   children: React.ReactNode;
 }) {
   return (
     <div>
-      <div className="mb-4">
-        <h2 className="text-sm font-semibold text-white/90">{title}</h2>
-        {desc && <p className="mt-0.5 text-[11px] text-white/45">{desc}</p>}
+      <div className="mb-4 flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h2 className="text-sm font-semibold text-white/90">{title}</h2>
+          {desc && <p className="mt-0.5 text-[11px] text-white/45">{desc}</p>}
+        </div>
+        {canEdit && !editing && onEdit && (
+          <Button variant="secondary" size="sm" onClick={onEdit}>
+            <Pencil className="size-3" />
+            Edit
+          </Button>
+        )}
       </div>
       <div className="flex flex-col gap-3.5">{children}</div>
     </div>
@@ -936,6 +997,47 @@ function Field({
   );
 }
 
+// Read-only renderer for single-line / multi-line text values. Empty
+// values render as a muted em-dash so the field row still occupies space
+// (layout doesn't jump between view ↔ edit).
+function FieldView({
+  value,
+  multiline,
+}: {
+  value: string | null | undefined;
+  multiline?: boolean;
+}) {
+  const v = (value ?? "").trim();
+  if (!v) {
+    return <span className="text-[12px] text-white/30">—</span>;
+  }
+  return (
+    <span
+      className={`text-[12px] text-white/80 ${multiline ? "whitespace-pre-line leading-relaxed" : ""}`}
+    >
+      {v}
+    </span>
+  );
+}
+
+function ChipView({ values }: { values: string[] }) {
+  if (values.length === 0) {
+    return <span className="text-[12px] text-white/30">—</span>;
+  }
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {values.map((v, i) => (
+        <span
+          key={`${v}-${i}`}
+          className="inline-flex rounded-md bg-white/8 px-2 py-0.5 text-[11px] text-white/75"
+        >
+          {v}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function TextInput({
   value,
   onChange,
@@ -951,12 +1053,12 @@ function TextInput({
   type?: string;
   maxLength?: number;
 }) {
+  if (disabled) return <FieldView value={value} />;
   return (
     <input
       type={type ?? "text"}
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      disabled={disabled}
       placeholder={placeholder}
       maxLength={maxLength}
       className={inputCls}
@@ -977,14 +1079,43 @@ function Textarea({
   rows?: number;
   placeholder?: string;
 }) {
+  if (disabled) return <FieldView value={value} multiline />;
   return (
     <textarea
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      disabled={disabled}
       rows={rows}
       placeholder={placeholder}
       className={`${inputCls} resize-y leading-relaxed`}
+    />
+  );
+}
+
+function DateInput({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  disabled?: boolean;
+}) {
+  if (disabled) {
+    const formatted = value
+      ? new Date(`${value}T00:00:00`).toLocaleDateString(undefined, {
+          year: "numeric",
+          month: "short",
+          day: "numeric",
+        })
+      : "";
+    return <FieldView value={formatted} />;
+  }
+  return (
+    <input
+      type="date"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className={inputCls}
     />
   );
 }
@@ -1000,6 +1131,7 @@ function ChipInput({
   disabled?: boolean;
   placeholder?: string;
 }) {
+  if (disabled) return <ChipView values={values} />;
   const [draft, setDraft] = useState("");
   const commit = () => {
     const v = draft.trim();
@@ -1012,44 +1144,38 @@ function ChipInput({
     setDraft("");
   };
   return (
-    <div
-      className={`flex flex-wrap gap-1.5 rounded-lg bg-white/5 border border-white/10 px-2 py-1.5 ${disabled ? "opacity-50" : ""}`}
-    >
+    <div className="flex flex-wrap gap-1.5 rounded-lg bg-white/5 border border-white/10 px-2 py-1.5">
       {values.map((v, i) => (
         <span
           key={`${v}-${i}`}
           className="inline-flex items-center gap-1 rounded-md bg-white/10 px-2 py-0.5 text-[11px] text-white/80"
         >
           {v}
-          {!disabled && (
-            <button
-              type="button"
-              onClick={() => onChange(values.filter((x) => x !== v))}
-              className="text-white/40 hover:text-white"
-              aria-label={`remove ${v}`}
-            >
-              <X className="size-2.5" />
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={() => onChange(values.filter((x) => x !== v))}
+            className="text-white/40 hover:text-white"
+            aria-label={`remove ${v}`}
+          >
+            <X className="size-2.5" />
+          </button>
         </span>
       ))}
-      {!disabled && (
-        <input
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === ",") {
-              e.preventDefault();
-              commit();
-            } else if (e.key === "Backspace" && !draft && values.length > 0) {
-              onChange(values.slice(0, -1));
-            }
-          }}
-          onBlur={commit}
-          placeholder={values.length === 0 ? placeholder : ""}
-          className="flex-1 min-w-25 bg-transparent border-none outline-none text-[12px] text-white placeholder:text-white/30"
-        />
-      )}
+      <input
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === ",") {
+            e.preventDefault();
+            commit();
+          } else if (e.key === "Backspace" && !draft && values.length > 0) {
+            onChange(values.slice(0, -1));
+          }
+        }}
+        onBlur={commit}
+        placeholder={values.length === 0 ? placeholder : ""}
+        className="flex-1 min-w-25 bg-transparent border-none outline-none text-[12px] text-white placeholder:text-white/30"
+      />
     </div>
   );
 }
@@ -1074,5 +1200,156 @@ function Stat({
         {value}
       </span>
     </div>
+  );
+}
+
+// ── On-chain pane ────────────────────────────────────────────────────────────
+
+function ChainPane({ company }: { company: CompanyDTO }) {
+  const anchored = !!company.companyPda;
+
+  return (
+    <Pane
+      title="On-chain Registry"
+      desc="The Solana account that proves ownership of this company. Chain is the source of truth — DB only caches it."
+    >
+      {anchored ? (
+        <Card variant="recessed" padding="sm">
+          <div className="flex items-center gap-2 text-[12px] text-emerald-300">
+            <Anchor className="size-3.5" />
+            <span className="font-medium">Anchored on {CLUSTER_LABEL}</span>
+          </div>
+        </Card>
+      ) : (
+        <Alert variant="warning">
+          <p className="font-semibold text-amber-300">Not anchored yet</p>
+          <p className="mt-1 text-[11px] text-amber-200/70">
+            This company exists in the local database but hasn't been written
+            to Solana. Anchor it to make ownership portable across devices.
+          </p>
+        </Alert>
+      )}
+
+      <ChainRow
+        label="Address (PDA)"
+        value={company.companyPda}
+        kind="address"
+      />
+      <ChainRow
+        label="Owner wallet"
+        value={company.ownerWallet}
+        kind="address"
+      />
+      <ChainRow
+        label="Create transaction"
+        value={company.chainTxSignature}
+        kind="tx"
+      />
+      <ChainRow
+        label="Nonce"
+        value={
+          company.chainNonce !== null && company.chainNonce !== undefined
+            ? String(company.chainNonce)
+            : null
+        }
+        kind="raw"
+        hint="PDA derivation counter"
+      />
+    </Pane>
+  );
+}
+
+function ChainRow({
+  label,
+  value,
+  kind,
+  hint,
+}: {
+  label: string;
+  value: string | null;
+  kind: "address" | "tx" | "raw";
+  hint?: string;
+}) {
+  return (
+    <Field label={label} hint={hint}>
+      {value === null ? (
+        <FieldView value="" />
+      ) : (
+        <div className="flex items-center gap-2 rounded-lg bg-white/5 border border-white/10 px-3 py-1.5">
+          <code className="flex-1 min-w-0 truncate text-[12px] font-mono text-white/85">
+            {kind === "raw" ? value : shortenAddress(value, 6, 6)}
+          </code>
+          <CopyButton value={value} />
+          {kind !== "raw" && (
+            <>
+              <ExplorerLink
+                href={
+                  kind === "address"
+                    ? solscanAddressUrl(value)
+                    : solscanTxUrl(value)
+                }
+                label="Solscan"
+              />
+              <ExplorerLink
+                href={
+                  kind === "address"
+                    ? explorerAddressUrl(value)
+                    : explorerTxUrl(value)
+                }
+                label="Explorer"
+              />
+            </>
+          )}
+        </div>
+      )}
+    </Field>
+  );
+}
+
+function CopyButton({ value }: { value: string }) {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const t = window.setTimeout(() => setCopied(false), 1200);
+    return () => window.clearTimeout(t);
+  }, [copied]);
+  const onClick = async () => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+    } catch {
+      // Clipboard API blocked (insecure context, etc.) — silent failure
+      // is OK; the value is still visible/selectable in the row.
+    }
+  };
+  return (
+    <button
+      type="button"
+      onClick={() => void onClick()}
+      className="shrink-0 rounded-md p-1 text-white/45 hover:bg-white/10 hover:text-white/80 transition-colors"
+      aria-label={copied ? "Copied" : "Copy"}
+      title={copied ? "Copied" : "Copy"}
+    >
+      {copied ? (
+        <Check className="size-3 text-emerald-300" />
+      ) : (
+        <Copy className="size-3" />
+      )}
+    </button>
+  );
+}
+
+function ExplorerLink({ href, label }: { href: string; label: string }) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer noopener"
+      className="shrink-0 inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] text-white/55 hover:bg-white/10 hover:text-white/85 transition-colors"
+      title={`Open in ${label}`}
+    >
+      <ExternalLink className="size-2.5" />
+      {label}
+    </a>
   );
 }

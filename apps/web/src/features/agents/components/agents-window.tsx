@@ -15,6 +15,7 @@ import { useAgentTraces } from "@/hooks/use-traces";
 import { useAgentActivity } from "@/features/agents/api/use-agent-activity";
 import { formatRoleLabel } from "@/lib/format-role";
 import { ApiError, agentsApi } from "@/lib/api";
+import { IS_PRODUCTION_MODE } from "@/lib/env-flags";
 import type { AgentDTO } from "@occa/shared/types";
 import { CEO_ROLE } from "@occa/shared/role-catalog";
 import { initial, ROLE_ORDER, StatusDot, StatusPill } from "./_shared";
@@ -24,7 +25,7 @@ import { ActivityTab } from "./activity-tab";
 import { FilesTab } from "./files-tab";
 import { TracesTab } from "./traces-tab";
 import { ChatModal } from "./chat-modal";
-import { HireAgentModal } from "./hire-agent-modal";
+import { DeployAgentModal } from "./deploy-agent-modal";
 
 interface AgentsWindowProps {
   companyName: string;
@@ -40,11 +41,15 @@ interface AgentsWindowProps {
 
 type TabId = "overview" | "skills" | "activity" | "traces" | "files";
 
-const TABS: { id: TabId; label: string }[] = [
+// Activity + Traces surfaces are WIP — kept visible (so the IA stays
+// honest) but disabled in production preview mode. Same for the Chat
+// button below. Re-enable everything by clearing
+// NEXT_PUBLIC_PREVIEW_PRODUCTION in apps/web/.env.local.
+const TABS: { id: TabId; label: string; disabled?: boolean }[] = [
   { id: "overview", label: "Overview" },
   { id: "skills", label: "Skills" },
-  { id: "activity", label: "Activity" },
-  { id: "traces", label: "Traces" },
+  { id: "activity", label: "Activity", disabled: IS_PRODUCTION_MODE },
+  { id: "traces", label: "Traces", disabled: IS_PRODUCTION_MODE },
   { id: "files", label: "Files" },
 ];
 
@@ -56,7 +61,7 @@ export function AgentsWindow({
   onClose,
 }: AgentsWindowProps) {
   const [selectedId, setSelectedId] = useState<string | null>(initialAgentId);
-  const [hireOpen, setHireOpen] = useState(false);
+  const [deployOpen, setDeployOpen] = useState(false);
 
   // External re-selection: theater click on a different agent updates
   // initialAgentId. We force-sync selectedId so the new agent surfaces
@@ -80,9 +85,9 @@ export function AgentsWindow({
     [agents, selectedId],
   );
 
-  const handleHired = useCallback(
+  const handleDeployed = useCallback(
     async (newAgentId: string) => {
-      setHireOpen(false);
+      setDeployOpen(false);
       await onReloadMe();
       setSelectedId(newAgentId);
     },
@@ -108,7 +113,7 @@ export function AgentsWindow({
             agents={agents}
             selectedId={selectedId}
             onSelect={setSelectedId}
-            onHire={() => setHireOpen(true)}
+            onDeploy={() => setDeployOpen(true)}
           />
           <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
             {selected ? (
@@ -127,10 +132,10 @@ export function AgentsWindow({
           </div>
         </div>
       </AppWindow>
-      <HireAgentModal
-        open={hireOpen}
-        onClose={() => setHireOpen(false)}
-        onHired={handleHired}
+      <DeployAgentModal
+        open={deployOpen}
+        onClose={() => setDeployOpen(false)}
+        onDeployed={handleDeployed}
         agents={agents}
       />
     </>
@@ -144,13 +149,13 @@ function AgentSidebar({
   agents,
   selectedId,
   onSelect,
-  onHire,
+  onDeploy,
 }: {
   companyName: string;
   agents: AgentDTO[];
   selectedId: string | null;
   onSelect: (id: string) => void;
-  onHire: () => void;
+  onDeploy: () => void;
 }) {
   const [query, setQuery] = useState("");
 
@@ -246,10 +251,10 @@ function AgentSidebar({
         })}
       </div>
 
-      {/* Hire button */}
+      {/* Deploy button */}
       <div className="shrink-0 p-3 border-t border-white/8">
         <button
-          onClick={onHire}
+          onClick={onDeploy}
           className="w-full flex items-center justify-center gap-2 rounded-xl py-2 text-xs font-medium text-white/60 hover:text-white transition-all duration-150"
           style={{
             background: "rgba(255,255,255,0.05)",
@@ -257,7 +262,7 @@ function AgentSidebar({
           }}
         >
           <Plus className="size-3.5" />
-          Hire agent
+          Deploy agent
         </button>
       </div>
     </div>
@@ -282,7 +287,7 @@ function AgentDetail({
   const activityState = useAgentActivity(agent.id, tab === "activity");
 
   // CEO is the keypair source-of-truth for the whole company (every other
-  // agent borrows its deviceKeypair). Deleting CEO would orphan all hires
+  // agent borrows its deviceKeypair). Deleting CEO would orphan all deployments
   // — block it from the UI; user can wipe the company instead if they
   // really want to start over.
   const isDeletable = agent.role !== CEO_ROLE;
@@ -304,7 +309,13 @@ function AgentDetail({
             <button
               type="button"
               onClick={() => setChatOpen(true)}
-              className="flex items-center gap-1.5 rounded-md bg-white/8 hover:bg-white/12 px-3 py-1.5 text-xs font-medium text-white/80 hover:text-white transition-colors"
+              disabled={IS_PRODUCTION_MODE}
+              title={
+                IS_PRODUCTION_MODE
+                  ? "Chat is not available in production preview"
+                  : undefined
+              }
+              className="flex items-center gap-1.5 rounded-md bg-white/8 hover:bg-white/12 px-3 py-1.5 text-xs font-medium text-white/80 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-white/8 disabled:hover:text-white/80"
             >
               <MessageSquare className="size-3" />
               Chat
@@ -327,7 +338,9 @@ function AgentDetail({
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
-              className={`px-3 py-1.5 text-xs font-medium rounded-t-md transition-colors ${
+              disabled={t.disabled}
+              title={t.disabled ? "Not available in production preview" : undefined}
+              className={`px-3 py-1.5 text-xs font-medium rounded-t-md transition-colors disabled:opacity-35 disabled:cursor-not-allowed disabled:hover:text-white/50 ${
                 tab === t.id
                   ? "text-white bg-white/8"
                   : "text-white/50 hover:text-white/80"

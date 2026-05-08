@@ -14,14 +14,18 @@ export type AnchorErrorCode =
   | "network_error"
   | "unknown";
 
+// Server emits lowercase error strings (`ERROR_CODES.CHAIN_TX_FAILED ===
+// "chain_tx_failed"`), so the keys here MUST be lowercase to match —
+// upper-case keys silently fell through to `unknown` in the past.
 const SERVER_ERROR_MAP: Record<string, AnchorErrorCode> = {
-  OPERATOR_NOT_CONFIGURED: "operator_not_configured",
-  CHAIN_TX_FAILED: "chain_tx_failed",
-  COMPANY_NOT_FOUND: "company_not_found",
-  AGENT_NOT_FOUND: "agent_not_found",
-  SIGNATURE_INVALID: "signature_invalid",
-  INVALID_SIGNATURE_VERSION: "signature_invalid",
-  WALLET_MISMATCH: "wallet_mismatch",
+  operator_not_configured: "operator_not_configured",
+  chain_tx_failed: "chain_tx_failed",
+  chain_not_anchored: "chain_tx_failed",
+  company_not_found: "company_not_found",
+  agent_not_found: "agent_not_found",
+  signature_invalid: "signature_invalid",
+  invalid_signature_version: "signature_invalid",
+  wallet_mismatch: "wallet_mismatch",
 };
 
 export function mapServerError(err: unknown): {
@@ -106,7 +110,7 @@ export function prettifyAnchorError(code: AnchorErrorCode): {
     case "chain_tx_failed":
       return {
         headline: "On-chain transaction failed.",
-        hint: "Solana transaction didn't confirm. Check operator balance on devnet and retry.",
+        hint: "Common cause: the prepared transaction expired before signing (Solana blockhashes live ~60s). Click Retry to fetch a fresh transaction.",
       };
     case "company_not_found":
     case "agent_not_found":

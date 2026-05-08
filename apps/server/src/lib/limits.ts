@@ -34,4 +34,11 @@ export const LIMITS = {
   NONCE_MAX: 128,
   SIGNATURE_MIN: 40,
   SIGNATURE_MAX: 128,
+
+  // ─── Agent action protocol ─────────────────────────────────────────────
+  IDEMPOTENCY_KEY_MAX: 128, // agent-supplied dedupe key for /me/actions/emit
+  // Foundation caps for HTTP-channel actions (see task-system-design.md
+  // §Hard caps). Hardcoded floor; per-company overrides come in feature phase.
+  TASK_CHAIN_MAX_DEPTH: 2, // EmitFollowUp: deepest descendant a depth-0 task can spawn
+  TASK_EMIT_MAX_CHILDREN: 3, // EmitFollowUp: max children one parent can spawn per agent
 } as const;

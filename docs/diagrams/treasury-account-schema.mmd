@@ -1,0 +1,48 @@
+%% Treasury Program — account schema relationships (ER-style)
+%% Source: treasury-program-design.md §3
+%% Phase: 1 (devnet). Per-agent OperationsAccount deferred to Phase 2+.
+
+flowchart LR
+
+    subgraph RPGM["Registry Program (external — referenced only)"]
+        direction TB
+        CA["<b>CompanyAccount</b><br/>━━━━━━━━━━━<br/>treasury: Pubkey<br/>policy: Pubkey<br/>controlling_authority: Pubkey<br/><i>... (other fields)</i>"]
+        AA["<b>AgentAccount</b><br/>━━━━━━━━━━━<br/>receiving_address: Pubkey<br/><i>... (other fields)</i>"]
+    end
+
+    subgraph TPGM["Treasury Program"]
+        direction TB
+
+        TA["<b>TreasuryAccount</b> «PDA»<br/><i>seeds: ['treasury', company]</i><br/>━━━━━━━━━━━<br/>company: Pubkey [FK]<br/>accepted_assets: Vec&lt;Pubkey&gt;<br/>bump, version: u8"]
+
+        PA["<b>PolicyAccount</b> «PDA»<br/><i>seeds: ['policy', company]</i><br/>━━━━━━━━━━━<br/>company: Pubkey [FK]<br/>routine_budget_per_month: Vec&lt;AssetBudget&gt;<br/>discretionary_budget_per_month: Vec&lt;AssetBudget&gt;<br/>privileged_threshold_lamports: u64<br/>privileged_threshold_per_token: Vec&lt;AssetBudget&gt;<br/>secondary_signer: Option&lt;Pubkey&gt;<br/>agent_operating_fee_bps: u16<br/>current_period_anchor: i64<br/>routine_spent_this_period: Vec&lt;AssetBudget&gt;<br/>discretionary_spent_this_period: Vec&lt;AssetBudget&gt;<br/>bump, version: u8"]
+
+        OA["<b>OperationsAccount</b> «PDA»<br/><i>seeds: ['operations', company, kind]</i><br/>━━━━━━━━━━━<br/>company: Pubkey [FK]<br/>kind: OperationsKind<br/>signer: Pubkey<br/>action_whitelist: Vec&lt;[u8;8]&gt;<br/>rate_limit_per_period: u32<br/>signatures_this_period: u32<br/>current_period_anchor: i64<br/>expiry_unix: i64<br/>revoked: bool<br/>bump, version: u8"]
+
+        PFA["<b>ProtocolFeeAccount</b> «PDA, singleton»<br/><i>seeds: ['protocol_fees']</i><br/>━━━━━━━━━━━<br/>governance: Pubkey<br/>balances: Vec&lt;AssetBudget&gt;<br/>bump, version: u8"]
+
+        AB["<b>AssetBudget</b> «struct»<br/>━━━━━━━━━━━<br/>mint: Pubkey<br/>amount: u64"]
+
+        OK["<b>OperationsKind</b> «enum»<br/>━━━━━━━━━━━<br/>Disbursement<br/>Anchor"]
+    end
+
+    %% Cardinality / FK / seed dependency (solid bold)
+    CA ==>|"1 : 1"| TA
+    CA ==>|"1 : 1"| PA
+    CA ==>|"1 : 0..2"| OA
+
+    %% Embedded structs / enums (dotted)
+    PA -.->|"embeds (×4 fields)"| AB
+    PFA -.->|embeds| AB
+    OA -.->|enum| OK
+
+    %% Cross-program operational reference
+    AA -. "if disbursement dest =<br/>receiving_address,<br/>3% routes to" .-> PFA
+
+    classDef pda      fill:#1a3a5c,stroke:#5b9bd5,color:#dde8f5
+    classDef external fill:#2d1f5c,stroke:#9580ff,color:#e0d4ff
+    classDef helper   fill:#2a2a2a,stroke:#888888,color:#dddddd
+
+    class TA,PA,OA,PFA pda
+    class CA,AA external
+    class AB,OK helper

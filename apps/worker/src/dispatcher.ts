@@ -412,7 +412,10 @@ async function executeClaim(trace: ClaimedTrace): Promise<void> {
 
   // Move the kanban card out of "todo" as soon as a trace actually starts
   // against it — the user's hint that work is underway.
-  await syncTaskOnTraceStart(taskId).catch((err) => {
+  await syncTaskOnTraceStart(taskId, {
+    traceId: trace.id,
+    deploymentId: trace.agentId,
+  }).catch((err) => {
     console.error(
       "[worker:dispatcher] task-sync on-start failed:",
       err instanceof Error ? err.message : err,

@@ -8,6 +8,20 @@
       "when": 1778027333942,
       "tag": "0000_fantastic_tyger_tiger",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1778186673539,
+      "tag": "0001_nice_naoko",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1778221822539,
+      "tag": "0002_right_the_hood",
+      "breakpoints": true
     }
   ]
 }

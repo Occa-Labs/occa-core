@@ -7,7 +7,7 @@ import { AnchorIdentityDialog } from "./anchor-identity-dialog";
 import { CeoReadyDialog } from "./ceo-ready-dialog";
 import { CeoIntroDialog } from "./ceo-intro-dialog";
 import { KickoffDialog } from "./kickoff-dialog";
-import { HiringWindow } from "./hiring-window";
+import { KickoffWindow } from "./kickoff-window";
 import { KickoffSummaryDialog } from "./kickoff-summary-dialog";
 import type { UseSetupWorkflowReturn } from "../hooks/use-setup-workflow";
 import { CEO_ROLE } from "@occa/shared/role-catalog";
@@ -36,8 +36,9 @@ export function SetupWorkflow({ setup }: SetupWorkflowProps) {
     handleStartWalk,
     handleIntroDone,
     handleKickoffStarted,
-    handleHiringCompleted,
-    handleHiringReset,
+    handleDeployTeamCompleted,
+    handleDeployTeamReset,
+    handleAnchorSkip,
     handleEnterOffice,
   } = setup;
 
@@ -88,7 +89,7 @@ export function SetupWorkflow({ setup }: SetupWorkflowProps) {
     );
   }
 
-  // Kickoff + hiring branches need a real CEO row. After the cinematic,
+  // Kickoff + deploy-team branches need a real CEO row. After the cinematic,
   // me.reload has fired and `me.company`+`agents` are populated. Defensive
   // null check prevents a render crash if the data races us — the next
   // me tick will resolve it.
@@ -106,12 +107,13 @@ export function SetupWorkflow({ setup }: SetupWorkflowProps) {
     );
   }
 
-  if (phase === "hiring") {
+  if (phase === "deploying-team") {
     return (
-      <HiringWindow
+      <KickoffWindow
         companyId={company.id}
-        onCompleted={handleHiringCompleted}
-        onReset={handleHiringReset}
+        onCompleted={handleDeployTeamCompleted}
+        onReset={handleDeployTeamReset}
+        onAnchorSkip={handleAnchorSkip}
       />
     );
   }

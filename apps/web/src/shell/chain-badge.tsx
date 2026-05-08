@@ -25,13 +25,13 @@ export function ChainBadge({ className }: ChainBadgeProps) {
   return (
     <div
       className={cn(
-        "inline-flex items-center text-sm font-medium text-white/65",
+        "inline-flex items-center text-[11px] font-light text-white/55",
         className,
       )}
       title={`Solana ${LABEL[cluster]}`}
       aria-label={`Solana ${LABEL[cluster]}`}
     >
-      {LABEL[cluster]}
+      Network {LABEL[cluster]}
     </div>
   );
 }

@@ -3,8 +3,9 @@ import { ERROR_CODES } from "@occa/shared/error-codes";
 import { LIMITS } from "../lib/limits";
 import { StatusCodes } from "http-status-codes";
 import { z } from "zod";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { db } from "../infra/database/client";
+import { createTaskRecord } from "../infra/database/task-creation";
 import {
   agentRuntimeProfile,
   approvals,
@@ -213,20 +214,6 @@ async function runApprovalSideEffect(
   }
 }
 
-// Allocates the next per-company task_number. Mirrors the routine in
-// routes/tasks.ts.
-async function nextTaskNumber(
-  tx: typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0],
-  companyId: string,
-): Promise<number> {
-  const result = await tx.execute<{ max: number | null }>(sql`
-    SELECT COALESCE(MAX(task_number), 0) AS max
-    FROM tasks
-    WHERE company_id = ${companyId}
-  `);
-  return (result.rows?.[0]?.max ?? 0) + 1;
-}
-
 async function runDelegate(
   approval: typeof approvals.$inferSelect,
 ): Promise<typeof approvals.$inferSelect> {
@@ -261,40 +248,35 @@ async function runDelegate(
     throw new Error("delegate_target_missing");
   }
 
-  // DB-only side effect → run inside a tx for atomicity (task insert +
-  // approval payload stamp succeed together or not at all).
-  return db.transaction(async (tx) => {
-    const nextNumber = await nextTaskNumber(tx, approval.companyId);
-    const blocks: ContentBlock[] = [
-      { type: "paragraph", text: dp.description as string },
-    ];
-
-    const [newTask] = await tx
-      .insert(tasks)
-      .values({
-        companyId: approval.companyId,
-        taskNumber: nextNumber,
-        assignedDeploymentId: dp.targetAgentId,
-        parentTaskId: dp.parentTaskId ?? null,
-        createdByDeploymentId: approval.requestedByDeploymentId,
-        createdByUserId: null,
-        title: dp.title as string,
-        blocks,
-        status: "todo",
-        acceptanceCriteria: dp.acceptanceCriteria ?? null,
-      })
-      .returning({ id: tasks.id });
-
-    const [stamped] = await tx
-      .update(approvals)
-      .set({
-        payload: { ...dp, spawnedTaskId: newTask.id },
-        updatedAt: new Date(),
-      })
-      .where(eq(approvals.id, approval.id))
-      .returning();
-    return stamped;
+  const blocks: ContentBlock[] = [
+    { type: "paragraph", text: dp.description as string },
+  ];
+  const newTask = await createTaskRecord({
+    companyId: approval.companyId,
+    title: dp.title as string,
+    blocks,
+    status: "todo",
+    priority: "medium",
+    taskType: "other",
+    effortLevel: "m",
+    tags: [],
+    dueDate: null,
+    assignedDeploymentId: dp.targetAgentId,
+    parentTaskId: dp.parentTaskId ?? null,
+    createdByUserId: null,
+    createdByDeploymentId: approval.requestedByDeploymentId,
+    acceptanceCriteria: dp.acceptanceCriteria ?? null,
   });
+
+  const [stamped] = await db
+    .update(approvals)
+    .set({
+      payload: { ...dp, spawnedTaskId: newTask.id },
+      updatedAt: new Date(),
+    })
+    .where(eq(approvals.id, approval.id))
+    .returning();
+  return stamped;
 }
 
 async function runHire(
@@ -364,45 +346,42 @@ async function runHire(
   const newDeployment = create.deployment;
 
   // Insert the first task assigned to the new agent + stamp both the
-  // spawned ids onto the approval payload. Single tx — if the task
-  // insert fails after the agent was created, the agent stays (no
-  // network rollback) but the approval marks the failure.
-  return db.transaction(async (tx) => {
-    const nextNumber = await nextTaskNumber(tx, approval.companyId);
-    const blocks: ContentBlock[] = [
-      { type: "paragraph", text: hp.description as string },
-    ];
-
-    const [newTask] = await tx
-      .insert(tasks)
-      .values({
-        companyId: approval.companyId,
-        taskNumber: nextNumber,
-        assignedDeploymentId: newDeployment.id,
-        parentTaskId: hp.parentTaskId ?? null,
-        createdByDeploymentId: approval.requestedByDeploymentId,
-        createdByUserId: null,
-        title: hp.title as string,
-        blocks,
-        status: "todo",
-        acceptanceCriteria: hp.acceptanceCriteria ?? null,
-      })
-      .returning({ id: tasks.id });
-
-    const [stamped] = await tx
-      .update(approvals)
-      .set({
-        payload: {
-          ...hp,
-          spawnedAgentId: newDeployment.id,
-          spawnedTaskId: newTask.id,
-        },
-        updatedAt: new Date(),
-      })
-      .where(eq(approvals.id, approval.id))
-      .returning();
-    return stamped;
+  // spawned ids onto the approval payload. If the task insert fails
+  // after the agent was created, the agent stays (no network rollback)
+  // but the approval marks the failure.
+  const blocks: ContentBlock[] = [
+    { type: "paragraph", text: hp.description as string },
+  ];
+  const newTask = await createTaskRecord({
+    companyId: approval.companyId,
+    title: hp.title as string,
+    blocks,
+    status: "todo",
+    priority: "medium",
+    taskType: "other",
+    effortLevel: "m",
+    tags: [],
+    dueDate: null,
+    assignedDeploymentId: newDeployment.id,
+    parentTaskId: hp.parentTaskId ?? null,
+    createdByUserId: null,
+    createdByDeploymentId: approval.requestedByDeploymentId,
+    acceptanceCriteria: hp.acceptanceCriteria ?? null,
   });
+
+  const [stamped] = await db
+    .update(approvals)
+    .set({
+      payload: {
+        ...hp,
+        spawnedAgentId: newDeployment.id,
+        spawnedTaskId: newTask.id,
+      },
+      updatedAt: new Date(),
+    })
+    .where(eq(approvals.id, approval.id))
+    .returning();
+  return stamped;
 }
 
 export default router;

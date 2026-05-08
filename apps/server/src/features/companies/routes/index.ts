@@ -3,8 +3,14 @@ import { ERROR_CODES } from "@occa/shared/error-codes";
 import { LIMITS } from "../../../lib/limits";
 import { StatusCodes } from "http-status-codes";
 import { z } from "zod";
+import { PublicKey } from "@solana/web3.js";
 import { and, count, eq, sql } from "drizzle-orm";
-import { companies, deployments, tasks } from "@occa/shared/schema";
+import {
+  agentIdentities,
+  companies,
+  deployments,
+  tasks,
+} from "@occa/shared/schema";
 import type {
   CompanyResponse,
   CompanyStats,
@@ -17,7 +23,7 @@ import {
   updateCompanyBody,
 } from "../domain/schemas";
 import {
-  KICKOFF_MAX_HIRES,
+  KICKOFF_MAX_DEPLOYMENTS,
   KICKOFF_ROLE_CATALOG,
   TEAM_SIZE_PRESETS,
   startKickoff,
@@ -253,14 +259,14 @@ router.post("/:id/resume", requireAuth, async (req: Request, res: Response) => {
 
 // ── Kickoff endpoints ────────────────────────────────────────────────────────
 //
-// Drives the post-onboarding "discovery → bulk hire → background provision
+// Drives the post-onboarding "discovery → bulk deploy → background provision
 // → team meeting" flow. /start receives the dialog answers and queues the
 // async provisioning. /status streams progress (kickoff state + per-agent
 // state) so the UI can render the progress banner without polling.
 
-// Catalog of all hireable roles. Drives the kickoff dialog tag picker —
+// Catalog of all deployable roles. Drives the kickoff dialog tag picker —
 // returned as a flat list (excluding the always-present CEO) plus the max
-// hire cap. Auth-gated so we don't leak default names publicly.
+// deployment cap. Auth-gated so we don't leak default names publicly.
 router.get("/kickoff/roles", requireAuth, (_req: Request, res: Response) => {
   const roles = Object.values(KICKOFF_ROLE_CATALOG)
     .filter((r) => r.key !== CEO_ROLE)
@@ -271,7 +277,7 @@ router.get("/kickoff/roles", requireAuth, (_req: Request, res: Response) => {
       category: r.category,
       defaultName: r.defaultName,
     }));
-  res.status(StatusCodes.OK).json({ roles, maxHires: KICKOFF_MAX_HIRES });
+  res.status(StatusCodes.OK).json({ roles, maxDeployments: KICKOFF_MAX_DEPLOYMENTS });
 });
 
 const kickoffStartBody = z.object({
@@ -308,6 +314,63 @@ router.post(
       return;
     }
 
+    // Pre-flight: kickoff inserts deployments referencing the CEO by index +
+    // expects the company to be on chain. If onboarding's anchor flow
+    // hasn't completed, every deployment would land with placeholder PDAs and
+    // the batch-anchor button on the FE would silently fail at server
+    // verification. Block here with a clear error so the user is sent
+    // back to finish anchoring instead.
+    const companyAnchored = (() => {
+      if (!loaded.company.companyPda) return false;
+      try {
+        new PublicKey(loaded.company.companyPda);
+        return true;
+      } catch {
+        return false;
+      }
+    })();
+    if (!companyAnchored) {
+      res
+        .status(StatusCodes.PRECONDITION_FAILED)
+        .json({
+          error: ERROR_CODES.CHAIN_NOT_ANCHORED,
+          detail: "Company is not registered on-chain yet.",
+        });
+      return;
+    }
+    const [ceoIdentityRow] = await db
+      .select({ identityPda: agentIdentities.identityPda })
+      .from(deployments)
+      .innerJoin(
+        agentIdentities,
+        eq(deployments.agentIdentityId, agentIdentities.id),
+      )
+      .where(
+        and(
+          eq(deployments.companyId, loaded.company.id),
+          eq(deployments.role, CEO_ROLE),
+        ),
+      )
+      .limit(1);
+    const ceoAnchored = (() => {
+      if (!ceoIdentityRow?.identityPda) return false;
+      try {
+        new PublicKey(ceoIdentityRow.identityPda);
+        return true;
+      } catch {
+        return false;
+      }
+    })();
+    if (!ceoAnchored) {
+      res
+        .status(StatusCodes.PRECONDITION_FAILED)
+        .json({
+          error: ERROR_CODES.CHAIN_NOT_ANCHORED,
+          detail: "CEO identity is not registered on-chain yet.",
+        });
+      return;
+    }
+
     const parsed = kickoffStartBody.safeParse(req.body);
     if (!parsed.success) {
       res
@@ -317,7 +380,7 @@ router.post(
     }
     const body = parsed.data;
 
-    // Resolve roles. Reject CEO from the hire list — already exists.
+    // Resolve roles. Reject CEO from the deploy list — already exists.
     let resolvedRoles: AgentRole[] = body.roles
       ? body.roles
       : body.preset
@@ -329,14 +392,14 @@ router.post(
         .status(StatusCodes.BAD_REQUEST)
         .json({
           error: ERROR_CODES.NO_ROLES_SELECTED,
-          detail: "Pick at least one role to hire.",
+          detail: "Pick at least one role to deploy.",
         });
       return;
     }
-    if (resolvedRoles.length > KICKOFF_MAX_HIRES) {
+    if (resolvedRoles.length > KICKOFF_MAX_DEPLOYMENTS) {
       res.status(StatusCodes.BAD_REQUEST).json({
         error: ERROR_CODES.TOO_MANY_ROLES,
-        detail: `Pick at most ${KICKOFF_MAX_HIRES} hires.`,
+        detail: `Pick at most ${KICKOFF_MAX_DEPLOYMENTS} deployments.`,
       });
       return;
     }
@@ -348,11 +411,11 @@ router.post(
         audience: body.audience ?? null,
         brandVoice: body.brandVoice ?? null,
         contentPillars: body.contentPillars ?? [],
-        rolesToHire: resolvedRoles,
+        rolesToDeploy: resolvedRoles,
       });
       res.status(StatusCodes.ACCEPTED).json({
         ok: true,
-        hiredAgentIds: result.hiredAgentIds,
+        deployedAgentIds: result.deployedAgentIds,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : "kickoff_failed";
@@ -457,7 +520,7 @@ router.get(
       lastSerialized = ser;
       emit("status", frame);
       // Stop streaming once kickoff has fully completed — provisioning
-      // pass is done (whether or not all hires succeeded).
+      // pass is done (whether or not all deployments succeeded).
       if (frame.kickoffState === "completed") {
         clearInterval(interval);
         emit("done", { kickoffState: frame.kickoffState });
@@ -468,7 +531,7 @@ router.get(
 );
 
 // Reset kickoff to 'not_started'. Used as the escape hatch when a kickoff
-// gets stuck (e.g. all hires failed provisioning, gateway was down).
+// gets stuck (e.g. all deployments failed provisioning, gateway was down).
 // Drops every non-CEO agent + every kickoff-tagged task so the user can
 // re-pick their team from a clean slate.
 router.post(

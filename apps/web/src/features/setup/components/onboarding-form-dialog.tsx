@@ -22,6 +22,7 @@ type StepType = "dialog" | "input" | "probing" | "review";
 // survives any reordering of the steps array.
 type StepKey =
   | "intro-hello"
+  | "intro-dev-mode"
   | "intro-purpose"
   | "company-input"
   | "company-ack"
@@ -60,8 +61,13 @@ function buildSteps(): Step[] {
   return [
     { key: "intro-hello", text: "Hey. Glad you're here.", stepType: "dialog" },
     {
+      key: "intro-dev-mode",
+      text: "Heads up first. This is still dev mode, so not everything is wired up yet. Some things will break, some things just aren't there. Feel free to try anyway.",
+      stepType: "dialog",
+    },
+    {
       key: "intro-purpose",
-      text: "I'm Jia. You don't have a company yet — let's set one up.",
+      text: "I'm Jia. You don't have a company yet. Let's set one up.",
       stepType: "dialog",
     },
     {
@@ -118,7 +124,7 @@ function buildSteps(): Step[] {
     },
     {
       key: "pairing-info",
-      text: "One thing before we connect — OpenClaw asks you to approve OCCA the first time. I'll guide you through it. Takes a sec, only once.",
+      text: "One thing before we connect. OpenClaw asks you to approve OCCA the first time. I'll walk you through it. Takes a sec, just once.",
       stepType: "dialog",
     },
     {
@@ -142,7 +148,7 @@ function prettifyProbeError(code: string | undefined): {
     case "unreachable":
       return {
         headline: "Gateway unreachable.",
-        hint: "TCP/WS handshake failed — verify host, port, and that the gateway process is running.",
+        hint: "TCP/WS handshake failed. Check the host, the port, and that the gateway process is up.",
       };
     case "unauthorized":
       return {
@@ -168,7 +174,7 @@ function prettifyProbeError(code: string | undefined): {
 }
 
 function maskApiKey(key: string): string {
-  if (!key) return "—";
+  if (!key) return "Not set";
   if (key.length <= 6) return "••••";
   return `${"•".repeat(4)}${key.slice(-4)}`;
 }
@@ -736,7 +742,7 @@ export function OnboardingFormDialog({
                 <div className="rounded-xl border border-white/10 bg-white/3 divide-y divide-white/5">
                   <ReviewRow
                     label="Company"
-                    value={form.companyName || "—"}
+                    value={form.companyName || "Not set"}
                     onEdit={
                       companyExists
                         ? undefined
@@ -744,18 +750,18 @@ export function OnboardingFormDialog({
                     }
                     lockedHint={
                       companyExists
-                        ? "Already created — rename later in settings."
+                        ? "Already created. You can rename it later in settings."
                         : undefined
                     }
                   />
                   <ReviewRow
                     label="Agent"
-                    value={`${form.agentName || "—"}${form.agentRole ? ` (${form.agentRole})` : ""}`}
+                    value={`${form.agentName || "Not set"}${form.agentRole ? ` (${form.agentRole})` : ""}`}
                     onEdit={() => jumpToEdit("agent-input")}
                   />
                   <ReviewRow
                     label="Gateway URL"
-                    value={form.adapterConfig.gatewayUrl || "—"}
+                    value={form.adapterConfig.gatewayUrl || "Not set"}
                     mono
                     onEdit={() => jumpToEdit("gateway-input")}
                   />
@@ -773,7 +779,7 @@ export function OnboardingFormDialog({
                       <>
                         <div className="h-2 w-2 rounded-full bg-blue-400 shrink-0" />
                         <span className="text-[11px] text-blue-300/90 truncate">
-                          Resuming previous setup — credentials stored
+                          Resuming previous setup. Credentials stored.
                         </span>
                       </>
                     ) : canLaunch ? (
@@ -787,7 +793,7 @@ export function OnboardingFormDialog({
                       <>
                         <div className="h-2 w-2 rounded-full bg-amber-400 shrink-0" />
                         <span className="text-[11px] text-amber-300/90 truncate">
-                          Re-verify gateway before launch
+                          Verify the gateway again before launch
                         </span>
                       </>
                     )}
@@ -834,8 +840,8 @@ export function OnboardingFormDialog({
 
             {currentStepKey === "review" && (
               <p className="mt-2 text-center text-[10px] text-white/35">
-                Double-check before launch — once Jia starts provisioning, the
-                gateway will restart to add the new agent.
+                Double-check before launch. Once Jia starts provisioning, the
+                gateway restarts to add the new agent.
               </p>
             )}
           </Card>

@@ -47,7 +47,7 @@ export function FpsIndicator({ className, embedded = false }: FpsIndicatorProps)
   const text = (
     <span
       className={cn(
-        "font-mono text-sm tabular-nums",
+        "font-mono text-[11px] font-light tabular-nums",
         fps == null ? "text-white/40" : fpsColour(fps),
       )}
     >

@@ -1,9 +1,23 @@
 import type { Job } from "pg-boss";
 import { childLogger } from "../../lib/logger";
-import { dispatchTask } from "../../services/task-dispatcher";
+import { dispatchTask } from "../../features/tasks/services/dispatcher";
+import {
+  canDeploy,
+  listSubordinates,
+} from "../../features/agents/services/deployment-hierarchy";
 import { getBoss, TASK_DISPATCH_QUEUE, type TaskDispatchJobData } from "./boss";
 
 const log = childLogger("task-worker");
+
+// Composition root for the task dispatch flow. Imports cross-feature
+// primitives (canDeploy from agents, listSubordinates from agents) and
+// threads them as injected deps into the dispatcher service. Keeps the
+// dispatcher itself free of cross-feature imports while still wiring
+// the pieces together.
+const dispatchDeps = {
+  canDeploy,
+  listSubordinates,
+};
 
 export async function registerTaskWorker(): Promise<void> {
   const boss = await getBoss();
@@ -11,9 +25,9 @@ export async function registerTaskWorker(): Promise<void> {
   await boss.work<TaskDispatchJobData>(
     TASK_DISPATCH_QUEUE,
     {
-      // Number of worker pollers in this node; each picks up jobs independently.
-      // A task can block for minutes waiting on the gateway reply, so we want
-      // some parallelism here.
+      // Number of worker pollers in this node; each picks up jobs
+      // independently. A task can block for minutes waiting on the
+      // gateway reply, so we want some parallelism here.
       localConcurrency: 3,
       pollingIntervalSeconds: 2,
     },
@@ -22,7 +36,7 @@ export async function registerTaskWorker(): Promise<void> {
         const { taskId } = job.data;
         log.info({ taskId, jobId: job.id }, "dispatching task");
         try {
-          await dispatchTask(taskId);
+          await dispatchTask(taskId, dispatchDeps);
           log.info({ taskId, jobId: job.id }, "task completed");
         } catch (err) {
           log.error({ err, taskId, jobId: job.id }, "task dispatch failed");

@@ -1,0 +1,36 @@
+%% Treasury Program — CPI sequence at company creation
+%% Source: treasury-program-design.md §6
+%% Atomicity: entire flow runs in one tx; any failure reverts everything.
+
+sequenceDiagram
+    autonumber
+    actor Op as Operator (FE)
+    participant Reg as Registry Program
+    participant Tre as Treasury Program
+    participant CA as CompanyAccount PDA
+    participant TA as TreasuryAccount PDA
+    participant PA as PolicyAccount PDA
+
+    Op->>+Reg: create_company(name, controlling_authority, …)
+
+    Reg->>+CA: allocate + rent-fund + init
+    Note over CA: treasury = Pubkey::default()<br/>policy   = Pubkey::default()<br/>(placeholders, will be overwritten)
+    CA-->>-Reg: ok
+
+    Reg->>+Tre: CPI · init_treasury(company_pda)
+
+    Tre->>+TA: derive PDA<br/>seeds = ["treasury", company_pda]<br/>allocate + rent-fund
+    Note over TA: company = company_pda<br/>accepted_assets = [SOL_PSEUDO_MINT]<br/>version = 1
+    TA-->>-Tre: treasury_pda
+
+    Tre->>+PA: derive PDA<br/>seeds = ["policy", company_pda]<br/>allocate + rent-fund
+    Note over PA: zero budgets<br/>secondary_signer = None<br/>agent_operating_fee_bps = 300<br/>current_period_anchor = month_start(now)<br/>version = 1
+    PA-->>-Tre: policy_pda
+
+    Tre-->>-Reg: (treasury_pda, policy_pda)
+
+    Reg->>CA: write back<br/>CompanyAccount.treasury = treasury_pda<br/>CompanyAccount.policy   = policy_pda
+
+    Reg-->>-Op: tx confirmed
+
+    Note over Op,PA: ⛓ Atomic — any failure inside the tx<br/>reverts CompanyAccount creation too.<br/>No window where Company exists with<br/>invalid Treasury/Policy pointers.

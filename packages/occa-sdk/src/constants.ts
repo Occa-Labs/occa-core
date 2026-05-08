@@ -8,7 +8,7 @@ import { PublicKey } from "@solana/web3.js";
 // NOTE: this is the devnet program ID. Mainnet will likely have a
 // different program ID — when that day comes, swap via env or config.
 export const REGISTRY_PROGRAM_ID_BASE58 =
-  "occa53sXCgBPvd2omBH47626V6jyJ28ove5xNX8uEtN";
+  "occaTHMv5eYG5aZ85jimxTvHkBfsDCvndXC6J2k8kxr";
 
 export const REGISTRY_PROGRAM_ID = new PublicKey(REGISTRY_PROGRAM_ID_BASE58);
 

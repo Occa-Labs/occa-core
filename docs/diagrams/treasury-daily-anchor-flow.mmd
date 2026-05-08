@@ -1,0 +1,41 @@
+%% Treasury Program — daily Merkle anchor flow
+%% Source: treasury-program-design.md §2 (Trace architecture, Daily anchor signer),
+%%         §3.3 (OperationsAccount[Anchor]), §11 (out-of-scope: Trace Anchor Program)
+%% Note: commit_daily_anchor instruction lives in Registry Program, not Treasury.
+%%       OperationsAccount[Anchor] is read cross-program by Registry to validate signer.
+
+sequenceDiagram
+    autonumber
+    participant Cron as OCCA Backend<br/>(daily cron)
+    participant DB as OCCA DB<br/>(off-chain trace)
+    participant AW as Anchor Wallet<br/>(shared key)
+    participant Reg as Registry Program
+    participant OA as OperationsAccount<br/>[Anchor]<br/>(in Treasury)
+    participant Da as DailyAnchorAccount<br/>(in Registry)
+
+    Note over Cron: Once per day per active agent.<br/>Anchor Wallet privkey held by OCCA backend —<br/>operator retains own copy for backup/failover.
+
+    Cron->>DB: SELECT task_hash<br/>WHERE agent_id = ? AND day = ?
+    DB-->>Cron: hashes[] (count ≥ 0)
+
+    alt hashes is empty
+        Note over Cron: Skip — no anchor for empty days.
+    else hashes non-empty
+        Cron->>Cron: merkle_root = merkle(hashes)
+
+        Cron->>+AW: sign tx
+        AW-->>-Cron: signed tx
+
+        Cron->>+Reg: commit_daily_anchor(<br/>company, agent, day,<br/>merkle_root, hash_count)
+
+        Reg->>OA: cross-program account read
+        Note over OA: signer == OA.signer?<br/>commit_daily_anchor ∈ action_whitelist?<br/>¬revoked? ¬expired?<br/>rate-limit (lazy period reset)?
+
+        Reg->>+Da: derive PDA<br/>seeds = ["anchor", company, agent, day]<br/>allocate + rent-fund
+        Note over Da: company, agent, day,<br/>merkle_root, hash_count,<br/>committed_at = now
+        Da-->>-Reg: ok
+
+        Reg-->>-Cron: tx confirmed
+    end
+
+    Note over Cron,Da: Per-task records stay in DB (cheap).<br/>Only the daily Merkle root hits chain.<br/>Auditor verifies a task by re-deriving its Merkle proof against<br/>the on-chain root for that (agent, day).

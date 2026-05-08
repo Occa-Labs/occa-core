@@ -1,0 +1,37 @@
+%% OCCA program ↔ account-ownership map (Variant B: grouped, ~50% lighter)
+%% Pake subgraph per program → visual grouping ngerampingin edge.
+%% Reputation di-keep sebagai node standalone karena pure reader (no own accounts).
+
+flowchart LR
+    subgraph Registry["Registry Program"]
+        CO[CompanyAccount]
+        AI[AgentIdentity]
+        DE[Deployment]
+        SK[SkillAccount]
+        RT[RoutineAccount]
+        DA[DailyAnchorAccount]
+    end
+
+    subgraph Treasury["Treasury Program"]
+        TR[TreasuryAccount]
+        PO[PolicyAccount]
+        OA[OperationsAccount]
+        PFA[ProtocolFeeAccount]
+    end
+
+    subgraph Marketplace["Marketplace Program"]
+        CT[ContractAccount]
+        LS[ListingAccount]
+        LC[LicenseAccount]
+    end
+
+    REP[Reputation Program]
+    REP -.->|reads| AI
+    REP -.->|reads| DA
+    REP -.->|reads| CT
+
+    classDef prog fill:#1a3a5c,stroke:#5b9bd5,color:#dde8f5,stroke-width:2px
+    classDef acc fill:#2a2a2a,stroke:#888888,color:#dddddd
+
+    class REP prog
+    class CO,AI,DE,SK,RT,DA,TR,PO,OA,PFA,CT,LS,LC acc
