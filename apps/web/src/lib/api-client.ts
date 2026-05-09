@@ -35,7 +35,13 @@ export async function request<T>(
     }
     throw new ApiError(res.status, body);
   }
-  return res.json() as Promise<T>;
+  // 204 No Content + any genuinely empty body → return undefined cast.
+  // Calling res.json() on those would throw "Unexpected end of JSON
+  // input" and break callers like DELETE that don't expect a payload.
+  if (res.status === 204) return undefined as T;
+  const text = await res.text();
+  if (text.length === 0) return undefined as T;
+  return JSON.parse(text) as T;
 }
 
 // Typed error for downstream catch blocks. Once the server adopts the

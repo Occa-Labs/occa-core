@@ -2,8 +2,6 @@
 
 Contract between an OCCA agent runtime (today: OpenClaw) and the OCCA server. Two channels — block markers and HTTP — plus a unified per-task event log that captures every action.
 
-Companion docs: [task-system-design.md](../../task-system-design.md), [task-system-implementation-plan.md](../../task-system-implementation-plan.md).
-
 ## Overview
 
 | Channel | When to use | Validation timing |
@@ -174,6 +172,6 @@ Best-effort writes via `appendTaskEventBestEffort` — if the append fails, the 
 
 ## Known limitations
 
-- **Worker dispatch path partially parses markers.** Only `REVIEW` is detected on the worker path (in [apps/worker/src/task-sync.ts](../apps/worker/src/task-sync.ts)) — it triggers the status flip + `agent_action_emitted` row. `DELEGATE` and `BLOCK` are still server-only: cron-driven traces that emit those markers will not create approvals or set blockers. Closing this gap requires extracting the action-block handlers ([features/tasks/services/action-blocks/](../apps/server/src/features/tasks/services/action-blocks/)) into a worker-reachable module — currently coupled to server `db` + `createTaskComment`. Tracked for a future refactor.
+- **Worker dispatch path: detection-only for DELEGATE / BLOCK.** The worker path ([apps/worker/src/task-sync.ts](../apps/worker/src/task-sync.ts)) parses every marker via `@occa/shared/markers.extractActionBlocks` and emits an `agent_action_emitted` audit row for each, so the task timeline reflects what the agent attempted. `REVIEW` is fully handled (status flip + audit). `DELEGATE` and `BLOCK` are detection-only — the audit row carries `outcome: "ignored", reason: "worker_path_detection_only"` because the actual side-effects (approval insert for DELEGATE, `blockedByTaskIds` update + mention wake for BLOCK) live in the server-only handlers under [features/tasks/services/action-blocks/](../apps/server/src/features/tasks/services/action-blocks/). Closing the gap fully requires extracting those handlers into a worker-importable module that accepts `db` + `canDeploy` + `createTaskComment` as DI deps; tracked for a future refactor.
 - **Per-trace key is minted only on the worker path.** The server `sendPrompt` dispatch path doesn't mint a per-trace key; agents on that path can still call HTTP endpoints if they have a longer-lived deployment key, but ephemeral-key semantics differ between paths.
 - **No webhook/external-trigger surface.** All actions originate from a running agent context with a valid bearer token. External triggers (Lindy-style) are deferred to feature phase.

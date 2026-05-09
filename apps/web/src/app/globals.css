@@ -228,4 +228,31 @@ body {
   html {
     @apply font-sans;
   }
+
+  /* Dark, subtle scrollbars across the OS shell. macOS WebKit defaults
+     bright on dark backgrounds; Firefox uses scrollbar-color. Both are
+     applied so behavior is consistent regardless of engine. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  *::-webkit-scrollbar-thumb {
+    background-color: rgba(255, 255, 255, 0.12);
+    border-radius: 8px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(255, 255, 255, 0.22);
+  }
+  *::-webkit-scrollbar-corner {
+    background: transparent;
+  }
 }

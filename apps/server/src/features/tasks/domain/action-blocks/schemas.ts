@@ -27,9 +27,9 @@ export const blockBlockPayload = z.object({
   reason: z.string().trim().max(LIMITS.REASON).optional(),
 });
 
-// ASK marker removed per task-system-design.md Action catalog — agents
-// route clarification questions through RequestInfo (HTTP back-channel)
-// which posts a comment AND pauses the task so it lands in `review`.
+// ASK marker is intentionally absent — agents route clarification
+// questions through RequestInfo (HTTP back-channel) which posts a
+// comment AND pauses the task so it lands in `review`.
 
 export type DelegateBlockPayload = z.infer<typeof delegateBlockPayload>;
 export type BlockBlockPayload = z.infer<typeof blockBlockPayload>;

@@ -5,20 +5,22 @@
 // re-running the side-effect.
 //
 // Caps come from LIMITS (TASK_CHAIN_MAX_DEPTH, TASK_EMIT_MAX_CHILDREN);
-// see task-system-design.md §Hard caps for the empirical rationale.
+// see lib/limits.ts for the rationale on each value.
 //
 // Cross-feature note: this file lives in features/agents/ but creates
 // tasks (a features/tasks concept). It uses the infra/database/task-
-// creation primitive so the no-cross-feature-import rule stays clean.
-// Mention parsing for RequestInfo also runs through that primitive's
-// peer service (createTaskComment lives in features/tasks/services/),
-// which is the one explicit cross-feature import we accept here for
-// expedience — alternative would be another infra-level wrapper.
-// Documented as a known violation; revisit when comments grow more
-// behaviour and the primitive is worth extracting.
+// creation primitive plus the shared @occa/shared/task-events helper
+// for audit rows so no features/tasks/ code is imported for that path.
+// `createTaskComment` is still imported from features/tasks/services/
+// for RequestInfo's mention-parsed comment insert — the only remaining
+// cross-feature import in this file. Threading it via composition-root
+// DI is medium-risk plumbing (router/index changes); revisit when
+// comments grow more behaviour and a properly extracted primitive is
+// worth the churn.
 
 import { and, eq, sql } from "drizzle-orm";
 import { agentActionIdempotency, tasks } from "@occa/shared/schema";
+import { appendTaskEventBestEffort } from "@occa/shared/task-events";
 import type { AgentAuthContext } from "../../../middleware/agent-auth";
 import { db } from "../../../infra/database/client";
 import {
@@ -27,7 +29,6 @@ import {
 } from "../../../infra/database/task-creation";
 import { LIMITS } from "../../../lib/limits";
 import { childLogger } from "../../../lib/logger";
-import { appendTaskEventBestEffort } from "../../tasks/services/events";
 import { createTaskComment } from "../../tasks/services/comments";
 import type {
   EmitFollowUpRequest,
@@ -271,7 +272,7 @@ export async function emitFollowUp(
     throw err;
   }
 
-  void appendTaskEventBestEffort({
+  void appendTaskEventBestEffort(db, {
     companyId: agent.companyId,
     taskId: req.parentTaskId,
     eventType: "agent_action_emitted",
@@ -285,7 +286,7 @@ export async function emitFollowUp(
       reason: req.payload.reason,
     },
   });
-  void appendTaskEventBestEffort({
+  void appendTaskEventBestEffort(db, {
     companyId: agent.companyId,
     taskId: newTask.id,
     eventType: "task_created",
@@ -352,11 +353,10 @@ export async function requestInfo(
     result.comment.id,
   );
 
-  // Pause the task per task-system-design.md Action catalog: "Pause
-  // task, emit comment_added, notify user". Flip to `review` from any
-  // active state — a closed task stays closed (no resurrect). Skip the
-  // status change + event emission when the task is already in `review`
-  // or `done` to keep the timeline tidy.
+  // RequestInfo pauses the task: emit the comment, flip to `review`
+  // from any active state, notify the user. A closed task stays closed
+  // (no resurrect). Skip the status change + event emission when the
+  // task is already in `review` or `done` to keep the timeline tidy.
   //
   // FOR UPDATE row-lock serialises us against the dispatcher: it stops
   // a concurrent status flip from clobbering our pause (or vice versa).
@@ -386,7 +386,7 @@ export async function requestInfo(
     }
   });
   if (pausedTo) {
-    void appendTaskEventBestEffort({
+    void appendTaskEventBestEffort(db, {
       companyId: agent.companyId,
       taskId: req.taskId,
       eventType: "task_status_changed",
@@ -401,7 +401,7 @@ export async function requestInfo(
     });
   }
 
-  void appendTaskEventBestEffort({
+  void appendTaskEventBestEffort(db, {
     companyId: agent.companyId,
     taskId: req.taskId,
     eventType: "agent_action_emitted",

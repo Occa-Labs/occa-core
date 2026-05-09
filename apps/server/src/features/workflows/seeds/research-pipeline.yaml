@@ -36,7 +36,6 @@ steps:
       H1 / H2 / H3 outline with one-line intent per section. No
       prose yet — just structure ready for a writer to fill in.
 
-llm_can_deviate: true
 caps:
   max_depth: 2
   max_children: 3

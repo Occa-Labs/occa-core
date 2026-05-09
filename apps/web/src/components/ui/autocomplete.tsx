@@ -186,16 +186,23 @@ export const Autocomplete = forwardRef<HTMLInputElement, AutocompleteProps>(
 
     const allOptions = normalise(rawOptions);
 
-    // Filter: show matching options, or all if empty
-    const filtered = value.trim().length === 0
-      ? allOptions
-      : allOptions.filter((o) => {
-          const lv = value.toLowerCase();
-          return (
-            (o.label ?? o.value).toLowerCase().includes(lv) ||
-            o.value.toLowerCase().includes(lv)
-          );
-        });
+    // Filter: show matching options when the user is mid-typing. When
+    // the value is empty OR exactly equals an existing option (i.e.
+    // the user just confirmed a selection), show every option so they
+    // can see alternatives without first clearing the field.
+    const valueExactlyMatchesOption = allOptions.some(
+      (o) => o.value === value || (o.label ?? o.value) === value,
+    );
+    const filtered =
+      value.trim().length === 0 || valueExactlyMatchesOption
+        ? allOptions
+        : allOptions.filter((o) => {
+            const lv = value.toLowerCase();
+            return (
+              (o.label ?? o.value).toLowerCase().includes(lv) ||
+              o.value.toLowerCase().includes(lv)
+            );
+          });
 
     const showList = open && filtered.length > 0;
 

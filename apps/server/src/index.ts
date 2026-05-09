@@ -13,6 +13,15 @@ import { seedOccaDefaultSkills } from "./features/skills/services/seed-occa-defa
 import { enqueuePendingTasks, reapOrphans } from "./services/orphan-reaper";
 import { getBoss, stopBoss } from "./infra/queue/boss";
 import { registerTaskWorker } from "./infra/queue/task-worker";
+import { registerWorkflowWorker } from "./infra/queue/workflow-worker";
+import {
+  startWorkflowTriggerPoller,
+  stopWorkflowTriggerPoller,
+} from "./services/workflow-trigger-poller";
+import {
+  startIdempotencyCleanup,
+  stopIdempotencyCleanup,
+} from "./services/idempotency-cleanup";
 import authRouter from "./features/auth/routes";
 import meRouter from "./routes/me";
 import adaptersRouter from "./routes/adapters";
@@ -94,6 +103,12 @@ async function main() {
   // for now; easy to split into a separate apps/worker later.
   await getBoss();
   await registerTaskWorker();
+  await registerWorkflowWorker();
+  // Polls task_events for done transitions and enqueues workflow.evaluate
+  // jobs. Single hook point covers both server- and worker-finalised tasks.
+  startWorkflowTriggerPoller();
+  // Daily cleanup of old agent_action_idempotency rows. Best-effort.
+  startIdempotencyCleanup();
 
   // Auto-enqueue any task with an assigned agent that never got dispatched
   // (created before pg-boss existed, or reverted by the reaper above).
@@ -113,6 +128,8 @@ async function main() {
   const shutdown = async (signal: string) => {
     log.info({ signal }, "shutdown signal received");
     server.close();
+    stopWorkflowTriggerPoller();
+    stopIdempotencyCleanup();
     try {
       await stopBoss();
     } catch (err) {

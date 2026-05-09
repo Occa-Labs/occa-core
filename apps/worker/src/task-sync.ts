@@ -1,5 +1,6 @@
 import { and, eq, inArray } from "drizzle-orm";
 import { agentIdentities, deployments, tasks } from "@occa/shared/schema";
+import { extractActionBlocks } from "@occa/shared/markers";
 import type {
   ContentBlock,
   LivenessState,
@@ -209,9 +210,6 @@ export async function syncTaskOnTraceSucceeded(args: {
   }
   // Mirror the server dispatcher's REVIEW-marker emission so cron-driven
   // traces also land an `agent_action_emitted` row in the audit log.
-  // DELEGATE / BLOCK parsing in this path is still TODO — the worker
-  // would need access to the action-block handlers (see agent-protocol
-  // "Known limitations").
   if (needsReview) {
     void appendTaskEventBestEffort({
       companyId: row.companyId,
@@ -220,6 +218,35 @@ export async function syncTaskOnTraceSucceeded(args: {
       actorType: "agent",
       actorId: args.agentId,
       payload: { actionType: "REVIEW", channel: "block_marker" },
+      traceId: args.traceId,
+    });
+  }
+
+  // DELEGATE / BLOCK markers — partial parity. Worker detects + audits
+  // them so the timeline shows the agent attempted the action, but the
+  // actual side-effects (approval insert for DELEGATE, blockedByTaskIds
+  // update for BLOCK, hierarchy validation, mention wake) live in the
+  // server's action-blocks/handlers and aren't reachable from here yet.
+  // Documented as a known limitation in occa/docs/agent-protocol.md.
+  // Closing the gap fully needs the handlers extracted from
+  // features/tasks/services/action-blocks/ into a worker-importable
+  // module that takes db + canDeploy + createTaskComment as DI deps.
+  const blocks = extractActionBlocks(responseText);
+  for (const block of blocks) {
+    if (block.token !== "DELEGATE" && block.token !== "BLOCK") continue;
+    void appendTaskEventBestEffort({
+      companyId: row.companyId,
+      taskId: args.taskId,
+      eventType: "agent_action_emitted",
+      actorType: "agent",
+      actorId: args.agentId,
+      payload: {
+        actionType: block.token,
+        channel: "block_marker",
+        outcome: "ignored",
+        reason: "worker_path_detection_only",
+        actionPayload: block.body ?? null,
+      },
       traceId: args.traceId,
     });
   }

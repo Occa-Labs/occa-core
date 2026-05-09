@@ -134,6 +134,9 @@ function eventLabel(
     case "agent_action_emitted": {
       const actionType =
         typeof p.actionType === "string" ? p.actionType : "action";
+      if (actionType === "WorkflowExecuted") {
+        return workflowExecutedLabel(p);
+      }
       const reason = typeof p.reason === "string" ? p.reason : null;
       const title = typeof p.title === "string" ? p.title : null;
       return {
@@ -171,4 +174,37 @@ function eventLabel(
 
 function truncate(s: string, n: number): string {
   return s.length <= n ? s : s.slice(0, n - 1).trimEnd() + "…";
+}
+
+// WorkflowExecuted is a synthetic agent_action_emitted row written by
+// the server-side workflow engine. The payload has more structure than
+// other action types — break out a dedicated renderer.
+function workflowExecutedLabel(
+  p: Record<string, unknown>,
+): { label: string; detail?: string } {
+  const name = typeof p.workflowName === "string" ? p.workflowName : "workflow";
+  const spawned = Array.isArray(p.spawned) ? p.spawned : [];
+  const skipped = Array.isArray(p.skipped) ? p.skipped : [];
+  const capHits = Array.isArray(p.capHits) ? (p.capHits as string[]) : [];
+
+  const detailLines: string[] = [];
+  if (spawned.length > 0) {
+    const titles = spawned
+      .map((s) => (typeof s === "object" && s && "title" in s ? String((s as { title: unknown }).title) : ""))
+      .filter((t) => t.length > 0);
+    detailLines.push(
+      `spawned ${spawned.length}${titles.length > 0 ? `: ${titles.slice(0, 3).join(" · ")}${titles.length > 3 ? " …" : ""}` : ""}`,
+    );
+  }
+  if (skipped.length > 0) {
+    detailLines.push(`skipped ${skipped.length}`);
+  }
+  if (capHits.length > 0) {
+    detailLines.push(`caps: ${capHits.join(", ")}`);
+  }
+
+  return {
+    label: `Workflow: ${name}`,
+    detail: detailLines.length > 0 ? detailLines.join(" · ") : undefined,
+  };
 }

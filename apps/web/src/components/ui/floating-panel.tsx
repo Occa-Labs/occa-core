@@ -46,6 +46,20 @@ export interface FloatingPanelProps {
   defaultPosition?: { x: number; y: number };
   zIndex?: number;
   headerRight?: ReactNode;
+  /**
+   * When set, render a full-viewport layer below the panel that captures
+   * pointer events. Use when the panel is acting as a modal and clicks
+   * outside it should NOT pass through to draggable / resizable
+   * surfaces underneath (e.g. an AppWindow's resize edges).
+   *
+   * - "none" (default) — no backdrop; clicks fall through.
+   * - "transparent" — invisible, clicks blocked, click on it = onClose.
+   * - "block" — invisible, clicks blocked, panel stays open. Use when
+   *   the panel hosts a form the user has been filling for a while —
+   *   accidental outside clicks shouldn't drop the work.
+   * - "dim" — subtle dimming layer + click-to-close.
+   */
+  backdrop?: "none" | "transparent" | "block" | "dim";
 }
 
 // Off-screen starting coords: panel renders invisible at first, Floating UI
@@ -64,6 +78,7 @@ export function FloatingPanel({
   defaultPosition,
   zIndex = 200,
   headerRight,
+  backdrop = "none",
 }: FloatingPanelProps) {
   const [pos, setPos] = useState<{ x: number; y: number }>(INITIAL_OFFSCREEN);
   const [maxHeight, setMaxHeight] = useState<number | null>(null);
@@ -154,6 +169,16 @@ export function FloatingPanel({
     };
   }, [defaultPosition, width, height]);
 
+  // Esc closes regardless of backdrop mode — keyboard escape hatch even
+  // when click-outside is intentionally disabled (backdrop="block").
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
   const onDragDown = useCallback(
     (e: ReactPointerEvent<HTMLDivElement>) => {
       if (e.button !== 0) return;
@@ -190,8 +215,35 @@ export function FloatingPanel({
   }, []);
 
   return createPortal(
+    <>
+      {backdrop !== "none" && (
+        <div
+          // Synthetic events from a portal still bubble through the
+          // React component tree, so without stopPropagation the
+          // pointerdown would reach the AppWindow that hosts this panel
+          // and trigger its drag/resize handlers behind us. The same
+          // guard applies to the panel surface itself further below.
+          // "block" mode swallows the click silently; the others close.
+          onPointerDown={(e) => {
+            e.stopPropagation();
+            if (backdrop !== "block") onClose();
+          }}
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: zIndex - 1,
+            background:
+              backdrop === "dim" ? "rgba(0,0,0,0.35)" : "transparent",
+          }}
+        />
+      )}
     <div
       ref={panelRef}
+      // Bubble-phase, not capture: lets descendants (title-bar drag,
+      // form inputs, etc.) handle their events first, then stops the
+      // synthetic event from bubbling up to the AppWindow ancestor in
+      // the React tree, which would otherwise treat it as drag/resize.
+      onPointerDown={(e) => e.stopPropagation()}
       style={{
         position: "fixed",
         left: pos.x,
@@ -258,7 +310,8 @@ export function FloatingPanel({
       </div>
 
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>{children}</div>
-    </div>,
+    </div>
+    </>,
     document.body,
   );
 }

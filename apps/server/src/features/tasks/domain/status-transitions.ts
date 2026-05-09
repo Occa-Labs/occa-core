@@ -34,8 +34,8 @@ export interface DispatchOutcomeFlags {
 //   approval pending (DELEGATE) → `review`
 //   default  → `done`
 //
-// Clarification questions don't show up here: per task-system-design.md
-// they go through RequestInfo HTTP, which pauses the task itself.
+// Clarification questions don't show up here: they go through
+// RequestInfo HTTP, which pauses the task itself.
 export function nextStatusAfterDispatch(
   flags: DispatchOutcomeFlags,
 ): TaskStatus {

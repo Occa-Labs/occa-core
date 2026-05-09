@@ -22,6 +22,8 @@ import type {
   ListTaskCommentsResponse,
   ListTracesResponse,
   ListSkillsResponse,
+  ListWorkflowsResponse,
+  WorkflowDTO,
   ListTaskEventsResponse,
   ListTasksResponse,
   OpenclawAdapterConfig,
@@ -759,6 +761,27 @@ export const tracesApi = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+};
+
+interface WorkflowEnvelope {
+  workflow: WorkflowDTO;
+}
+
+export const workflowsApi = {
+  list: () => request<ListWorkflowsResponse>("/api/workflows"),
+  get: (id: string) => request<WorkflowEnvelope>(`/api/workflows/${id}`),
+  create: (input: { yamlText: string; enabled?: boolean }) =>
+    request<WorkflowEnvelope>("/api/workflows", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  patch: (id: string, input: { yamlText?: string; enabled?: boolean }) =>
+    request<WorkflowEnvelope>(`/api/workflows/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }),
+  remove: (id: string) =>
+    request<void>(`/api/workflows/${id}`, { method: "DELETE" }),
 };
 
 export const routinesApi = {

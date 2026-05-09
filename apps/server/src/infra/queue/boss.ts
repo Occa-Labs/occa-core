@@ -4,8 +4,13 @@ import { childLogger } from "../../lib/logger";
 const log = childLogger("pgboss");
 
 export const TASK_DISPATCH_QUEUE = "task.dispatch";
+export const WORKFLOW_EVALUATE_QUEUE = "workflow.evaluate";
 
 export interface TaskDispatchJobData {
+  taskId: string;
+}
+
+export interface WorkflowEvaluateJobData {
   taskId: string;
 }
 
@@ -40,6 +45,9 @@ export async function getBoss(): Promise<PgBoss> {
     // active at a time. Combined with singletonKey=taskId on send(), this
     // guarantees a task can't be dispatched in parallel from two callers.
     await boss.createQueue(TASK_DISPATCH_QUEUE, { policy: "exclusive" });
+    // Same exclusive policy for workflow evaluations — ensures a single
+    // task done-transition can't trigger concurrent engine runs.
+    await boss.createQueue(WORKFLOW_EVALUATE_QUEUE, { policy: "exclusive" });
 
     instance = boss;
     return boss;

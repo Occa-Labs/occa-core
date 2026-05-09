@@ -11,6 +11,7 @@ import {
   Library,
   Settings,
   Users,
+  Workflow,
   Wrench,
 } from "lucide-react";
 import { useAuth } from "@/features/auth/hooks/use-auth";
@@ -22,6 +23,7 @@ import { ApprovalsWindow } from "@/features/approvals/components/approvals-windo
 import { CompanyWindow } from "@/features/companies/components/company-window";
 import { SkillLibrary } from "@/features/skills/components/skill-library";
 import { RoutinesWindow } from "@/components/routines-window";
+import { WorkflowsWindow } from "@/features/workflows/components/workflows-window";
 import { SettingsWindow } from "@/components/settings-window";
 import { ChangelogsWindow } from "@/components/changelogs-window";
 import { DevWindow } from "@/features/dev-tools/components/dev-window";
@@ -104,6 +106,7 @@ export function OsShell({
     | "company"
     | "skills"
     | "routines"
+    | "workflows"
     | "changelogs"
     | "settings"
     | "dev";
@@ -171,6 +174,14 @@ export function OsShell({
             disabled: !FEATURES.tasks,
             disabledHint: "coming soon",
             onClick: () => toggle("tasks"),
+          },
+          {
+            icon: <Workflow className="size-5" />,
+            label: "Workflows",
+            active: activeWindow === "workflows",
+            disabled: !FEATURES.workflows,
+            disabledHint: "coming soon",
+            onClick: () => toggle("workflows"),
           },
           {
             icon: <Users className="size-5" />,
@@ -255,6 +266,9 @@ export function OsShell({
       )}
       {activeWindow === "routines" && FEATURES.routines && (
         <RoutinesWindow agents={me.agents} onClose={close} />
+      )}
+      {activeWindow === "workflows" && FEATURES.workflows && (
+        <WorkflowsWindow onClose={close} />
       )}
       {activeWindow === "changelogs" && <ChangelogsWindow onClose={close} />}
       {activeWindow === "settings" && (

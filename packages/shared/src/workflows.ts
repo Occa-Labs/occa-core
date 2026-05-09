@@ -1,19 +1,15 @@
-// Workflow definition contract — shared between server CRUD (Phase 5)
-// and the future workflow engine (Phase 6, server-only). The YAML
-// authored by users is the canonical editable form; this module's Zod
-// schemas validate it and produce a typed `WorkflowDefinition` that
-// downstream code can rely on without re-parsing.
+// Workflow definition contract — shared between server CRUD and the
+// workflow engine (server-only). The YAML authored by users is the
+// canonical editable form; this module's Zod schemas validate it and
+// produce a typed `WorkflowDefinition` that downstream code can rely
+// on without re-parsing.
 //
-// Two shapes are supported per task-system-design.md §Workflow concrete
-// sketch:
-//   - linear   (`steps:`)  — fan-out fixed children after task completion
-//   - branched (`classify:` + `branches:`) — LLM picks a branch by label
-//
+// Linear-only: `steps:` fan-out fixed children after task completion.
 // The engine reads `parsedDefinition` (jsonb) at trigger time. Parse
 // happens once on write; storage layer keeps yamlText + parsedDefinition
 // in lockstep so reads never need YAML.parse.
 
-import { parse as parseYaml, YAMLParseError } from "yaml";
+import { parse as parseYaml, stringify as stringifyYaml, YAMLParseError } from "yaml";
 import { z } from "zod";
 
 // Slug-shaped workflow id, unique per company. Constrained to keep the
@@ -59,7 +55,7 @@ const capsSchema = z
   })
   .optional();
 
-// Linear workflow — `steps:` is a flat list, all spawned (or skipped)
+// Linear workflow — `steps:` is a flat list, all spawned (or capped)
 // in a single fan-out per parent completion.
 const linearWorkflowSchema = z.object({
   id: yamlId,
@@ -67,56 +63,16 @@ const linearWorkflowSchema = z.object({
   description: z.string().trim().max(500).optional(),
   trigger: triggerSchema,
   steps: z.array(stepSchema).min(1).max(10),
-  llm_can_deviate: z.boolean().optional(),
   caps: capsSchema,
 });
 
-// Branched workflow — LLM classifies the parent result into one of the
-// branch labels, then we run that branch's step list. At least one
-// branch required; branch keys are arbitrary slugs the classifier picks.
-const branchedWorkflowSchema = z.object({
-  id: yamlId,
-  name: z.string().trim().min(1).max(120),
-  description: z.string().trim().max(500).optional(),
-  trigger: triggerSchema,
-  classify: z.object({
-    prompt: z.string().trim().min(1).max(2000),
-  }),
-  branches: z
-    .record(
-      z.string().trim().min(1).max(64),
-      z.array(stepSchema).min(1).max(10),
-    )
-    .refine((b) => Object.keys(b).length >= 1, {
-      message: "branches must have at least one entry",
-    }),
-  llm_can_deviate: z.boolean().optional(),
-  caps: capsSchema,
-});
-
-export const workflowDefinitionSchema = z.union([
-  linearWorkflowSchema.strict(),
-  branchedWorkflowSchema.strict(),
-]);
+export const workflowDefinitionSchema = linearWorkflowSchema.strict();
 
 export type SpawnStep = z.infer<typeof spawnStepSchema>;
 export type MetaActionStep = z.infer<typeof metaActionStepSchema>;
 export type WorkflowStep = z.infer<typeof stepSchema>;
 export type LinearWorkflowDefinition = z.infer<typeof linearWorkflowSchema>;
-export type BranchedWorkflowDefinition = z.infer<typeof branchedWorkflowSchema>;
-export type WorkflowDefinition = z.infer<typeof workflowDefinitionSchema>;
-
-export function isLinearWorkflow(
-  def: WorkflowDefinition,
-): def is LinearWorkflowDefinition {
-  return "steps" in def;
-}
-
-export function isBranchedWorkflow(
-  def: WorkflowDefinition,
-): def is BranchedWorkflowDefinition {
-  return "branches" in def;
-}
+export type WorkflowDefinition = LinearWorkflowDefinition;
 
 export interface ParsedWorkflow {
   yamlText: string;
@@ -130,6 +86,19 @@ export type WorkflowParseFailure =
 export type WorkflowParseResult =
   | { ok: true; value: ParsedWorkflow }
   | { ok: false; error: WorkflowParseFailure };
+
+// Convert a typed definition back to a YAML string. Used by the form
+// editor to serialize before POSTing — server still validates as a
+// belt-and-braces check. Output is human-readable: 2-space indent,
+// double-quoted titles to preserve `{{...}}` and special characters.
+export function serializeWorkflowToYaml(def: WorkflowDefinition): string {
+  return stringifyYaml(def, {
+    indent: 2,
+    lineWidth: 0,
+    defaultStringType: "QUOTE_DOUBLE",
+    defaultKeyType: "PLAIN",
+  });
+}
 
 // Two-stage parse: YAML → object, then Zod → typed definition. YAML
 // errors return location info so the UI can highlight a line; Zod

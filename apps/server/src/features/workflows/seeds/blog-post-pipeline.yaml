@@ -2,8 +2,7 @@ id: blog-post-pipeline
 name: Blog Post Production
 description: >
   Auto-spawn fact-check, SEO review, and image suggestion follow-up
-  tasks after a blog draft completes. The LLM evaluator may skip a
-  step (e.g. SEO review on an early draft) with a logged reason.
+  tasks after a blog draft completes.
 
 trigger:
   when: task.completed
@@ -30,7 +29,6 @@ steps:
       Recommend 3–5 hero / inline images. For data-heavy drafts,
       prefer charts over stock photography.
 
-llm_can_deviate: true
 caps:
   max_depth: 2
   max_children: 3
