@@ -12,8 +12,10 @@ import {
   Archive,
   ArchiveRestore,
   AlertTriangle,
+  Check,
   RotateCcw,
   Trash2,
+  X,
 } from "lucide-react";
 import { FloatingPanel } from "@/components/ui/floating-panel";
 import type {
@@ -45,18 +47,24 @@ import { TaskTimeline } from "./task-timeline";
 
 export function TaskDetail({
   task,
+  parentTask,
+  childTasks,
   triggerRect,
   agentList,
   onUpdate,
   onDelete,
   onClose,
+  onNavigateToTask,
 }: {
   task: TaskDTO;
+  parentTask?: TaskDTO | null;
+  childTasks?: TaskDTO[];
   triggerRect?: DOMRect | null;
   agentList?: { id: string; name: string; role: string }[];
   onUpdate: (data: UpdateTaskRequest) => void;
   onDelete: () => void;
   onClose: () => void;
+  onNavigateToTask?: (task: TaskDTO) => void;
 }) {
   const queryClient = useQueryClient();
   const rerunTask = useRerunTask();
@@ -99,6 +107,12 @@ export function TaskDetail({
   const handleRerun = useCallback(() => {
     rerunTask.mutate(task.id);
   }, [rerunTask, task.id]);
+
+  // Mark a reviewing task as done — explicit approve from the banner.
+  // Triggers the workflow engine via `task_status_changed → done`.
+  const handleApprove = useCallback(() => {
+    onUpdate({ status: "done" });
+  }, [onUpdate]);
 
   const handleTraceFinish = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: taskKeys.lists() });
@@ -249,20 +263,44 @@ export function TaskDetail({
         )}
 
         {showReviewBanner && (
-          <div className="rounded-xl border border-amber-400/20 bg-amber-500/5 px-4 py-3 space-y-2">
-            <div className="flex items-center gap-2 text-xs text-amber-300/90">
+          <div className="relative rounded-xl border border-amber-400/20 bg-amber-500/5 px-4 py-3 space-y-2.5">
+            <button
+              type="button"
+              onClick={() => setReviewBannerDismissed(true)}
+              className="absolute top-2 right-2 p-1 rounded-md text-white/30 hover:text-white/70 hover:bg-white/8 transition-colors"
+              title="Dismiss"
+            >
+              <X className="size-3" />
+            </button>
+            <div className="flex items-center gap-2 text-xs text-amber-300/90 pr-6">
               <AlertTriangle className="size-3.5" />
               <span>
                 {lastAgentResult?.agentName
-                  ? `${lastAgentResult.agentName} returned this for review`
-                  : "Task is in review"}
+                  ? `${lastAgentResult.agentName} returned this for review.`
+                  : "Task is in review."}
+                <span className="text-white/55"> Decide what&apos;s next:</span>
               </span>
             </div>
-            <p className="text-xs text-white/50">
-              If this can&apos;t proceed (wrong agent, out of scope, missing
-              input), archive it as unresolved instead of forcing a status.
-            </p>
-            <div className="flex items-center gap-2 pt-0.5">
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={handleApprove}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-200 transition-colors"
+              >
+                <Check className="size-3" />
+                Approve — mark done
+              </button>
+              <button
+                type="button"
+                onClick={handleRerun}
+                disabled={rerunTask.isPending}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium bg-blue-500/15 hover:bg-blue-500/25 text-blue-200 disabled:opacity-40 transition-colors"
+              >
+                <RotateCcw
+                  className={`size-3 ${rerunTask.isPending ? "animate-spin" : ""}`}
+                />
+                {rerunTask.isPending ? "Re-running…" : "Re-run agent"}
+              </button>
               <button
                 type="button"
                 onClick={() => setArchiveModalOpen(true)}
@@ -270,13 +308,6 @@ export function TaskDetail({
               >
                 <Archive className="size-3" />
                 Archive as unresolved
-              </button>
-              <button
-                type="button"
-                onClick={() => setReviewBannerDismissed(true)}
-                className="px-2.5 py-1 rounded-lg text-xs text-white/40 hover:bg-white/8 transition-colors"
-              >
-                Dismiss
               </button>
             </div>
           </div>
@@ -369,6 +400,23 @@ export function TaskDetail({
             </DetailField>
           )}
 
+          {parentTask && (
+            <div className="col-span-2">
+              <DetailField label="Parent">
+                <button
+                  type="button"
+                  onClick={() => onNavigateToTask?.(parentTask)}
+                  className="w-full glass-light rounded-lg px-2 py-1 text-xs text-white/70 hover:text-white/95 hover:bg-white/8 transition-colors text-left flex items-center gap-2"
+                >
+                  <span className="font-mono text-white/40 shrink-0">
+                    #{parentTask.taskNumber}
+                  </span>
+                  <span className="truncate">{parentTask.title}</span>
+                </button>
+              </DetailField>
+            </div>
+          )}
+
           <div className="col-span-2">
             <DetailField label="Tags" align="start">
               {systemTask ? (
@@ -394,6 +442,45 @@ export function TaskDetail({
             </DetailField>
           </div>
         </div>
+
+        {childTasks && childTasks.length > 0 && (
+          <>
+            <hr className="border-white/8" />
+            <div className="space-y-2">
+              <div className="text-[10px] uppercase tracking-wider text-white/45">
+                Subtasks ({childTasks.length})
+              </div>
+              <div className="space-y-1">
+                {childTasks.map((child) => {
+                  const statusCol = STATUS_COLUMNS.find(
+                    (c) => c.id === child.status,
+                  );
+                  return (
+                    <button
+                      key={child.id}
+                      type="button"
+                      onClick={() => onNavigateToTask?.(child)}
+                      className="w-full glass-light rounded-lg px-2.5 py-1.5 text-xs text-white/75 hover:text-white/95 hover:bg-white/8 transition-colors text-left flex items-center gap-2"
+                    >
+                      <span className="font-mono text-white/40 shrink-0">
+                        #{child.taskNumber}
+                      </span>
+                      <span className="flex items-center gap-1 shrink-0">
+                        <span
+                          className={`size-1.5 rounded-full ${statusCol?.dot ?? "bg-white/30"}`}
+                        />
+                        <span className="text-[10px] text-white/45 capitalize">
+                          {statusCol?.label ?? child.status}
+                        </span>
+                      </span>
+                      <span className="truncate">{child.title}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </>
+        )}
 
         <hr className="border-white/8" />
 

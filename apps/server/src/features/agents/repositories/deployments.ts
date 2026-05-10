@@ -6,6 +6,7 @@
 
 import { and, eq, isNull } from "drizzle-orm";
 import { companies, deployments } from "@occa/shared/schema";
+import { getTier } from "@occa/shared/role-catalog";
 import { db } from "../../../infra/database/client";
 
 export type DeploymentRow = typeof deployments.$inferSelect;
@@ -83,6 +84,31 @@ export async function listByCompanyId(
     .select()
     .from(deployments)
     .where(eq(deployments.companyId, companyId));
+}
+
+// Resolve the company's CEO deployment by consulting the role catalog for
+// `tier:"ceo"`. Single CEO is enforced by the catalog (only one entry has
+// the `ceo` tier), but if multiple `active` deployments share the role —
+// e.g. a stale duplicate — we return the lowest deploymentIndex (= oldest)
+// for deterministic routing. Returns undefined when no active CEO exists;
+// callers (Phase 2 task entry lock) surface that as `NO_CEO_DEPLOYED`.
+export async function findCeoForCompany(
+  companyId: string,
+): Promise<DeploymentRow | undefined> {
+  const rows = await db
+    .select()
+    .from(deployments)
+    .where(
+      and(
+        eq(deployments.companyId, companyId),
+        eq(deployments.status, "active"),
+      ),
+    );
+  const ceos = rows.filter((r) => getTier(r.role) === "ceo");
+  if (ceos.length === 0) return undefined;
+  return ceos.reduce((lo, r) =>
+    r.deploymentIndex < lo.deploymentIndex ? r : lo,
+  );
 }
 
 export async function listByAgentIdentityId(

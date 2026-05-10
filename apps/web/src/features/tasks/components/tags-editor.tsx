@@ -1,6 +1,6 @@
 "use client";
 
-// Chip-based tags editor used by both new-task-modal and task-detail.
+// Chip-based tags editor used by `task-detail`.
 // Adds a tag on Enter or comma. Already-present tags are deduped
 // silently. Used inside a `DetailField` so the placeholder switches when
 // at least one tag exists, keeping the inline composer compact.

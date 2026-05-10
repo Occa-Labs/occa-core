@@ -1,12 +1,13 @@
 "use client";
 
+import { CornerDownRight } from "lucide-react";
 import type { TaskDTO } from "@occa/shared/types";
 import { EFFORT_LABELS, TASK_TYPE_LABELS } from "../types";
 import { isSystemTask } from "../utils";
 import { MetaChip, PriorityDot } from "./form-controls";
 
 // Kanban card. Layout is intentionally condensed (Linear-style):
-//   header: #N · type · effort                         priority dot
+//   header: #N · ↳ #parent · type · effort              priority dot
 //   title  (line-clamp-2)
 //   meta   assignee · due
 //   tags   (lowercase, capped at 3)
@@ -17,9 +18,11 @@ import { MetaChip, PriorityDot } from "./form-controls";
 // since their priority is meaningless to the user.
 export function TaskCard({
   task,
+  parentTaskNumber,
   onClick,
 }: {
   task: TaskDTO;
+  parentTaskNumber?: number | null;
   onClick: (triggerRect: DOMRect) => void;
 }) {
   const dueLabel = task.dueDate
@@ -41,6 +44,14 @@ export function TaskCard({
     >
       <div className="flex items-center gap-1.5">
         <MetaChip mono>#{task.taskNumber}</MetaChip>
+        {parentTaskNumber != null && (
+          <span
+            className="inline-flex items-center gap-0.5 text-[10px] font-mono text-white/45"
+            title={`Child of task #${parentTaskNumber}`}
+          >
+            <CornerDownRight className="size-2.5" />#{parentTaskNumber}
+          </span>
+        )}
         {task.taskType !== "other" && (
           <MetaChip>{TASK_TYPE_LABELS[task.taskType]}</MetaChip>
         )}

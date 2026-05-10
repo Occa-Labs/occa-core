@@ -24,6 +24,7 @@ import type {
 } from "@occa/shared/workflows";
 import { db } from "../../../infra/database/client";
 import { createTaskRecord } from "../../../infra/database/task-creation";
+import { enqueueTaskDispatch } from "../../../infra/queue/task-worker";
 import { LIMITS } from "../../../lib/limits";
 import { childLogger } from "../../../lib/logger";
 import { appendTaskEventBestEffort } from "../../tasks/services/events";
@@ -257,6 +258,26 @@ async function runOneWorkflow(
       createdByDeploymentId: null,
       acceptanceCriteria: step.acceptance_criteria ?? null,
     });
+
+    // Mirror routes/tasks.ts user-create path so workflow-spawned tasks
+    // get the same lifecycle visibility + auto-dispatch when assigned.
+    // Without this, agent-assigned children sit in `todo` forever.
+    if (assignedDeploymentId) {
+      void appendTaskEventBestEffort({
+        companyId: parent.companyId,
+        taskId: newTask.id,
+        eventType: "task_assigned",
+        actorType: "system",
+        actorId: "system",
+        payload: { deploymentId: assignedDeploymentId },
+      });
+      void enqueueTaskDispatch(newTask.id).catch((err) =>
+        log.error(
+          { err, taskId: newTask.id },
+          "workflow-spawned task dispatch enqueue failed",
+        ),
+      );
+    }
 
     spawned.push({
       taskId: newTask.id,

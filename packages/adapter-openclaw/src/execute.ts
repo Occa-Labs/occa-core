@@ -20,10 +20,10 @@ interface OpenclawAdapterConfig {
   workspacePath?: string | null;
 }
 
-// Timeouts track Paperclip's split: a short "accept" window for the ACK res
-// frame, then a longer wait window if the gateway returns non-ok (queued,
-// running). For short traces the gateway returns status="ok" inside the
-// accept window and we never call agent.wait.
+// Two-stage timeouts: a short "accept" window for the ACK res frame, then a
+// longer wait window if the gateway returns non-ok (queued, running). For
+// short traces the gateway returns status="ok" inside the accept window and
+// we never call agent.wait.
 const ACCEPT_TIMEOUT_MS = 15_000;
 const WAIT_TIMEOUT_MS = 180_000;
 
@@ -64,7 +64,7 @@ function normalizeStatus(v: unknown): string {
 }
 
 // Gateway's accepted/wait payload can carry the final text in several shapes.
-// Try them in Paperclip's priority order (direct text → result.text → message).
+// Try them in priority order (direct text → result.text → message).
 function extractResultText(
   payload: Record<string, unknown> | null,
 ): string | null {

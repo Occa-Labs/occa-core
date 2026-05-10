@@ -43,6 +43,10 @@ export const ERROR_CODES = {
   AGENT_NOT_PROVISIONED: "agent_not_provisioned",
   NO_AGENT_ASSIGNED: "no_agent_assigned",
   NO_AGENT_CREDS_AVAILABLE: "no_agent_creds_available",
+  /** Hierarchical agent system (Phase 2): user-created top-level tasks must
+   *  route through a `tier:"ceo"` deployment. Returned when the company
+   *  has no active CEO — user must deploy one before creating tasks. */
+  NO_CEO_DEPLOYED: "no_ceo_deployed",
   HIRE_NOT_ALLOWED: "hire_not_allowed",
   WOULD_CREATE_CYCLE: "would_create_cycle",
   ROLE_NOT_ALLOWED: "role_not_allowed",

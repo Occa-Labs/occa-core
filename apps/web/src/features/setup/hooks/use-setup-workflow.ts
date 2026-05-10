@@ -64,6 +64,9 @@ export interface UseSetupWorkflowReturn {
    *  AND there are still un-anchored deployments. The OS shell uses
    *  this to render the reminder banner. */
   showAnchorReminder: boolean;
+  /** Session-only dismiss for the AnchorReminderBanner. Hides until the
+   *  next page refresh (skip flag in localStorage stays set). */
+  handleDismissAnchorBanner: () => void;
   /** User clicked "Enter your office" on the kickoff summary screen. */
   handleEnterOffice: () => void;
 }
@@ -108,6 +111,13 @@ export function useSetupWorkflow({
     if (!cid) return;
     setKickoffResolved(isKickoffResolved(cid));
   }, [me.company?.id]);
+
+  // Session-only dismiss for the AnchorReminderBanner. Resets on refresh
+  // by design — skip flag (localStorage) persists, dismiss does not.
+  const [anchorBannerDismissed, setAnchorBannerDismissed] = useState(false);
+  const handleDismissAnchorBanner = useCallback(() => {
+    setAnchorBannerDismissed(true);
+  }, []);
 
   // Latch onto the launch-success edge so we can fire `me.reload()` exactly
   // once and seed walkStage. Keying on the previous status avoids
@@ -378,7 +388,9 @@ export function useSetupWorkflow({
     handleDeployTeamReset,
     handleAnchorSkip,
     handleAnchorResumeFromBanner,
-    showAnchorReminder: needsKickoffAnchor && anchorSkipped,
+    showAnchorReminder:
+      needsKickoffAnchor && anchorSkipped && !anchorBannerDismissed,
+    handleDismissAnchorBanner,
     handleEnterOffice,
   };
 }

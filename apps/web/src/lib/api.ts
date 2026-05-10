@@ -13,6 +13,7 @@ import type {
   ListAgentFilesResponse,
   ListAgentSkillSyncsResponse,
   ListApprovalsResponse,
+  ListChatMessagesResponse,
   CreateRoutineRequest,
   CreateTaskRequest,
   ImportSkillRequest,
@@ -34,6 +35,8 @@ import type {
   ProbeRequest,
   ProbeResponse,
   RoutineResponse,
+  SendChatMessageRequest,
+  SendChatMessageResponse,
   TraceResponse,
   SkillResponse,
   SyncAgentSkillsRequest,
@@ -400,6 +403,21 @@ export const tasksApi = {
     }),
   unarchive: (id: string) =>
     request<TaskResponse>(`/api/tasks/${id}/unarchive`, { method: "POST" }),
+};
+
+export const chatApi = {
+  ceo: {
+    list: () => request<ListChatMessagesResponse>("/api/chat/ceo"),
+    send: (input: SendChatMessageRequest) =>
+      request<SendChatMessageResponse>("/api/chat/ceo", {
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
+    clear: () =>
+      request<void>("/api/chat/ceo", {
+        method: "DELETE",
+      }),
+  },
 };
 
 export const skillsApi = {

@@ -8,7 +8,7 @@
 // leaving the editor.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, Code, Loader2, Plus, Trash2 } from "lucide-react";
+import { AlertCircle, Check, Code, Loader2, Plus, Trash2 } from "lucide-react";
 import { AppWindow } from "@/components/ui/app-window";
 import { Button } from "@/components/ui/button";
 import { FloatingPanel } from "@/components/ui/floating-panel";
@@ -370,6 +370,7 @@ function WorkflowDetail({
   const [yamlText, setYamlText] = useState(workflow.yamlText);
   const [enabled, setEnabled] = useState(workflow.enabled);
   const [saving, setSaving] = useState(false);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
   const [yamlError, setYamlError] = useState<{
     code: string;
     detail?: YamlInvalidDetail;
@@ -386,6 +387,14 @@ function WorkflowDetail({
     setYamlError(null);
   }, [workflow.id, workflow.yamlText, workflow.enabled]);
 
+  // Auto-clear the "Saved" indicator after a short window so it doesn't
+  // linger past the moment the user actually cares about it.
+  useEffect(() => {
+    if (savedAt === null) return;
+    const t = setTimeout(() => setSavedAt(null), 1800);
+    return () => clearTimeout(t);
+  }, [savedAt]);
+
   // The current "draft" YAML the user is editing — derived from
   // whichever surface they're using. Used for the dirty check + patch
   // payload so a form edit and a raw-YAML edit both go through the same
@@ -394,17 +403,32 @@ function WorkflowDetail({
     mode === "form" && formState
       ? formStateToYaml(formState)
       : yamlText;
-  const dirty =
-    draftYaml !== workflow.yamlText || enabled !== workflow.enabled;
+  // Compare by parsed structure (when both sides parse cleanly) to
+  // ignore trailing newlines / quoting drift introduced by the YAML lib
+  // round-trip; fall back to trimmed text compare when a side is
+  // unparseable so the user can still save raw YAML edits.
+  const draftParsed = parseWorkflowYaml(draftYaml);
+  const currentParsed = parseWorkflowYaml(workflow.yamlText);
+  const yamlDirty = (() => {
+    if (draftParsed.ok && currentParsed.ok) {
+      return (
+        JSON.stringify(draftParsed.value.definition) !==
+        JSON.stringify(currentParsed.value.definition)
+      );
+    }
+    return draftYaml.trim() !== workflow.yamlText.trim();
+  })();
+  const dirty = yamlDirty || enabled !== workflow.enabled;
 
   const handleSave = async () => {
     setSaving(true);
     setYamlError(null);
     try {
       const patch: { yamlText?: string; enabled?: boolean } = {};
-      if (draftYaml !== workflow.yamlText) patch.yamlText = draftYaml;
+      if (yamlDirty) patch.yamlText = draftYaml;
       if (enabled !== workflow.enabled) patch.enabled = enabled;
       await onPatch(patch);
+      setSavedAt(Date.now());
     } catch (err) {
       setYamlError(extractYamlError(err));
     } finally {
@@ -505,7 +529,13 @@ function WorkflowDetail({
         />
       )}
 
-      <div className="flex justify-end gap-2">
+      <div className="flex items-center justify-end gap-2">
+        {savedAt !== null && !saving && (
+          <span className="inline-flex items-center gap-1 text-[11px] text-emerald-300/85 transition-opacity">
+            <Check className="size-3" />
+            Saved
+          </span>
+        )}
         {dirty && !saving && (
           <Button
             size="sm"

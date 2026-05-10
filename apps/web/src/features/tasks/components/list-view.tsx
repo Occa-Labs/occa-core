@@ -1,5 +1,6 @@
 "use client";
 
+import { CornerDownRight } from "lucide-react";
 import type { TaskDTO } from "@occa/shared/types";
 import { STATUS_COLUMNS } from "../types";
 import { PriorityBadge } from "./form-controls";
@@ -11,6 +12,7 @@ export function ListView({
   tasks: TaskDTO[];
   onTaskClick: (task: TaskDTO, triggerRect: DOMRect) => void;
 }) {
+  const taskNumberById = new Map(tasks.map((t) => [t.id, t.taskNumber]));
   return (
     <div className="overflow-y-auto h-full px-1">
       <table className="w-full text-xs border-separate border-spacing-y-1">
@@ -24,7 +26,11 @@ export function ListView({
           </tr>
         </thead>
         <tbody>
-          {tasks.map((task) => (
+          {tasks.map((task) => {
+            const parentNumber = task.parentTaskId
+              ? taskNumberById.get(task.parentTaskId) ?? null
+              : null;
+            return (
             <tr
               key={task.id}
               onClick={(e) =>
@@ -32,8 +38,18 @@ export function ListView({
               }
               className="glass-light rounded-xl cursor-pointer hover:bg-white/8 transition-colors"
             >
-              <td className="px-3 py-2.5 rounded-l-xl font-medium text-white/80 max-w-48 truncate">
-                {task.title}
+              <td className="px-3 py-2.5 rounded-l-xl font-medium text-white/80 max-w-48">
+                <div className="flex items-center gap-1.5">
+                  {parentNumber != null && (
+                    <span
+                      className="inline-flex items-center gap-0.5 text-[10px] font-mono text-white/45 shrink-0"
+                      title={`Child of task #${parentNumber}`}
+                    >
+                      <CornerDownRight className="size-2.5" />#{parentNumber}
+                    </span>
+                  )}
+                  <span className="truncate">{task.title}</span>
+                </div>
               </td>
               <td className="px-3 py-2.5">
                 <span className="flex items-center gap-1.5">
@@ -61,7 +77,8 @@ export function ListView({
                   : "—"}
               </td>
             </tr>
-          ))}
+            );
+          })}
           {tasks.length === 0 && (
             <tr>
               <td colSpan={5} className="px-3 py-8 text-center text-white/20">

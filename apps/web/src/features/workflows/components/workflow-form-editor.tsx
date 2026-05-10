@@ -15,7 +15,10 @@ import {
 } from "@occa/shared/workflows";
 import { TASK_TYPES, type TaskType } from "@occa/shared/types";
 import { Button } from "@/components/ui/button";
-import { useDeploymentNames } from "../api/use-deployment-names";
+import {
+  useDeploymentNames,
+  type DeploymentOption,
+} from "../api/use-deployment-names";
 import { WorkflowStepEditor } from "./workflow-step-editor";
 
 export interface WorkflowFormState {
@@ -218,7 +221,7 @@ function StepsSection({
 }: {
   state: WorkflowFormState;
   onChange: (next: WorkflowFormState) => void;
-  assigneeOptions: string[];
+  assigneeOptions: DeploymentOption[];
 }) {
   return (
     <Section title="Steps">

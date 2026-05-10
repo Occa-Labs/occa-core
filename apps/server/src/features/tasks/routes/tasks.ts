@@ -10,12 +10,12 @@ import { enqueueTaskDispatch } from "../../../infra/queue/task-worker";
 import { createTaskRecord } from "../../../infra/database/task-creation";
 import {
   agentNameMap,
-  deploymentInCompany,
   deleteTaskInCompany,
   findTaskInCompany,
   listTasksByCompany,
   updateTask,
 } from "../repositories/tasks";
+import { findCeoForCompany } from "../../agents/repositories/deployments";
 import { createTaskBody, updateTaskBody } from "../domain/schemas";
 import { isUserStatusTransitionAllowed } from "../domain/status-transitions";
 import { appendTaskEventBestEffort } from "../services/events";
@@ -62,14 +62,20 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
     return;
   }
 
-  if (parsed.data.assignedAgentId) {
-    const ok = await deploymentInCompany(companyId, parsed.data.assignedAgentId);
-    if (!ok) {
-      res
-        .status(StatusCodes.BAD_REQUEST)
-        .json({ error: "agent_not_in_company" });
-      return;
-    }
+  // Phase 2 entry lock: every user-created top-level task routes through
+  // the company's CEO. The agent picker on the FE is removed; any
+  // `assignedAgentId` arriving from a stale client is ignored (the schema
+  // still accepts the field for non-breaking back-compat with child-task
+  // flows that may reuse the same body shape later). If the company has
+  // no active CEO, we error so the user deploys one before creating tasks.
+  const ceo = await findCeoForCompany(companyId);
+  if (!ceo) {
+    res.status(StatusCodes.BAD_REQUEST).json({
+      error: ERROR_CODES.NO_CEO_DEPLOYED,
+      reason:
+        "Deploy a CEO agent before creating tasks. The CEO is the entry point for all user requests.",
+    });
+    return;
   }
 
   const row = await createTaskRecord({
@@ -82,7 +88,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
     effortLevel: parsed.data.effortLevel ?? "m",
     tags: parsed.data.tags ?? [],
     dueDate: parsed.data.dueDate ? new Date(parsed.data.dueDate) : null,
-    assignedDeploymentId: parsed.data.assignedAgentId ?? null,
+    assignedDeploymentId: ceo.id,
     parentTaskId: null,
     createdByUserId: req.user!.userId,
     createdByDeploymentId: null,

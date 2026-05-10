@@ -1,20 +1,20 @@
 "use client";
 
-import { Archive, Plus } from "lucide-react";
+import { Archive } from "lucide-react";
 import type { TaskDTO, TaskStatus } from "@occa/shared/types";
 import { STATUS_COLUMNS } from "../types";
 import { TaskCard } from "./task-card";
 
+// Read-only kanban board: task creation is gone (CEO chat bubble owns the
+// entry). Cards stay clickable for detail view + drag-to-status updates.
 export function BoardView({
   tasks,
   showArchivedColumn,
   onTaskClick,
-  onCreateTask,
 }: {
   tasks: TaskDTO[];
   showArchivedColumn?: boolean;
   onTaskClick: (task: TaskDTO, triggerRect: DOMRect) => void;
-  onCreateTask: (status: TaskStatus, triggerRect: DOMRect) => void;
 }) {
   // Active columns ignore archived rows — that's what makes the
   // 5th "Archived" column meaningful (no double-counting).
@@ -23,6 +23,13 @@ export function BoardView({
   const columns = STATUS_COLUMNS;
   const tasksByStatus = (status: TaskStatus) =>
     activeTasks.filter((t) => t.status === status);
+
+  // id → taskNumber lookup so child cards can render a `↳ #parent` chip
+  // without an extra fetch. Parent might be archived/missing — fallback
+  // to null and the chip just hides.
+  const taskNumberById = new Map(tasks.map((t) => [t.id, t.taskNumber]));
+  const parentNumberFor = (t: TaskDTO): number | null =>
+    t.parentTaskId ? taskNumberById.get(t.parentTaskId) ?? null : null;
 
   return (
     <div className="flex gap-3 h-full overflow-x-auto pb-2 px-1">
@@ -44,16 +51,6 @@ export function BoardView({
                   {colTasks.length}
                 </span>
               </div>
-              <button
-                type="button"
-                onPointerDown={(e) => e.stopPropagation()}
-                onClick={(e) =>
-                  onCreateTask(col.id, e.currentTarget.getBoundingClientRect())
-                }
-                className="p-0.5 rounded hover:bg-white/10 text-white/30 hover:text-white/70 transition-colors"
-              >
-                <Plus className="size-3.5" />
-              </button>
             </div>
 
             <div className="flex flex-col gap-2 overflow-y-auto flex-1">
@@ -61,6 +58,7 @@ export function BoardView({
                 <TaskCard
                   key={task.id}
                   task={task}
+                  parentTaskNumber={parentNumberFor(task)}
                   onClick={(rect) => onTaskClick(task, rect)}
                 />
               ))}

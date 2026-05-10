@@ -1078,3 +1078,51 @@ export const workflows = pgTable(
     index("idx_workflows_company_enabled").on(t.companyId, t.enabled),
   ],
 );
+
+// ── Chat messages — user ↔ deployment (CEO) conversational thread ─────
+// Phase 2.5 of the hierarchical agent system: the user's only entry surface
+// is a real chat with the CEO. Each turn (user prompt + agent reply) lands
+// here as one row. CEO can clarify ambiguity over multiple turns and emits
+// `[[OCCA:CREATE_TASK]]` markers when scope is agreed; the marker is
+// stripped from `content` before persist and the spawned task id stored on
+// `createdTaskId` for audit.
+//
+// One thread per (companyId, deploymentId). Today only CEO is a chat
+// target, but the schema is target-agnostic so a future "DM any agent"
+// feature reuses the same table.
+export const chatMessages = pgTable(
+  "chat_messages",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    deploymentId: uuid("deployment_id")
+      .notNull()
+      .references(() => deployments.id, { onDelete: "cascade" }),
+    // 'user' | 'assistant' | 'system'. System messages mark internal
+    // events the user should see ("Task #5 created").
+    role: text("role").notNull(),
+    content: text("content").notNull(),
+    // Set on assistant messages whose CREATE_TASK marker spawned a task.
+    // Lets the UI link "this reply" → "the task that was created".
+    createdTaskId: uuid("created_task_id").references(() => tasks.id, {
+      onDelete: "set null",
+    }),
+    // Trace row for the adapter call that produced an assistant turn.
+    // Null on user / system messages.
+    traceId: uuid("trace_id").references(() => traces.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("idx_chat_messages_thread").on(
+      t.companyId,
+      t.deploymentId,
+      t.createdAt,
+    ),
+  ],
+);

@@ -3,6 +3,7 @@ import type {
   agentRuntimeProfile,
   approvals,
   authNonces,
+  chatMessages,
   companies,
   companyProfile,
   companySkills,
@@ -42,6 +43,41 @@ export type RoutineRun = typeof routineRuns.$inferSelect;
 export type DeploymentApiKey = typeof deploymentApiKeys.$inferSelect;
 export type Approval = typeof approvals.$inferSelect;
 export type DeploymentSkillSync = typeof deploymentSkillSyncs.$inferSelect;
+export type ChatMessage = typeof chatMessages.$inferSelect;
+
+// ── Chat (Phase 2.5) — user ↔ CEO conversational thread ─────────────────
+// Mirror of `chat_messages` row sans server-only fields. The `pendingTask`
+// flag is set on the in-flight assistant turn so the UI can render a
+// "thinking…" placeholder while the server is still awaiting the gateway.
+export type ChatMessageRole = "user" | "assistant" | "system";
+
+export interface ChatMessageDTO {
+  id: string;
+  role: ChatMessageRole;
+  content: string;
+  /** Set on assistant messages whose CREATE_TASK marker spawned a task. */
+  createdTaskId: string | null;
+  createdAt: string;
+}
+
+export interface SendChatMessageRequest {
+  content: string;
+}
+
+export interface SendChatMessageResponse {
+  /** The persisted user turn. */
+  user: ChatMessageDTO;
+  /** The CEO's reply (or null if the adapter call failed; the route still
+   *  returns 200 with a system error message in that case). */
+  assistant: ChatMessageDTO | null;
+  /** When the reply emitted CREATE_TASK, this carries the new task id +
+   *  number so the UI can deep-link into the task board. */
+  createdTask: { id: string; taskNumber: number; title: string } | null;
+}
+
+export interface ListChatMessagesResponse {
+  messages: ChatMessageDTO[];
+}
 
 // ── Heartbeat policy — stored inside agents.runtimeConfig.heartbeat ──
 // Read with `runtimeConfig.heartbeat ?? defaults`.

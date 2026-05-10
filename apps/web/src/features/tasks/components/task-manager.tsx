@@ -1,22 +1,16 @@
 "use client";
 
 import { useCallback, useState } from "react";
-import { LayoutGrid, LayoutList, Plus } from "lucide-react";
+import { LayoutGrid, LayoutList } from "lucide-react";
 import { AppWindow } from "@/components/ui/app-window";
-import { useCreateTask } from "@/features/tasks/api/use-create-task";
 import { useDeleteTask } from "@/features/tasks/api/use-delete-task";
 import { useTasksList } from "@/features/tasks/api/use-tasks-list";
 import { useUpdateTask } from "@/features/tasks/api/use-update-task";
 import { ApiError } from "@/lib/api";
-import type {
-  TaskDTO,
-  TaskStatus,
-  UpdateTaskRequest,
-} from "@occa/shared/types";
+import type { TaskDTO, UpdateTaskRequest } from "@occa/shared/types";
 import { BoardView } from "./board-view";
 import { ListView } from "./list-view";
 import { TaskDetail } from "./task-detail";
-import { NewTaskModal, type NewTaskFormData } from "./new-task-modal";
 
 function extractApiError(err: unknown): string {
   if (err instanceof ApiError) {
@@ -40,10 +34,9 @@ interface TaskManagerProps {
 }
 
 // Top-level task management window. Composes the kanban / list views and
-// the detail / new-task panels. Each rendered surface is its own file
-// under features/tasks/components/. State machine here is small: which
-// view, which task is open in the detail panel, and whether the new-task
-// dialog is mounted.
+// the detail panel. Read + edit only — task creation moved to the CEO
+// chat bubble in `shell/ceo-chat-bubble.tsx` per the hierarchical agent
+// system entry-lock (design doc §2: user only talks to CEO).
 export function TaskManager({
   companyId,
   agentList,
@@ -53,7 +46,6 @@ export function TaskManager({
   const tasksQuery = useTasksList(Boolean(companyId), {
     includeArchived: showArchived,
   });
-  const createTask = useCreateTask();
   const updateTask = useUpdateTask();
   const deleteTask = useDeleteTask();
 
@@ -63,7 +55,7 @@ export function TaskManager({
   const loading = tasksQuery.isPending && Boolean(companyId);
   const queryError = tasksQuery.isError ? extractApiError(tasksQuery.error) : null;
   const mutationError =
-    [createTask, updateTask, deleteTask]
+    [updateTask, deleteTask]
       .map((m) => (m.isError ? extractApiError(m.error) : null))
       .find((e) => e !== null) ?? null;
   const error = queryError ?? mutationError;
@@ -75,14 +67,17 @@ export function TaskManager({
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [selectedTriggerRect, setSelectedTriggerRect] =
     useState<DOMRect | null>(null);
-  const [newTaskState, setNewTaskState] = useState<{
-    status: TaskStatus;
-    triggerRect: DOMRect;
-  } | null>(null);
 
   const selectedTask = selectedTaskId
     ? tasks.find((t) => t.id === selectedTaskId) ?? null
     : null;
+
+  const selectedParentTask = selectedTask?.parentTaskId
+    ? tasks.find((t) => t.id === selectedTask.parentTaskId) ?? null
+    : null;
+  const selectedChildTasks = selectedTask
+    ? tasks.filter((t) => t.parentTaskId === selectedTask.id)
+    : [];
 
   const openTaskDetail = useCallback(
     (task: TaskDTO, triggerRect: DOMRect | null) => {
@@ -96,37 +91,6 @@ export function TaskManager({
     setSelectedTaskId(null);
     setSelectedTriggerRect(null);
   }, []);
-
-  const handleCreateTask = useCallback(
-    async (data: NewTaskFormData) => {
-      const blocks = data.description
-        ? [{ type: "paragraph" as const, text: data.description }]
-        : undefined;
-      const dueDateIso = data.dueDate
-        ? new Date(`${data.dueDate}T23:59:59`).toISOString()
-        : null;
-      try {
-        const task = await createTask.mutateAsync({
-          title: data.title,
-          status: data.status,
-          priority: data.priority,
-          taskType: data.taskType,
-          effortLevel: data.effortLevel,
-          assignedAgentId: data.assignedAgentId ?? null,
-          blocks,
-          tags: data.tags.length > 0 ? data.tags : undefined,
-          dueDate: dueDateIso,
-        });
-        setNewTaskState(null);
-        // No trigger for the post-create open — FloatingPanel falls back
-        // to its default viewport-centered position.
-        openTaskDetail(task, null);
-      } catch {
-        // Error surfaces through createTask.error → mutationError above.
-      }
-    },
-    [createTask, openTaskDetail],
-  );
 
   const handleUpdateTask = useCallback(
     (updates: UpdateTaskRequest) => {
@@ -174,20 +138,6 @@ export function TaskManager({
           <LayoutList className="size-3.5" />
         </button>
       </div>
-      <button
-        type="button"
-        onPointerDown={(e) => e.stopPropagation()}
-        onClick={(e) =>
-          setNewTaskState({
-            status: "todo",
-            triggerRect: e.currentTarget.getBoundingClientRect(),
-          })
-        }
-        className="flex items-center gap-1.5 glass-light rounded-lg px-2.5 py-1.5 text-xs text-white/70 hover:bg-white/10 hover:text-white transition-colors"
-      >
-        <Plus className="size-3.5" />
-        New Task
-      </button>
     </div>
   );
 
@@ -225,9 +175,6 @@ export function TaskManager({
               tasks={tasks}
               showArchivedColumn={showArchived}
               onTaskClick={openTaskDetail}
-              onCreateTask={(status, rect) =>
-                setNewTaskState({ status, triggerRect: rect })
-              }
             />
           )}
           {!loading && !error && view === "list" && (
@@ -239,21 +186,14 @@ export function TaskManager({
       {selectedTask && (
         <TaskDetail
           task={selectedTask}
+          parentTask={selectedParentTask}
+          childTasks={selectedChildTasks}
           triggerRect={selectedTriggerRect}
           agentList={agentList}
           onUpdate={handleUpdateTask}
           onDelete={handleDeleteTask}
           onClose={closeTaskDetail}
-        />
-      )}
-
-      {newTaskState !== null && (
-        <NewTaskModal
-          defaultStatus={newTaskState.status}
-          triggerRect={newTaskState.triggerRect}
-          agentList={agentList}
-          onConfirm={handleCreateTask}
-          onCancel={() => setNewTaskState(null)}
+          onNavigateToTask={(t) => openTaskDetail(t, null)}
         />
       )}
     </>

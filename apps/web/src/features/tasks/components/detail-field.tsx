@@ -1,6 +1,6 @@
 "use client";
 
-// Label-on-left field row used by both `task-detail` and `new-task-modal`.
+// Label-on-left field row used by `task-detail`.
 // Width of the label column is fixed so controls align across rows.
 // `align="start"` lets a multi-line value (e.g. tags chips) anchor the
 // label at the top instead of vertically centering against a tall row.

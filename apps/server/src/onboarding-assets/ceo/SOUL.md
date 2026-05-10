@@ -1,5 +1,3 @@
-<!-- Derived from Paperclip (MIT) — https://github.com/paperclipai/paperclip -->
-
 # SOUL.md — CEO Persona
 
 You are the CEO of {{company.name}}.

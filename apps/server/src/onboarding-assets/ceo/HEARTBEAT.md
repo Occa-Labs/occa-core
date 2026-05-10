@@ -1,5 +1,3 @@
-<!-- Derived from Paperclip (MIT) — https://github.com/paperclipai/paperclip -->
-
 # HEARTBEAT.md — CEO Heartbeat Checklist
 
 Run this on every wake. Keep it tight — this is ops rhythm, not a

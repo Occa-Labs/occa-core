@@ -28,7 +28,12 @@ const POLL_INTERVAL_MS = 10_000;
 // acceptable since workflow evaluation is best-effort.
 const BOOTSTRAP_LOOKBACK_SECONDS = 5 * 60;
 
-let lastSeenEventId: string | null = null;
+// Cursor stored as a timestamp rather than an event id — the row
+// referenced by an id can be cascade-deleted with its parent task,
+// which silently breaks an id-based subquery cursor (the subquery
+// returns NULL, `created_at > NULL` is always false, and the poller
+// stops finding events forever). Timestamps survive row deletes.
+let lastSeenCreatedAt: Date | null = null;
 let timer: NodeJS.Timeout | null = null;
 let inFlight = false;
 
@@ -43,16 +48,16 @@ async function fetchNewDoneEvents(): Promise<DoneEventRow[]> {
     eq(taskEvents.eventType, "task_status_changed"),
     sql`${taskEvents.payload}->>'to' = 'done'`,
   );
-  const conditions = lastSeenEventId
+  const conditions = lastSeenCreatedAt
     ? and(
         baseCondition,
+        // 300ms backstep forgives clock-skew between `now()` and the
+        // inserted-row timestamps. Dedup is handled by pg-boss's
+        // singletonKey + the engine's alreadyEvaluated audit-row
+        // check, so a re-enqueue at the boundary is harmless.
         gt(
           taskEvents.createdAt,
-          // pg-boss v12 doesn't expose an event-id-based cursor; we
-          // page by createdAt instead. Use a tiny lookback window
-          // (300ms) on top of the latest seen createdAt to forgive
-          // clock-skew between `now()` and inserted-row timestamps.
-          sql`(SELECT created_at - INTERVAL '300 milliseconds' FROM ${taskEvents} WHERE id = ${lastSeenEventId}::uuid)`,
+          new Date(lastSeenCreatedAt.getTime() - 300),
         ),
       )
     : and(
@@ -94,9 +99,9 @@ async function pollOnce(): Promise<void> {
       }
     }
 
-    lastSeenEventId = events[events.length - 1].id;
+    lastSeenCreatedAt = events[events.length - 1].createdAt;
     log.debug(
-      { processed: seenTaskIds.size, lastSeenEventId },
+      { processed: seenTaskIds.size, lastSeenCreatedAt },
       "poll tick processed done events",
     );
   } catch (err) {

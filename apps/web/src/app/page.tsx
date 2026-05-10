@@ -56,6 +56,7 @@ export default function HomePage() {
     handleGuideArrived,
     showAnchorReminder,
     handleAnchorResumeFromBanner,
+    handleDismissAnchorBanner,
   } = setup;
 
   // Camera-ready gate: fires once the camera has finished lerping into the
@@ -349,6 +350,7 @@ export default function HomePage() {
             ).length
           }
           onResume={handleAnchorResumeFromBanner}
+          onDismiss={handleDismissAnchorBanner}
         />
       )}
       {process.env.NODE_ENV === "development" &&

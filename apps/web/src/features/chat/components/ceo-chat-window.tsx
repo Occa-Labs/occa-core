@@ -1,0 +1,215 @@
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+import { Send } from "lucide-react";
+import { Alert } from "@/components/ui/alert";
+import type { ChatMessageDTO, SendChatMessageResponse } from "@occa/shared/types";
+import {
+  useCeoChatMessages,
+  useSendCeoMessage,
+} from "../api/use-ceo-chat";
+
+interface CeoChatWindowProps {
+  /** When false, the underlying query is disabled — saves a round-trip
+   *  while the panel is closed. */
+  active: boolean;
+  /** Resolved CEO display name, or null when the user hasn't deployed
+   *  one yet. The window renders a friendly nudge in that case. */
+  ceoName: string | null;
+  /** Fired after a successful send whose reply spawned a task. The
+   *  shell uses it to refresh the kanban (cross-feature side-effect
+   *  belongs to the composition layer per CLAUDE.md). */
+  onTaskCreated?: (task: NonNullable<SendChatMessageResponse["createdTask"]>) => void;
+}
+
+// Conversational chat surface for the user ↔ CEO thread (Phase 2.5).
+// Renders a scrolling message list + composer pinned to the bottom. The
+// FloatingPanel that wraps this owns the title bar + glass shell.
+export function CeoChatWindow({
+  active,
+  ceoName,
+  onTaskCreated,
+}: CeoChatWindowProps) {
+  const [draft, setDraft] = useState("");
+  const messagesQuery = useCeoChatMessages(active);
+  const sendMutation = useSendCeoMessage();
+  const taRef = useRef<HTMLTextAreaElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  const messages = messagesQuery.data ?? [];
+  // Use raw data presence for the loading flag instead of `isPending` —
+  // `isPending` can briefly flip during refetches/cancels and was causing
+  // the empty-state caption to flicker with the loading caption every
+  // few seconds. `data === undefined` is true ONLY on the initial fetch
+  // (never again once a response — even an empty array — has landed).
+  const hasLoadedOnce = messagesQuery.data !== undefined;
+  const showLoading = Boolean(ceoName) && !hasLoadedOnce;
+  const showEmpty =
+    Boolean(ceoName) && hasLoadedOnce && messages.length === 0;
+
+  // Autoscroll the list to the bottom whenever a new message lands.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [messages.length]);
+
+  // Refocus the composer once the panel becomes active so the user can
+  // start typing without a click.
+  useEffect(() => {
+    if (active && ceoName) taRef.current?.focus();
+  }, [active, ceoName]);
+
+  const send = async () => {
+    const content = draft.trim();
+    if (!content || !ceoName) return;
+    setDraft("");
+    try {
+      const result = await sendMutation.mutateAsync(content);
+      if (result.createdTask) {
+        onTaskCreated?.(result.createdTask);
+      }
+    } catch (err) {
+      // Swallow — sendMutation.error surfaces the message inline below.
+      // Restoring the draft so the user can retry without retyping.
+      setDraft(content);
+    }
+  };
+
+  const sendError = sendMutation.isError
+    ? extractError(sendMutation.error)
+    : null;
+
+  return (
+    <div className="flex flex-col h-105">
+      <div
+        ref={scrollRef}
+        className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-2"
+      >
+        {!ceoName && (
+          <Alert variant="warning">
+            No CEO deployed yet. Deploy one in the Agents window — every
+            request routes through your CEO.
+          </Alert>
+        )}
+        {showLoading && (
+          <div className="text-xs text-white/30 text-center py-6">
+            Loading conversation…
+          </div>
+        )}
+        {showEmpty && (
+          <div className="text-xs text-white/30 text-center py-6 leading-relaxed">
+            Start the conversation. The CEO will ask clarifying questions
+            before kicking off any work.
+          </div>
+        )}
+        {messages.map((m) => (
+          <ChatBubble key={m.id} message={m} />
+        ))}
+        {sendMutation.isPending && (
+          <ChatBubble
+            message={{
+              id: "thinking",
+              role: "assistant",
+              content: "Thinking…",
+              createdTaskId: null,
+              createdAt: new Date().toISOString(),
+            }}
+            muted
+          />
+        )}
+      </div>
+      <div className="px-4 py-3 border-t border-white/8">
+        <div className="glass-light rounded-xl px-3 py-2 focus-within:ring-1 focus-within:ring-white/20 transition-shadow">
+          <textarea
+            ref={taRef}
+            disabled={!ceoName || sendMutation.isPending}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                void send();
+              }
+            }}
+            placeholder={ceoName ? "Ask, propose, decide…" : ""}
+            rows={3}
+            className="w-full bg-transparent text-sm text-white/90 outline-none placeholder:text-white/30 resize-none leading-relaxed disabled:opacity-50"
+          />
+          <div className="flex items-center justify-between gap-2 pt-1">
+            <span className="text-[10px] text-white/30">⌘+Enter to send</span>
+            <button
+              type="button"
+              disabled={
+                !ceoName || draft.trim().length === 0 || sendMutation.isPending
+              }
+              onClick={() => void send()}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium bg-white/10 hover:bg-white/15 text-white/85 disabled:opacity-40 transition-colors"
+            >
+              <Send className="size-3" />
+              {sendMutation.isPending ? "Sending…" : "Send"}
+            </button>
+          </div>
+        </div>
+        {sendError && (
+          <div className="mt-2">
+            <Alert variant="error">{sendError}</Alert>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ChatBubble({
+  message,
+  muted = false,
+}: {
+  message: ChatMessageDTO;
+  muted?: boolean;
+}) {
+  if (message.role === "system") {
+    return (
+      <div className="self-center text-[11px] text-white/40 italic px-2 py-1">
+        {message.content}
+      </div>
+    );
+  }
+  const isUser = message.role === "user";
+  return (
+    <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
+      <div
+        className={`max-w-[80%] rounded-2xl px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap ${
+          isUser
+            ? "bg-white/12 text-white/90"
+            : "glass-light text-white/85"
+        } ${muted ? "opacity-60" : ""}`}
+      >
+        {message.content}
+        {message.createdTaskId && !isUser && (
+          <div className="mt-1.5 text-[10px] text-emerald-300/80">
+            Task created
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function extractError(err: unknown): string {
+  if (
+    typeof err === "object" &&
+    err !== null &&
+    "body" in err &&
+    typeof (err as { body?: { error?: unknown } }).body?.error === "string"
+  ) {
+    const code = (err as { body: { error: string } }).body.error;
+    if (code === "no_ceo_deployed") return "No CEO deployed yet.";
+    if (code === "agent_not_configured")
+      return "CEO is not configured. Open the Agents window to finish setup.";
+    if (code === "agent_not_provisioned")
+      return "CEO is still provisioning. Try again in a moment.";
+    return code;
+  }
+  return err instanceof Error ? err.message : "Failed to send.";
+}

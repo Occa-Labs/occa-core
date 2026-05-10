@@ -9,8 +9,13 @@
 
 import { ArrowDown, ArrowUp, Sparkles, Trash2 } from "lucide-react";
 import type { SpawnStep } from "@occa/shared/workflows";
-import { Autocomplete } from "@/components/ui/autocomplete";
+import { roleLabelFor } from "@occa/shared/role-catalog";
+import {
+  Autocomplete,
+  type AutocompleteOption,
+} from "@/components/ui/autocomplete";
 import { Button } from "@/components/ui/button";
+import type { DeploymentOption } from "../api/use-deployment-names";
 
 interface WorkflowStepEditorProps {
   step: SpawnStep;
@@ -20,7 +25,7 @@ interface WorkflowStepEditorProps {
   canRemove: boolean;
   // Suggestions for the assignee autocomplete. "human" is always
   // prepended so it appears at the top regardless of API state.
-  assigneeOptions?: string[];
+  assigneeOptions?: DeploymentOption[];
   onChange: (next: SpawnStep) => void;
   onMoveUp: () => void;
   onMoveDown: () => void;
@@ -39,8 +44,18 @@ export function WorkflowStepEditor({
   onMoveDown,
   onRemove,
 }: WorkflowStepEditorProps) {
-  // Keep "human" at the top + dedupe against fetched names.
-  const options = ["human", ...assigneeOptions.filter((n) => n !== "human")];
+  // Keep "human" at the top + dedupe against fetched agents. Agent
+  // entries get a `description` showing their role label so the picker
+  // reveals "Aiden Park · CEO" instead of just a name.
+  const options: AutocompleteOption[] = [
+    { value: "human", description: "leave unassigned" },
+    ...assigneeOptions
+      .filter((d) => d.name !== "human")
+      .map((d) => ({
+        value: d.name,
+        description: d.role ? roleLabelFor(d.role) : undefined,
+      })),
+  ];
   const insertParentTitle = () => {
     onChange({
       ...step,

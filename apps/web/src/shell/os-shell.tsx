@@ -27,6 +27,7 @@ import { WorkflowsWindow } from "@/features/workflows/components/workflows-windo
 import { SettingsWindow } from "@/components/settings-window";
 import { ChangelogsWindow } from "@/components/changelogs-window";
 import { DevWindow } from "@/features/dev-tools/components/dev-window";
+import { CeoChatBubble } from "./ceo-chat-bubble";
 
 interface OsShellProps {
   /** Lifted from the parent so OsShell shares a single useMe instance with
@@ -291,6 +292,7 @@ export function OsShell({
           onToggleWalkRecord={onToggleWalkRecord}
         />
       )}
+      <CeoChatBubble agents={agentList} />
     </>
   );
 }

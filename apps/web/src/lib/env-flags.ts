@@ -54,9 +54,9 @@ export const FEATURES = {
   // Skill library. Hidden in production while the import / publish flow
   // is still in flux.
   skills: !IS_PRODUCTION_MODE,
-  // Workflow auto-follow-up rules (Phase 5 storage + Phase 6 engine).
-  // Dev-only until the engine is exercised against real workloads.
-  workflows: IS_DEV_MODE,
+  // Workflow auto-follow-up rules. Always on now that the engine is
+  // deterministic (linear-only, no LLM dep) and exercised live.
+  workflows: true,
 } as const;
 
 export type FeatureKey = keyof typeof FEATURES;
