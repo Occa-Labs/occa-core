@@ -420,6 +420,64 @@ export const chatApi = {
   },
 };
 
+export interface BrainFileDTO {
+  id: string;
+  path: string;
+  content: string;
+  visibility: "all" | "ceo_only" | "tier:head";
+  sizeBytes: number;
+  createdAt: string;
+  updatedAt: string;
+}
+export interface CreateBrainFileRequest {
+  path: string;
+  content: string;
+  visibility: "all" | "ceo_only" | "tier:head";
+}
+export interface UpdateBrainFileRequest {
+  content?: string;
+  visibility?: "all" | "ceo_only" | "tier:head";
+}
+export const companyBrainApi = {
+  list: () =>
+    request<{ files: BrainFileDTO[] }>("/api/company-brain"),
+  create: (input: CreateBrainFileRequest) =>
+    request<{ file: BrainFileDTO }>("/api/company-brain", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  update: (id: string, input: UpdateBrainFileRequest) =>
+    request<{ file: BrainFileDTO }>(`/api/company-brain/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }),
+  remove: (id: string) =>
+    request<void>(`/api/company-brain/${id}`, { method: "DELETE" }),
+};
+
+export interface DocumentDTO {
+  id: string;
+  taskId: string | null;
+  deploymentId: string | null;
+  title: string;
+  content: string;
+  format: string;
+  tags: string[];
+  createdAt: string;
+}
+export const documentsApi = {
+  list: (opts?: { tags?: string[]; limit?: number }) => {
+    const qs = new URLSearchParams();
+    if (opts?.tags && opts.tags.length > 0)
+      qs.set("tags", opts.tags.join(","));
+    if (opts?.limit) qs.set("limit", String(opts.limit));
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return request<{ documents: DocumentDTO[] }>(`/api/documents${suffix}`);
+  },
+  get: (id: string) =>
+    request<{ document: DocumentDTO }>(`/api/documents/${id}`),
+};
+
 export const skillsApi = {
   list: (opts?: { role?: string }) => {
     const qs = opts?.role ? `?role=${encodeURIComponent(opts.role)}` : "";

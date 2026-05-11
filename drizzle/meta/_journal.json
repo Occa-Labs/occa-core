@@ -43,6 +43,20 @@
       "when": 1778418806734,
       "tag": "0005_curious_morbius",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1778447025995,
+      "tag": "0006_cuddly_nightmare",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1778448681938,
+      "tag": "0007_keen_titanium_man",
+      "breakpoints": true
     }
   ]
 }

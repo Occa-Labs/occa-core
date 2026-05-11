@@ -82,12 +82,12 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
         ref={ref}
         disabled={disabled}
         className={`
-          inline-flex items-center justify-center font-medium
+          inline-flex cursor-pointer items-center justify-center font-medium
           transition-all duration-150 select-none
           disabled:opacity-35 disabled:cursor-not-allowed
           ${sizeClasses[size]}
           ${block ? "w-full" : ""}
-          ${variant === "ghost" ? "hover:bg-white/8" : variant === "primary" ? "hover:brightness-90 active:brightness-80" : "hover:brightness-110 active:brightness-95"}
+          ${variant === "ghost" ? "hover:bg-white/10 hover:text-white" : variant === "primary" ? "hover:brightness-90 active:brightness-80" : "hover:brightness-110 active:brightness-95"}
           ${className}
         `}
         style={{ ...variantStyles[variant], ...style }}

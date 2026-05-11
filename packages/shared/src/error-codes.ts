@@ -114,6 +114,9 @@ export const ERROR_CODES = {
   WORKFLOW_YAML_INVALID: "workflow_yaml_invalid",
   WORKFLOW_ID_CONFLICT: "workflow_id_conflict",
 
+  // Company Brain
+  BRAIN_PATH_CONFLICT: "brain_path_conflict",
+
   // SSH / dev
   SSH_CONFIG_MISSING: "ssh_config_missing",
   SSH_FAILED: "ssh_failed",

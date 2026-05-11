@@ -3,15 +3,17 @@
 //
 // This file owns the lifecycle. Side-effects per phase live in the
 // services/repositories it composes:
-//   - prompt-builder.ts builds the message
+//   - services/context/render-task.ts builds the wake message via the
+//     Context Pipeline (loadContext + renderTaskPrompt).
 //   - action-blocks/parser.ts handles DELEGATE/BLOCK markers
 //   - cascade.ts wakes parents on done
 //   - events.ts persists task_event rows
 //   - trace-events-bus pushes live SSE updates (existing system)
 //
-// Cross-feature primitives (`canDeploy`, `listSubordinates`) come in
-// through `DispatchTaskDeps`. The composition root (queue worker)
-// imports both features and threads the deps through.
+// Cross-feature primitive `canDeploy` comes in through `DispatchTaskDeps`.
+// The composition root (queue worker) imports it and threads it through
+// for action-block scope validation. Subordinate listing for prompts is
+// now owned by the Context Pipeline directly.
 
 import { v4 as uuid } from "uuid";
 import { and, eq } from "drizzle-orm";
@@ -43,16 +45,31 @@ import {
 import { processActionBlocks } from "./action-blocks/parser";
 import type { ActionBlockDeps } from "./action-blocks/handlers";
 import {
-  buildTaskPrompt,
-  type AgentContextForPrompt,
-  type PromptBuilderDeps,
-} from "./prompt-builder";
+  loadContext,
+  loadTaskSurfacePayload,
+  renderTaskPrompt,
+} from "../../../services/context";
 import { cascadeOnTaskDone } from "./cascade";
+import { autoSaveTaskAsDocument } from "../../../services/auto-save-document";
 import { appendTaskEventBestEffort } from "./events";
 
 const log = childLogger("services:tasks:dispatcher");
 
-export type DispatchTaskDeps = ActionBlockDeps & PromptBuilderDeps;
+export type DispatchTaskDeps = ActionBlockDeps;
+
+// Minimal agent row shape the dispatcher's helpers need (for opening
+// traces and building events). The Context Pipeline now owns the
+// "agent identity for prompt" concept — this shape is purely operational
+// (adapter coordinates + identity for trace rows).
+interface AgentRowForDispatch {
+  id: string;
+  companyId: string;
+  role: string;
+  name: string;
+  adapterType: string;
+  adapterConfig: unknown;
+  externalAgentId: string | null;
+}
 
 export async function dispatchTask(
   taskId: string,
@@ -96,9 +113,20 @@ export async function dispatchTask(
   });
 
   const seqRef = { current: 1 };
-  const message = await buildTaskPrompt(taskRow, agentRow, traceId, deps);
-  const sessionKey = `agent:${agentRow.externalAgentId}:task:${traceId}`;
   const cfg = (agentRow.adapterConfig ?? {}) as Record<string, unknown>;
+  const gatewayUrl =
+    typeof cfg.gatewayUrl === "string" ? cfg.gatewayUrl : null;
+  const surface = await loadTaskSurfacePayload({
+    task: taskRow,
+    traceId,
+    gatewayUrl,
+  });
+  const spec = await loadContext({
+    deploymentId: agentRow.id,
+    surface,
+  });
+  const message = renderTaskPrompt(spec);
+  const sessionKey = `agent:${agentRow.externalAgentId}:task:${traceId}`;
 
   const flushHandle = createTraceEventFlusher({
     companyId: taskRow.companyId,
@@ -237,6 +265,17 @@ export async function dispatchTask(
   });
 
   if (nextStatus === "done") {
+    const cleanReply = stripOccaMarkers(result.reply);
+    void autoSaveTaskAsDocument({
+      taskId: taskRow.id,
+      deploymentId: agentRow.id,
+      cleanReply,
+    }).catch((err) => {
+      log.error(
+        { err, taskId: taskRow.id },
+        "autoSaveTaskAsDocument failed (non-fatal)",
+      );
+    });
     void cascadeOnTaskDone({ taskId: taskRow.id }).catch((err) => {
       log.error({ err, taskId: taskRow.id }, "cascadeOnTaskDone failed");
     });
@@ -265,7 +304,7 @@ async function loadDispatchableTask(taskId: string) {
 async function loadAgentForDispatch(
   deploymentId: string,
   companyId: string,
-): Promise<AgentContextForPrompt | null> {
+): Promise<AgentRowForDispatch | null> {
   const [joined] = await db
     .select({
       id: deployments.id,
@@ -294,7 +333,7 @@ async function loadAgentForDispatch(
 
 interface OpenTraceArgs {
   taskRow: typeof tasks.$inferSelect;
-  agentRow: AgentContextForPrompt;
+  agentRow: AgentRowForDispatch;
   traceId: string;
   startedAt: Date;
 }
@@ -329,7 +368,7 @@ async function openTrace({
 
 function emitDispatchStartedEvents(args: {
   taskRow: typeof tasks.$inferSelect;
-  agentRow: AgentContextForPrompt;
+  agentRow: AgentRowForDispatch;
   traceId: string;
 }): void {
   const { taskRow, agentRow, traceId } = args;
@@ -425,7 +464,7 @@ function createTraceEventFlusher(
 
 interface CloseFailedArgs {
   taskRow: typeof tasks.$inferSelect;
-  agentRow: AgentContextForPrompt;
+  agentRow: AgentRowForDispatch;
   traceId: string;
   finishedAt: Date;
   error: string | undefined;
@@ -471,7 +510,7 @@ async function closeFailedTrace(args: CloseFailedArgs): Promise<void> {
 
 interface CloseSucceededArgs {
   taskRow: typeof tasks.$inferSelect;
-  agentRow: AgentContextForPrompt;
+  agentRow: AgentRowForDispatch;
   traceId: string;
   finishedAt: Date;
   cleanReply: string;

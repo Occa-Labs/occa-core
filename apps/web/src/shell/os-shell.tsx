@@ -3,11 +3,13 @@
 import { useCallback, useEffect, useState } from "react";
 import type { UseMeResult } from "@/hooks/use-me";
 import {
+  Brain,
   Building2,
   CheckSquare,
   CheckCircle2,
   Clock,
   FileText,
+  Files,
   Library,
   Settings,
   Users,
@@ -27,6 +29,8 @@ import { WorkflowsWindow } from "@/features/workflows/components/workflows-windo
 import { SettingsWindow } from "@/components/settings-window";
 import { ChangelogsWindow } from "@/components/changelogs-window";
 import { DevWindow } from "@/features/dev-tools/components/dev-window";
+import { BrainWindow } from "@/features/company-brain/components/brain-window";
+import { DocumentsWindow } from "@/features/documents/components/documents-window";
 import { CeoChatBubble } from "./ceo-chat-bubble";
 
 interface OsShellProps {
@@ -105,6 +109,8 @@ export function OsShell({
     | "agents"
     | "approvals"
     | "company"
+    | "company-brain"
+    | "documents"
     | "skills"
     | "routines"
     | "workflows"
@@ -197,6 +203,18 @@ export function OsShell({
             onClick: () => toggle("approvals"),
           },
           {
+            icon: <Brain className="size-5" />,
+            label: "Brain",
+            active: activeWindow === "company-brain",
+            onClick: () => toggle("company-brain"),
+          },
+          {
+            icon: <Files className="size-5" />,
+            label: "Documents",
+            active: activeWindow === "documents",
+            onClick: () => toggle("documents"),
+          },
+          {
             icon: <Library className="size-5" />,
             label: "Skills",
             active: activeWindow === "skills",
@@ -262,6 +280,8 @@ export function OsShell({
       {activeWindow === "company" && (
         <CompanyWindow companyId={me.company.id} onClose={close} />
       )}
+      {activeWindow === "company-brain" && <BrainWindow onClose={close} />}
+      {activeWindow === "documents" && <DocumentsWindow onClose={close} />}
       {activeWindow === "skills" && FEATURES.skills && (
         <SkillLibrary onClose={close} onReloadMe={me.reload} />
       )}

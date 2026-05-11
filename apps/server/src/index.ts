@@ -38,6 +38,8 @@ import routinesRouter from "./routes/routines";
 import approvalsRouter from "./routes/approvals";
 import workflowsRouter from "./features/workflows/routes";
 import chatRouter from "./features/chat/routes";
+import companyBrainRouter from "./features/company-brain/routes";
+import documentsRouter from "./features/documents/routes";
 import devRouter from "./routes/dev";
 
 const port = parseInt(process.env.PORT || "3002", 10);
@@ -62,6 +64,8 @@ app.use("/api/routines", routinesRouter);
 app.use("/api/approvals", approvalsRouter);
 app.use("/api/workflows", workflowsRouter);
 app.use("/api/chat", chatRouter);
+app.use("/api/company-brain", companyBrainRouter);
+app.use("/api/documents", documentsRouter);
 app.use("/api/dev", devRouter);
 
 app.get("/health", (_req, res) => {

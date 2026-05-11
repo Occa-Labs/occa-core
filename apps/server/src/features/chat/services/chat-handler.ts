@@ -30,7 +30,11 @@ import { db } from "../../../infra/database/client";
 import { getAdapter } from "../../../lib/adapter-registry";
 import { AGENT_WAIT_TIMEOUT_MS } from "../../../lib/timing";
 import { createTaskRecord } from "../../../infra/database/task-creation";
-import { findCeoForCompany } from "../../agents/repositories/deployments";
+import { enqueueTaskDispatch } from "../../../infra/queue/task-worker";
+import {
+  findActiveByRoleInCompany,
+  findCeoForCompany,
+} from "../../agents/repositories/deployments";
 import { findByDeploymentId as findRuntimeProfile } from "../../agents/repositories/agent-runtime-profile";
 import {
   earliestMessageId,
@@ -38,9 +42,10 @@ import {
   type ChatMessageRow,
 } from "../repositories/chat-messages";
 import {
-  buildChatPrompt,
-  loadChatPromptContext,
-} from "./chat-prompt-builder";
+  loadContext,
+  renderChatPrompt,
+  ContextNotFoundError,
+} from "../../../services/context";
 
 const log = childLogger("services:chat-handler");
 
@@ -71,16 +76,23 @@ export interface SendUserTurnArgs {
 
 // CREATE_TASK body shape (free-form JSON inside the marker block):
 //   {
-//     "title":   "<one-line summary>",
-//     "brief":   "<full description, multi-paragraph ok>",
-//     "tags":    ["optional"],
-//     "priority":"medium" | "high" | "low" (optional)
+//     "title":         "<one-line summary>",
+//     "brief":         "<full description, multi-paragraph ok>",
+//     "tags":          ["optional"],
+//     "priority":      "medium" | "high" | "low" (optional)
+//     "assignToRole":  "<role key from active team>" (optional)
 //   }
+// `assignToRole` lets the CEO route a task directly to a specialist
+// without re-bouncing through the task surface to emit DELEGATE. Resolved
+// against the same company; falls back to CEO if the named role isn't
+// staffed (with a note appended to the brief so CEO sees the gap on
+// re-dispatch and can ask the owner to deploy).
 interface CreateTaskBody {
   title: string;
   brief: string;
   tags?: string[];
   priority?: string;
+  assignToRole?: string;
 }
 
 function readCreateTaskBody(
@@ -95,7 +107,11 @@ function readCreateTaskBody(
     : undefined;
   const priority =
     typeof body.priority === "string" ? body.priority.trim() : undefined;
-  return { title, brief, tags, priority };
+  const assignToRole =
+    typeof body.assignToRole === "string" && body.assignToRole.trim().length > 0
+      ? body.assignToRole.trim()
+      : undefined;
+  return { title, brief, tags, priority, assignToRole };
 }
 
 // Per-user-CEO sessionKey with a session-boundary suffix. The suffix is
@@ -181,16 +197,26 @@ export async function sendUserTurn(
     .returning({ id: traces.id });
   const traceId = traceRow.id;
 
-  // First turn: wrap user content in the full wake-prompt (identity +
-  // chat rules + workspace pointer). Subsequent turns: send raw user
-  // content — the gateway already has the preamble in its per-sessionKey
-  // history. If we can't load the prompt context (DB hiccup), fall back
-  // to raw content so the call still goes through.
+  // Build the wake-prompt via the Context Pipeline. First-turn renders
+  // the full preamble (identity + team + gaps + rules); subsequent turns
+  // render a lighter team/gap refresh — both flow through the same
+  // `loadContext()` so org-chart staleness can't drift between surfaces.
+  // Falls back to raw user content if context load fails (DB hiccup).
   let wakePrompt = args.content;
-  if (isFirstTurn) {
-    const promptCtx = await loadChatPromptContext(ceo.id);
-    if (promptCtx) {
-      wakePrompt = buildChatPrompt(promptCtx, args.content);
+  try {
+    const spec = await loadContext({
+      deploymentId: ceo.id,
+      surface: { kind: "chat", isFirstTurn, userMessage: args.content },
+    });
+    wakePrompt = renderChatPrompt(spec);
+  } catch (err) {
+    if (err instanceof ContextNotFoundError) {
+      log.warn(
+        { ceoId: ceo.id },
+        "context load returned no deployment — sending raw content",
+      );
+    } else {
+      log.error({ err, ceoId: ceo.id }, "context load failed");
     }
   }
   log.info(
@@ -266,19 +292,39 @@ export async function sendUserTurn(
       : never
     : never = null;
   if (createBody) {
+    // Resolve assignee: if the CEO named a role, route directly to that
+    // active deployment. If the role isn't staffed, fall back to CEO and
+    // append a gap note to the brief so on re-dispatch CEO sees what's
+    // missing instead of silently working it themselves.
+    let assigneeDeploymentId = ceo.id;
+    let briefWithNote = createBody.brief;
+    if (createBody.assignToRole) {
+      const target = await findActiveByRoleInCompany({
+        companyId: args.companyId,
+        role: createBody.assignToRole,
+      });
+      if (target) {
+        assigneeDeploymentId = target.id;
+      } else {
+        briefWithNote = [
+          createBody.brief,
+          ``,
+          `[router note] Owner intent was to route this to "${createBody.assignToRole}" but no active deployment with that role exists. Ask the owner to deploy one via the Agents window before this can ship.`,
+        ].join("\n");
+      }
+    }
+
     const taskRow = await createTaskRecord({
       companyId: args.companyId,
       title: createBody.title,
-      blocks: [{ type: "paragraph", text: createBody.brief }],
+      blocks: [{ type: "paragraph", text: briefWithNote }],
       status: "todo",
       priority: createBody.priority ?? "medium",
       taskType: "other",
       effortLevel: "m",
       tags: createBody.tags ?? [],
       dueDate: null,
-      // Assign back to CEO so the existing dispatch path runs and the
-      // CEO's downstream-routing prompt (Phase 3) takes over.
-      assignedDeploymentId: ceo.id,
+      assignedDeploymentId: assigneeDeploymentId,
       parentTaskId: null,
       createdByUserId: args.userId,
       createdByDeploymentId: null,
@@ -289,6 +335,16 @@ export async function sendUserTurn(
       taskNumber: taskRow.taskNumber,
       title: taskRow.title,
     };
+
+    // Enqueue immediately so the assignee starts working without waiting
+    // for a manual nudge. Fire-and-forget — same pattern as POST /tasks.
+    // If pg-boss is down the orphan-reaper will pick it up later.
+    enqueueTaskDispatch(taskRow.id).catch((err) =>
+      log.error(
+        { err, taskId: taskRow.id },
+        "enqueueTaskDispatch from chat CREATE_TASK failed",
+      ),
+    );
   }
 
   const cleanReply = stripOccaMarkers(result.reply);

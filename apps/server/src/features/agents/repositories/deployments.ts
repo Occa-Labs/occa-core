@@ -86,6 +86,30 @@ export async function listByCompanyId(
     .where(eq(deployments.companyId, companyId));
 }
 
+// Resolve the active deployment in `companyId` whose role matches `role`.
+// CEO uses this to route a CREATE_TASK directly to a specialist named in
+// the chat marker (`assignToRole`). Returns the lowest deploymentIndex
+// when multiple actives share a role; undefined when none exist.
+export async function findActiveByRoleInCompany(args: {
+  companyId: string;
+  role: string;
+}): Promise<DeploymentRow | undefined> {
+  const rows = await db
+    .select()
+    .from(deployments)
+    .where(
+      and(
+        eq(deployments.companyId, args.companyId),
+        eq(deployments.role, args.role),
+        eq(deployments.status, "active"),
+      ),
+    );
+  if (rows.length === 0) return undefined;
+  return rows.reduce((lo, r) =>
+    r.deploymentIndex < lo.deploymentIndex ? r : lo,
+  );
+}
+
 // Resolve the company's CEO deployment by consulting the role catalog for
 // `tier:"ceo"`. Single CEO is enforced by the catalog (only one entry has
 // the `ceo` tier), but if multiple `active` deployments share the role —

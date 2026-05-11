@@ -194,6 +194,97 @@ export const companyProfile = pgTable("company_profile", {
     .defaultNow(),
 });
 
+// ── Company Brain (Tier 3) — filesystem-pattern knowledge store ────────
+// Per-company persistent knowledge — glossary, ICP, do/don't, owner
+// preferences, etc. Modeled after Anthropic Memory Tool: each row is a
+// "file" with a path + content. Rationale (research 2026-05-11): Claude
+// Memory Tool pattern beats KV blocks / vector DB / graph for OCCA's
+// stack — Postgres-native, agent-self-edit-friendly via memory tool API,
+// production-validated by Netflix/Rakuten with 97% error reduction.
+//
+// Visibility: `'all'` = every agent in company; `'ceo_only'` = CEO only
+// (e.g. owner-preferences); `'tier:head'` = CEO + Heads (strategic intel).
+// Filtering happens server-side at loadContext, before injection.
+//
+// Storage today: Postgres rows with path + content. Phase 2 may move to
+// real filesystem / S3 / pgvector — schema is the same shape.
+export const companyBrain = pgTable(
+  "company_brain",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+
+    // Filesystem-style path, e.g. "/brain/glossary.md". Convention: lead
+    // with "/brain/", end with ".md". Enforced at app layer rather than
+    // DB so tests/migrations can use sentinel values without rewriting.
+    path: text("path").notNull(),
+
+    // Markdown body. No size cap at DB level — UI / loader enforces.
+    content: text("content").notNull(),
+
+    // Visibility tier — see header comment. Plain text instead of enum
+    // for forward-compat (e.g. role-specific tiers later).
+    visibility: text("visibility").notNull().default("all"),
+
+    updatedBy: uuid("updated_by"), // user or deployment id (poly-ref)
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("uniq_company_brain_path").on(t.companyId, t.path),
+    index("idx_company_brain_company").on(t.companyId),
+  ],
+);
+
+// ── Documents (Tier 3b) — auto-saved task deliverables ─────────────────
+// Every task that hits `status='done'` with a non-empty agent_result is
+// auto-snapshotted into this table. Agents can reference completed work
+// across sessions — "what did the team ship last week" or "find me a
+// piece similar to the one Jhon wrote about AA" type queries.
+//
+// Immutable by design (no edit, no versioning). If the same task is
+// re-dispatched and produces a new result, a new document row is created
+// — we keep history. Task FK is nullable because tasks can be archived
+// or deleted; documents survive.
+//
+// Retrieval today: tag filter + recency order. Phase 2 candidate for
+// pgvector when total document count or token budget warrants it.
+export const documents = pgTable(
+  "documents",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+
+    // Originating task — nullable so deletion of task doesn't cascade
+    // the document away. NULL also leaves room for non-task documents
+    // later (manually saved snippets, owner-uploaded refs).
+    taskId: uuid("task_id"),
+    deploymentId: uuid("deployment_id"), // who produced it
+
+    title: text("title").notNull(),
+    content: text("content").notNull(), // markdown body
+    format: text("format").notNull().default("markdown"),
+
+    tags: text("tags").array().notNull().default(sql`'{}'::text[]`),
+
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("idx_documents_company_created").on(t.companyId, t.createdAt),
+    index("idx_documents_task").on(t.taskId),
+  ],
+);
+
 // ── AgentIdentity — Truth tier mirror of on-chain `AgentIdentity` ─────
 // Portable identity, owner-scoped, independent of any company. Same
 // identity may be deployed to multiple companies owned by the same

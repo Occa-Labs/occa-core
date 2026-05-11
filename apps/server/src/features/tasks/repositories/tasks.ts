@@ -43,6 +43,28 @@ export async function listTasksByCompany(
     .orderBy(desc(tasks.updatedAt));
 }
 
+// Most-recently-completed tasks for a company. Used by the chat surface
+// to surface a "recent work" snapshot in the context preamble — gives
+// the CEO a feel for what the team has shipped without dragging in full
+// task bodies. Limit is enforced by caller; we just order + cap.
+export async function listRecentDoneTasksByCompany(args: {
+  companyId: string;
+  limit: number;
+}): Promise<TaskRow[]> {
+  return db
+    .select()
+    .from(tasks)
+    .where(
+      and(
+        eq(tasks.companyId, args.companyId),
+        eq(tasks.status, "done"),
+        isNull(tasks.archivedAt),
+      ),
+    )
+    .orderBy(desc(tasks.updatedAt))
+    .limit(args.limit);
+}
+
 export async function archiveTask(
   taskId: string,
   reason: string | null,

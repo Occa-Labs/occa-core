@@ -1,22 +1,18 @@
 import type { Job } from "pg-boss";
 import { childLogger } from "../../lib/logger";
 import { dispatchTask } from "../../features/tasks/services/dispatcher";
-import {
-  canDeploy,
-  listSubordinates,
-} from "../../features/agents/services/deployment-hierarchy";
+import { canDeploy } from "../../features/agents/services/deployment-hierarchy";
 import { getBoss, TASK_DISPATCH_QUEUE, type TaskDispatchJobData } from "./boss";
 
 const log = childLogger("task-worker");
 
-// Composition root for the task dispatch flow. Imports cross-feature
-// primitives (canDeploy from agents, listSubordinates from agents) and
-// threads them as injected deps into the dispatcher service. Keeps the
-// dispatcher itself free of cross-feature imports while still wiring
-// the pieces together.
+// Composition root for the task dispatch flow. Threads `canDeploy` (from
+// features/agents) into the dispatcher's action-block handlers so they
+// can validate DELEGATE targets. Keeps the dispatcher itself free of
+// cross-feature imports. (Subordinate listing for prompt building is now
+// owned by the Context Pipeline, not injected here.)
 const dispatchDeps = {
   canDeploy,
-  listSubordinates,
 };
 
 export async function registerTaskWorker(): Promise<void> {
