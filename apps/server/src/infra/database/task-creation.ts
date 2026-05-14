@@ -38,6 +38,13 @@ export interface CreateTaskRecordInput {
   createdByUserId: string | null;
   createdByDeploymentId: string | null;
   acceptanceCriteria: string | null;
+  // Set when the task originates from a CEO chat turn (DELEGATE or
+  // CREATE_TASK emitted in chat-mode). Drives the chat-synthesis
+  // callback in cascade — when the task completes, the synthesized
+  // reply lands on this user's CEO chat thread. Null for tasks born
+  // from nested DELEGATE inside another task, manual UI creation, or
+  // EmitFollowUp.
+  originatingUserId?: string | null;
 }
 
 async function insertWithCompanyLock(
@@ -68,6 +75,7 @@ async function insertWithCompanyLock(
       createdByUserId: input.createdByUserId,
       createdByDeploymentId: input.createdByDeploymentId,
       acceptanceCriteria: input.acceptanceCriteria,
+      originatingUserId: input.originatingUserId ?? null,
     })
     .returning();
   return row;

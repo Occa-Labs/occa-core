@@ -515,6 +515,10 @@ export const agentsApi = {
     }),
   remove: (id: string) =>
     request<{ ok: boolean }>(`/api/agents/${id}`, { method: "DELETE" }),
+  pause: (id: string) =>
+    request<AgentResponse>(`/api/agents/${id}/pause`, { method: "POST" }),
+  activate: (id: string) =>
+    request<AgentResponse>(`/api/agents/${id}/activate`, { method: "POST" }),
   syncSkills: (id: string, input: SyncAgentSkillsRequest) =>
     request<AgentResponse>(`/api/agents/${id}/skills/sync`, {
       method: "POST",

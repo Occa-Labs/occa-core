@@ -5,6 +5,8 @@ import {
   AlertTriangle,
   Loader2,
   MessageSquare,
+  Pause,
+  Play,
   Plus,
   Search,
   Trash2,
@@ -39,7 +41,13 @@ interface AgentsWindowProps {
   onClose?: () => void;
 }
 
-type TabId = "overview" | "skills" | "activity" | "traces" | "files";
+type TabId =
+  | "overview"
+  | "skills"
+  | "activity"
+  | "traces"
+  | "files"
+  | "settings";
 
 // Activity + Traces surfaces are WIP — kept visible (so the IA stays
 // honest) but disabled in production preview mode. Same for the Chat
@@ -51,6 +59,7 @@ const TABS: { id: TabId; label: string; disabled?: boolean }[] = [
   { id: "activity", label: "Activity", disabled: IS_PRODUCTION_MODE },
   { id: "traces", label: "Traces", disabled: IS_PRODUCTION_MODE },
   { id: "files", label: "Files" },
+  { id: "settings", label: "Settings" },
 ];
 
 export function AgentsWindow({
@@ -282,15 +291,38 @@ function AgentDetail({
 }) {
   const [tab, setTab] = useState<TabId>("overview");
   const [chatOpen, setChatOpen] = useState(false);
-  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [retireModalOpen, setRetireModalOpen] = useState(false);
+  const [statusTogglePending, setStatusTogglePending] = useState(false);
+  const [statusError, setStatusError] = useState<string | null>(null);
   const tracesState = useAgentTraces(agent.id, tab === "traces");
   const activityState = useAgentActivity(agent.id, tab === "activity");
 
   // CEO is the keypair source-of-truth for the whole company (every other
-  // agent borrows its deviceKeypair). Deleting CEO would orphan all deployments
+  // agent borrows its deviceKeypair). Retiring CEO would orphan all deployments
   // — block it from the UI; user can wipe the company instead if they
-  // really want to start over.
-  const isDeletable = agent.role !== CEO_ROLE;
+  // really want to start over. Same gate covers pause (server enforces too).
+  const isLifecycleControllable = agent.role !== CEO_ROLE;
+  const isPaused = agent.status === "paused";
+
+  const onTogglePauseResume = useCallback(async () => {
+    if (statusTogglePending) return;
+    setStatusTogglePending(true);
+    setStatusError(null);
+    try {
+      if (isPaused) {
+        await agentsApi.activate(agent.id);
+      } else {
+        await agentsApi.pause(agent.id);
+      }
+      await onReloadMe();
+    } catch (err) {
+      setStatusError(
+        err instanceof Error ? err.message : "Failed to toggle status",
+      );
+    } finally {
+      setStatusTogglePending(false);
+    }
+  }, [agent.id, isPaused, onReloadMe, statusTogglePending]);
 
   return (
     <div className="relative flex-1 flex flex-col min-w-0 overflow-hidden">
@@ -320,15 +352,30 @@ function AgentDetail({
               <MessageSquare className="size-3" />
               Chat
             </button>
-            {isDeletable && (
+            {isLifecycleControllable && (
               <button
                 type="button"
-                onClick={() => setDeleteModalOpen(true)}
-                className="flex items-center gap-1.5 rounded-md bg-red-500/10 hover:bg-red-500/18 px-3 py-1.5 text-xs font-medium text-red-300/85 hover:text-red-200 transition-colors ring-1 ring-inset ring-red-500/20"
-                title="Fire this agent — removes from gateway + workspace"
+                onClick={onTogglePauseResume}
+                disabled={statusTogglePending}
+                className={
+                  isPaused
+                    ? "flex items-center gap-1.5 rounded-md bg-emerald-500/12 hover:bg-emerald-500/22 px-3 py-1.5 text-xs font-medium text-emerald-300/90 hover:text-emerald-200 transition-colors ring-1 ring-inset ring-emerald-500/22 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                    : "flex items-center gap-1.5 rounded-md bg-amber-500/12 hover:bg-amber-500/22 px-3 py-1.5 text-xs font-medium text-amber-200/90 hover:text-amber-100 transition-colors ring-1 ring-inset ring-amber-500/22 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                }
+                title={
+                  isPaused
+                    ? "Resume this agent — flip back to active"
+                    : "Pause this agent — exclude from active team filters"
+                }
               >
-                <Trash2 className="size-3" />
-                Fire
+                {statusTogglePending ? (
+                  <Loader2 className="size-3 animate-spin" />
+                ) : isPaused ? (
+                  <Play className="size-3" />
+                ) : (
+                  <Pause className="size-3" />
+                )}
+                {isPaused ? "Resume" : "Pause"}
               </button>
             )}
           </div>
@@ -351,6 +398,12 @@ function AgentDetail({
           ))}
         </div>
       </div>
+      {statusError && (
+        <div className="mx-5 mt-2 flex items-center gap-2 rounded-md bg-red-500/10 px-3 py-2 text-[11px] text-red-300 ring-1 ring-inset ring-red-500/18">
+          <AlertTriangle className="size-3.5 shrink-0" />
+          {statusError}
+        </div>
+      )}
       <div className="flex-1 min-h-0">
         {tab === "overview" ? (
           <div className="h-full overflow-y-auto">
@@ -366,6 +419,14 @@ function AgentDetail({
           <div className="h-full overflow-y-auto">
             <FilesTab agentId={agent.id} />
           </div>
+        ) : tab === "settings" ? (
+          <div className="h-full overflow-y-auto">
+            <SettingsTab
+              agent={agent}
+              canRetire={isLifecycleControllable}
+              onOpenRetire={() => setRetireModalOpen(true)}
+            />
+          </div>
         ) : (
           <TracesTab agentId={agent.id} tracesState={tracesState} />
         )}
@@ -374,12 +435,12 @@ function AgentDetail({
       {chatOpen && (
         <ChatModal agent={agent} onClose={() => setChatOpen(false)} />
       )}
-      <FireAgentModal
-        open={deleteModalOpen}
+      <RetireAgentModal
+        open={retireModalOpen}
         agent={agent}
-        onClose={() => setDeleteModalOpen(false)}
-        onFired={async () => {
-          setDeleteModalOpen(false);
+        onClose={() => setRetireModalOpen(false)}
+        onRetired={async () => {
+          setRetireModalOpen(false);
           await onReloadMe();
         }}
       />
@@ -387,21 +448,86 @@ function AgentDetail({
   );
 }
 
-// Confirmation modal for deleting an agent. Calls DELETE /api/agents/:id
+// Settings tab — destructive lifecycle actions (Retire) live here so
+// the card header stays focused on the reversible toggle (Pause/Resume).
+// Mirrors the pattern from settings panels where "delete account" is
+// pushed deep into a "Danger zone" section.
+function SettingsTab({
+  agent,
+  canRetire,
+  onOpenRetire,
+}: {
+  agent: AgentDTO;
+  canRetire: boolean;
+  onOpenRetire: () => void;
+}) {
+  return (
+    <div className="px-5 py-5 space-y-6">
+      <section className="space-y-3">
+        <h3 className="text-xs font-semibold text-white/55 uppercase tracking-wider">
+          Lifecycle
+        </h3>
+        <p className="text-[12px] text-white/55">
+          Pause/Resume sits in the header — toggle the agent in or out of
+          your active team without losing identity, workspace, or history.
+          Retiring is destructive and lives below.
+        </p>
+      </section>
+      <section className="space-y-3">
+        <h3 className="text-xs font-semibold text-red-300/80 uppercase tracking-wider">
+          Danger zone
+        </h3>
+        {!canRetire ? (
+          <p className="text-[12px] text-white/45">
+            CEO can&apos;t be retired from here — every other agent borrows
+            its keypair. Wipe the whole company instead if you want to
+            start over.
+          </p>
+        ) : (
+          <div className="rounded-lg ring-1 ring-inset ring-red-500/22 bg-red-500/5 p-4 space-y-3">
+            <div className="space-y-1">
+              <p className="text-[13px] font-medium text-white/85">
+                Retire {agent.name}
+              </p>
+              <p className="text-[11.5px] text-white/55 leading-relaxed">
+                Removes the agent from the gateway, wipes workspace files +
+                skill installs, reassigns tasks, deletes traces + sessions.
+                The on-chain work record stays (immutable). Not reversible
+                — use Pause if you just need to take them off-rotation
+                temporarily.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={onOpenRetire}
+              className="flex items-center gap-1.5 rounded-md bg-red-500/12 hover:bg-red-500/22 px-3 py-1.5 text-xs font-medium text-red-300/90 hover:text-red-200 transition-colors ring-1 ring-inset ring-red-500/22 cursor-pointer"
+            >
+              <Trash2 className="size-3" />
+              Retire agent
+            </button>
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+// Confirmation modal for retiring an agent. Calls DELETE /api/agents/:id
 // which deprovisions the gateway side (best-effort) + cascades local cleanup
 // (tasks, tokens, runtime state, sessions, traces). Two-step confirm: user
 // must type the agent's name to enable the destructive button — same
-// pattern GitHub uses for repo deletion. Avoids accidental fires.
-function FireAgentModal({
+// pattern GitHub uses for repo deletion. Avoids accidental retirements.
+// Naming follows CLAUDE.md regulatory guidance: use "retire" not "fire".
+function RetireAgentModal({
   open,
   agent,
   onClose,
-  onFired,
+  onRetired,
 }: {
   open: boolean;
   agent: AgentDTO;
   onClose: () => void;
-  onFired: () => Promise<void> | void;
+  onRetired: () => Promise<void> | void;
 }) {
   const [confirm, setConfirm] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -415,15 +541,15 @@ function FireAgentModal({
     setError(null);
   }, [open]);
 
-  const canFire = confirm.trim() === agent.name && !submitting;
+  const canRetire = confirm.trim() === agent.name && !submitting;
 
-  const handleFire = useCallback(async () => {
-    if (!canFire) return;
+  const handleRetire = useCallback(async () => {
+    if (!canRetire) return;
     setSubmitting(true);
     setError(null);
     try {
       await agentsApi.remove(agent.id);
-      await onFired();
+      await onRetired();
     } catch (err) {
       const code =
         err instanceof ApiError &&
@@ -433,39 +559,39 @@ function FireAgentModal({
           ? String((err.body as Record<string, unknown>).error)
           : null;
       setError(
-        code ?? (err instanceof Error ? err.message : "Failed to fire agent."),
+        code ?? (err instanceof Error ? err.message : "Failed to retire agent."),
       );
       setSubmitting(false);
     }
-  }, [agent.id, canFire, onFired]);
+  }, [agent.id, canRetire, onRetired]);
 
   const footer = (
     <div className="flex items-center justify-end gap-3 px-5 py-3.5">
       <button
         onClick={onClose}
         disabled={submitting}
-        className="px-4 py-1.5 rounded-lg text-[12px] font-medium text-white/50 hover:text-white/80 transition-colors disabled:opacity-40"
+        className="px-4 py-1.5 rounded-lg text-[12px] font-medium text-white/50 hover:text-white/80 transition-colors disabled:opacity-40 cursor-pointer"
       >
         Cancel
       </button>
       <button
         type="button"
-        onClick={() => void handleFire()}
-        disabled={!canFire}
-        className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-[12px] font-semibold text-white transition-all disabled:opacity-35 disabled:cursor-not-allowed"
+        onClick={() => void handleRetire()}
+        disabled={!canRetire}
+        className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-[12px] font-semibold text-white transition-all disabled:opacity-35 disabled:cursor-not-allowed cursor-pointer"
         style={{
-          background: canFire
+          background: canRetire
             ? "linear-gradient(150deg, #dc2626 0%, #b91c1c 100%)"
             : "rgba(255,255,255,0.08)",
         }}
       >
         {submitting ? (
           <>
-            <Loader2 className="size-3.5 animate-spin" /> Firing…
+            <Loader2 className="size-3.5 animate-spin" /> Retiring…
           </>
         ) : (
           <>
-            <Trash2 className="size-3.5" /> Fire agent
+            <Trash2 className="size-3.5" /> Retire agent
           </>
         )}
       </button>
@@ -473,7 +599,7 @@ function FireAgentModal({
   );
 
   return (
-    <Modal open={open} onClose={onClose} title="Fire agent" footer={footer}>
+    <Modal open={open} onClose={onClose} title="Retire agent" footer={footer}>
       <div className="px-5 py-5 space-y-4">
         <div className="flex items-start gap-3 rounded-lg bg-amber-500/10 p-3 ring-1 ring-inset ring-amber-500/22">
           <AlertTriangle className="size-4 text-amber-300/85 shrink-0 mt-0.5" />

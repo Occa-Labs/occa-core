@@ -16,9 +16,20 @@
 
 import { eq } from "drizzle-orm";
 import { agentIdentities, deployments } from "@occa/shared/schema";
+import { getTier } from "@occa/shared/role-catalog";
 import { db } from "../../../infra/database/client";
 
 const MAX_HIERARCHY_DEPTH = 32;
+
+// Only `tier === "ceo"` deployments are allowed the "top-level sees
+// everyone" treatment. Other null-parent deployments are treated as
+// having an empty subtree — a defensive guard against data anomalies
+// where a non-CEO agent ends up without a parent index (which would
+// otherwise let two top-level agents mutually delegate to each other
+// in an unbounded loop, since each sees the other as a subordinate).
+function isCeo(role: string): boolean {
+  return getTier(role) === "ceo";
+}
 
 export type DeployCheckReason =
   | "self_deploy_forbidden"
@@ -39,6 +50,11 @@ interface DeploymentNode {
   parentDeploymentIndex: number | null;
   name: string;
   role: string;
+  // Lifecycle status mirrored from `deployments.status`. Tree walks
+  // consider all nodes for hierarchy correctness (so paused interior
+  // nodes don't break parent lookups), but delegation target listing
+  // filters to `active` only — a paused agent can't be assigned work.
+  status: "active" | "paused" | "retired";
 }
 
 // Pulls every deployment in the company JOINed with its identity name —
@@ -55,6 +71,7 @@ async function loadCompanyNodes(
       parentDeploymentIndex: deployments.parentDeploymentIndex,
       role: deployments.role,
       name: agentIdentities.name,
+      status: deployments.status,
     })
     .from(deployments)
     .innerJoin(
@@ -62,7 +79,12 @@ async function loadCompanyNodes(
       eq(deployments.agentIdentityId, agentIdentities.id),
     )
     .where(eq(deployments.companyId, companyId));
-  return new Map(rows.map((r) => [r.id, r]));
+  return new Map(
+    rows.map((r) => [
+      r.id,
+      { ...r, status: r.status as DeploymentNode["status"] },
+    ]),
+  );
 }
 
 function indexOf(
@@ -84,6 +106,7 @@ async function loadDeploymentNode(id: string): Promise<DeploymentNode | null> {
       parentDeploymentIndex: deployments.parentDeploymentIndex,
       role: deployments.role,
       name: agentIdentities.name,
+      status: deployments.status,
     })
     .from(deployments)
     .innerJoin(
@@ -92,7 +115,8 @@ async function loadDeploymentNode(id: string): Promise<DeploymentNode | null> {
     )
     .where(eq(deployments.id, id))
     .limit(1);
-  return row ?? null;
+  if (!row) return null;
+  return { ...row, status: row.status as DeploymentNode["status"] };
 }
 
 // Returns whether `requesterId` may delegate work to `targetId`. Walks
@@ -117,7 +141,13 @@ export async function canDeploy(
     return { ok: false, reason: "cross_company_forbidden" };
   }
 
-  if (requester.parentDeploymentIndex === null) return { ok: true };
+  // Top-level + CEO tier short-circuit: CEO can delegate to anyone in
+  // the company. Any other top-level deployment (data anomaly) falls
+  // through to the descent walk below, which finds nothing — empty
+  // subtree, out_of_scope.
+  if (requester.parentDeploymentIndex === null && isCeo(requester.role)) {
+    return { ok: true };
+  }
 
   const byId = await loadCompanyNodes(requester.companyId);
   const visited = new Set<number>();
@@ -148,9 +178,20 @@ export async function listSubordinates(
 
   const byId = await loadCompanyNodes(root.companyId);
 
+  // Specialists are leaf-only by design (hierarchical-agent-system
+  // design doc §7: "Disable delegation at specialist layer — specialists
+  // CANNOT delegate further. Prevents infinite loops.").
+  if (getTier(root.role) === "specialist") {
+    return [];
+  }
+
   if (root.parentDeploymentIndex === null) {
+    // Only CEO tier gets the "see everyone in company" treatment. Any
+    // other null-parent deployment is treated as having an empty
+    // subtree — see isCeo guard rationale.
+    if (!isCeo(root.role)) return [];
     return Array.from(byId.values())
-      .filter((n) => n.id !== rootId)
+      .filter((n) => n.id !== rootId && n.status === "active")
       .map((n) => ({ id: n.id, name: n.name, role: n.role }));
   }
 
@@ -177,7 +218,10 @@ export async function listSubordinates(
   }
   return Array.from(descendants)
     .map((id) => byId.get(id))
-    .filter((n): n is DeploymentNode => n != null && n.id !== rootId)
+    .filter(
+      (n): n is DeploymentNode =>
+        n != null && n.id !== rootId && n.status === "active",
+    )
     .map((n) => ({ id: n.id, name: n.name, role: n.role }));
 }
 

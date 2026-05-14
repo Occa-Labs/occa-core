@@ -103,6 +103,7 @@ function toDTO(args: {
     provisioningError: profile?.provisioningError ?? null,
     workstationId: profile?.workstationId ?? null,
     modelOverride: profile?.modelOverride ?? null,
+    status: deployment.status as AgentDTO["status"],
     agentPda: identity?.identityPda ?? null,
     agentIndex: deployment.deploymentIndex,
     ownerWallet: identity?.ownerWallet ?? null,

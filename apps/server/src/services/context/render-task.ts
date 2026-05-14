@@ -13,8 +13,20 @@ import {
   tasks,
 } from "@occa/shared/schema";
 import type { ContentBlock, Task } from "@occa/shared/types";
+import { getTier } from "@occa/shared/role-catalog";
 import { db } from "../../infra/database/client";
-import type { ContextSpec, ContextTeammate, SurfacePayload } from "./spec";
+import {
+  renderReportsBlock,
+  renderRootReportBlock,
+} from "../delegation/policy";
+import type { ContextSpec, SurfacePayload } from "./spec";
+
+// Max chars per completed-child preview surfaced to the parent agent.
+// Sized for ~1-2 short pages of prose — long enough for a CEO to
+// synthesize a Writer's draft, short enough to keep total prompt cost
+// bounded when 4-5 specialists report in. Truncation is suffixed "…"
+// so the agent knows the snippet was clipped.
+const CHILD_RESULT_PREVIEW_MAX = 4_000;
 
 function blocksToMarkdown(blocks: ContentBlock[]): string {
   return blocks
@@ -110,6 +122,7 @@ async function loadCompletedChildren(
 // as `surface` so the renderer has everything it needs.
 export async function loadTaskSurfacePayload(args: {
   task: Task;
+  assigneeRole: string;
   traceId: string;
   gatewayUrl: string | null;
 }): Promise<SurfacePayload> {
@@ -129,25 +142,10 @@ export async function loadTaskSurfacePayload(args: {
     acceptanceCriteria: args.task.acceptanceCriteria ?? null,
     traceId: args.traceId,
     gatewayUrl: args.gatewayUrl,
+    isRoot: args.task.parentTaskId === null,
+    isCeoAssignee: getTier(args.assigneeRole) === "ceo",
     completedChildren,
   };
-}
-
-function renderReportsBlock(reports: ContextTeammate[]): string {
-  if (reports.length === 0) {
-    return [
-      `Available reports (DELEGATE): none.`,
-      `You have no agents reporting to you yet. If the task needs another`,
-      `role, finish what you can and flag the gap to the human in your reply.`,
-    ].join("\n");
-  }
-  const lines = [
-    `Available reports (DELEGATE — assign work to an existing teammate):`,
-  ];
-  for (const r of reports) {
-    lines.push(`  - ${r.name} (role: ${r.role}, id: ${r.id})`);
-  }
-  return lines.join("\n");
 }
 
 function renderCompletedChildrenBlock(
@@ -162,9 +160,13 @@ function renderCompletedChildrenBlock(
     const who = c.agentName ?? "agent";
     lines.push(`  • Task #${c.taskNumber} "${c.title}" — completed by ${who}`);
     if (c.resultPreview) {
-      const trimmed = c.resultPreview.slice(0, 280).replace(/\n/g, " ");
+      const trimmed = c.resultPreview
+        .slice(0, CHILD_RESULT_PREVIEW_MAX)
+        .replace(/\n/g, " ");
       lines.push(
-        `      result: ${trimmed}${c.resultPreview.length > 280 ? "…" : ""}`,
+        `      result: ${trimmed}${
+          c.resultPreview.length > CHILD_RESULT_PREVIEW_MAX ? "…" : ""
+        }`,
       );
     }
   }
@@ -264,7 +266,27 @@ export function renderTaskPrompt(spec: ContextSpec): string {
     `INSTRUCTIONS:`,
     `- Work on the task described below and respond with your findings or result.`,
     `- If the task requires human review before being closed, end your reply with: [[OCCA:REVIEW]]`,
-    `- Otherwise your reply will automatically mark the task as done.`,
+    ...(s.isRoot && s.isCeoAssignee
+      ? [
+          `- THIS TASK IS THE USER'S REQUEST. The user only ever sees what you`,
+          `  put inside an [[OCCA:REPORT]] marker (see block below).`,
+          `- TWO PATHS depending on the "Available reports" block:`,
+          `    A) Reports are listed → DELEGATE this turn. REPORT comes on`,
+          `       the NEXT dispatch (after children cascade back). Do not`,
+          `       emit REPORT and DELEGATE in the same reply.`,
+          `    B) No reports listed → do the work yourself this turn and`,
+          `       emit REPORT in the same reply.`,
+          `- Closing a root task without REPORT parks it in 'review' — the`,
+          `  user sees nothing. REPORT is mandatory to ship.`,
+        ]
+      : [
+          `- Your reply is your final deliverable for this task. Write it`,
+          `  in full — markdown, code blocks, whatever the brief calls for.`,
+          `  Do NOT wrap it in any [[OCCA:*]] marker. The runtime saves your`,
+          `  full reply to the task and forwards the result up the chain;`,
+          `  any marker you emit will be stripped and the content lost.`,
+          `- Otherwise your reply will automatically mark the task as done.`,
+        ]),
     `- If you can't finish solo, emit ONE of these BLOCK MARKERS in your`,
     `  reply (the server parses the JSON body and acts on it):`,
     ``,
@@ -306,6 +328,7 @@ export function renderTaskPrompt(spec: ContextSpec): string {
     ``,
     renderReportsBlock(spec.org.subordinatesForSelf),
     ``,
+    ...(s.isRoot && s.isCeoAssignee ? [renderRootReportBlock(), ``] : []),
     ...(s.completedChildren.length > 0
       ? [renderCompletedChildrenBlock(s.completedChildren), ``]
       : []),

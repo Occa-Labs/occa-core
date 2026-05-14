@@ -1,14 +1,25 @@
-// L2 task-graph cascade. When a task transitions to `done`:
+// L2 task-graph cascade. Fires when a task transitions to a settled
+// state — `done` (subordinate closed it) or `review` (subordinate
+// emitted [[OCCA:REVIEW]] and is asking for human eyes). Both states
+// need to bubble up:
 //   1. unblockDependents — any task with this in its blocked_by_task_ids
 //      gets the entry removed; if their list goes empty AND they were
-//      parked in `blocked`, flip back to `todo` + dispatch.
+//      parked in `blocked`, flip back to `todo` + dispatch. (Done-only —
+//      a review task isn't unblocking anything.)
 //   2. cascadeOnTaskDone — if this task has a parent AND all siblings
-//      are also done, wake the parent so its agent can synthesize.
+//      are also settled, wake the parent so its agent can synthesize.
+//      For chat-origin top-level tasks, invokes the synthesis service
+//      which posts a CEO-framed reply back to the user's chat thread
+//      ("here's what shipped" for done, "Jhon wants review" for review).
+//
+// Name kept as `cascadeOnTaskDone` for backwards compat with imports;
+// semantically it's `cascadeOnTaskSettled` now.
 //
 // Mirror of the autonomy doc §3.1 `task.children_completed` event.
 
 import { childLogger } from "../../../lib/logger";
 import { enqueueTaskDispatch } from "../../../infra/queue/task-worker";
+import { synthesizeCeoReplyForTask } from "../../../services/delegation/synthesis";
 import {
   findTaskById,
   listDependents,
@@ -30,7 +41,8 @@ export type CascadeReason =
   | "parent_already_done"
   | "parent_unassigned"
   | "parent_not_found"
-  | "woken";
+  | "woken"
+  | "ceo_synthesis_triggered";
 
 export interface CascadeOnTaskDoneResult {
   parentWoken: boolean;
@@ -85,14 +97,41 @@ async function unblockDependents(taskId: string): Promise<string[]> {
 export async function cascadeOnTaskDone(
   input: CascadeOnTaskDoneInput,
 ): Promise<CascadeOnTaskDoneResult> {
-  // Run blockers_resolved in parallel with the parent check — they're
-  // independent (a task can both have a parent and be a blocker).
-  void unblockDependents(input.taskId).catch((err) => {
-    log.error({ err, taskId: input.taskId }, "unblockDependents failed");
-  });
-
   const task = await findTaskById(input.taskId);
-  if (!task?.parentTaskId) {
+  if (!task) {
+    return { parentWoken: false, parentTaskId: null, reason: "no_parent" };
+  }
+
+  // Unblock dependents only when this task is truly closed. Review
+  // status means "not yet final, awaiting human" — dependents that
+  // were blocked on this task should keep waiting until the user
+  // approves and the task transitions to done.
+  if (task.status === "done") {
+    void unblockDependents(input.taskId).catch((err) => {
+      log.error({ err, taskId: input.taskId }, "unblockDependents failed");
+    });
+  }
+  if (!task.parentTaskId) {
+    // Top-level task with no parent. If it originated from a CEO chat
+    // turn, the bubble-up point is the user's chat thread — invoke the
+    // synthesis service to post the CEO's reply there. The service
+    // itself short-circuits the CEO-self-execute path (where the CEO
+    // already emitted [[OCCA:REPORT]] in task-mode and inserted the
+    // chat row directly), so cascade always fires it for chat-origin
+    // tasks and lets the service decide.
+    if (task.originatingUserId) {
+      void synthesizeCeoReplyForTask({ taskId: task.id }).catch((err) => {
+        log.error(
+          { err, taskId: task.id },
+          "ceo synthesis trigger failed",
+        );
+      });
+      return {
+        parentWoken: false,
+        parentTaskId: null,
+        reason: "ceo_synthesis_triggered",
+      };
+    }
     return { parentWoken: false, parentTaskId: null, reason: "no_parent" };
   }
 

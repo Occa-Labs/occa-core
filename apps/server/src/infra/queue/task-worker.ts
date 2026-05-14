@@ -2,17 +2,47 @@ import type { Job } from "pg-boss";
 import { childLogger } from "../../lib/logger";
 import { dispatchTask } from "../../features/tasks/services/dispatcher";
 import { canDeploy } from "../../features/agents/services/deployment-hierarchy";
+import { findCeoForCompany } from "../../features/agents/repositories/deployments";
+import { insertMessage } from "../../features/chat/repositories/chat-messages";
 import { getBoss, TASK_DISPATCH_QUEUE, type TaskDispatchJobData } from "./boss";
 
 const log = childLogger("task-worker");
 
-// Composition root for the task dispatch flow. Threads `canDeploy` (from
-// features/agents) into the dispatcher's action-block handlers so they
-// can validate DELEGATE targets. Keeps the dispatcher itself free of
-// cross-feature imports. (Subordinate listing for prompt building is now
-// owned by the Context Pipeline, not injected here.)
+// Composition root for the task dispatch flow. Threads cross-feature
+// ports (`canDeploy` from features/agents, `postCeoChatMessage` which
+// composes findCeoForCompany + insertMessage) into the dispatcher's
+// action-block handlers so the dispatcher itself stays free of cross-
+// feature imports. (Subordinate listing for prompt building is owned
+// by the Context Pipeline, not injected here.)
+//
+// REPORT always lands on the CEO's chat thread — the user's chat
+// surface — even when the root task was routed directly to a specialist
+// via `assignToRole`. The emitter's deployment is NOT the deployment we
+// write the chat message under; we resolve the CEO here per company.
 const dispatchDeps = {
   canDeploy,
+  postCeoChatMessage: async (args: {
+    companyId: string;
+    content: string;
+    traceId: string;
+  }): Promise<{ ok: true } | { ok: false; reason: "no_ceo_deployment" }> => {
+    const ceo = await findCeoForCompany(args.companyId);
+    if (!ceo) {
+      log.warn(
+        { companyId: args.companyId, traceId: args.traceId },
+        "REPORT cannot post: company has no active CEO deployment",
+      );
+      return { ok: false, reason: "no_ceo_deployment" };
+    }
+    await insertMessage({
+      companyId: args.companyId,
+      deploymentId: ceo.id,
+      role: "assistant",
+      content: args.content,
+      traceId: args.traceId,
+    });
+    return { ok: true };
+  },
 };
 
 export async function registerTaskWorker(): Promise<void> {

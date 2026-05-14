@@ -5,7 +5,7 @@
 // services/repositories it composes:
 //   - services/context/render-task.ts builds the wake message via the
 //     Context Pipeline (loadContext + renderTaskPrompt).
-//   - action-blocks/parser.ts handles DELEGATE/BLOCK markers
+//   - services/delegation/markers/parser.ts handles DELEGATE/BLOCK/REPORT
 //   - cascade.ts wakes parents on done
 //   - events.ts persists task_event rows
 //   - trace-events-bus pushes live SSE updates (existing system)
@@ -42,20 +42,35 @@ import {
   nextStatusAfterDispatch,
   traceOutcomeFor,
 } from "../domain/status-transitions";
-import { processActionBlocks } from "./action-blocks/parser";
-import type { ActionBlockDeps } from "./action-blocks/handlers";
+import { processActionBlocks } from "../../../services/delegation/markers/parser";
+import type {
+  ActionBlockDeps,
+  PostCeoChatMessageArgs,
+  PostCeoChatMessageOutcome,
+} from "../../../services/delegation/markers/handlers";
 import {
   loadContext,
   loadTaskSurfacePayload,
   renderTaskPrompt,
 } from "../../../services/context";
+import { shouldBypassReport } from "../../../services/delegation/policy";
+import { getTier } from "@occa/shared/role-catalog";
 import { cascadeOnTaskDone } from "./cascade";
 import { autoSaveTaskAsDocument } from "../../../services/auto-save-document";
 import { appendTaskEventBestEffort } from "./events";
 
 const log = childLogger("services:tasks:dispatcher");
 
-export type DispatchTaskDeps = ActionBlockDeps;
+export interface DispatchTaskDeps extends ActionBlockDeps {
+  // Cross-feature port for the REPORT side-effect. Resolves the company's
+  // CEO deployment and inserts an `assistant`-role chat row on its
+  // thread. Dispatcher invokes this only after the bypass-delegation
+  // guard passes — the handler returns a `report_pending` outcome
+  // carrying the summary; the dispatcher commits or rejects.
+  postCeoChatMessage: (
+    args: PostCeoChatMessageArgs,
+  ) => Promise<PostCeoChatMessageOutcome>;
+}
 
 // Minimal agent row shape the dispatcher's helpers need (for opening
 // traces and building events). The Context Pipeline now owns the
@@ -118,6 +133,7 @@ export async function dispatchTask(
     typeof cfg.gatewayUrl === "string" ? cfg.gatewayUrl : null;
   const surface = await loadTaskSurfacePayload({
     task: taskRow,
+    assigneeRole: agentRow.role,
     traceId,
     gatewayUrl,
   });
@@ -184,21 +200,33 @@ export async function dispatchTask(
     {
       reply: result.reply,
       agentId: agentRow.id,
+      agentRole: agentRow.role,
       companyId: taskRow.companyId,
       currentTaskId: taskRow.id,
+      traceId,
     },
     deps,
   );
 
-  let approvalsRequested = 0;
+  // approvalsRequested is wired through to the FSM for any future
+  // HITL approval path; with Phase A's auto-approve there's nothing
+  // emitting `approval_created` outcomes today, so the counter is
+  // always 0. Leave the plumbing in place so the FSM stays general.
+  const approvalsRequested = 0;
+  let delegationsSpawned = 0;
   let blockedBy: string[] | null = null;
   let blockedReason: string | undefined;
   for (const r of processed) {
-    if (r.outcome.kind === "approval_created") approvalsRequested += 1;
+    if (r.outcome.kind === "delegated") delegationsSpawned += 1;
     if (r.outcome.kind === "blocked") {
       blockedBy = r.outcome.blockerIds;
       blockedReason = r.outcome.reason;
     }
+
+    // Defer the REPORT audit emission until after the bypass-delegation
+    // guard runs — the final outcome (`reported` vs `ignored`) depends
+    // on sibling outcomes in this same dispatch and isn't known yet.
+    if (r.outcome.kind === "report_pending") continue;
 
     // Emit `agent_action_emitted` for every parsed marker, including
     // ignored ones. Ignored outcomes (invalid payload, scope failure,
@@ -220,6 +248,9 @@ export async function dispatchTask(
         ...(r.outcome.kind === "blocked"
           ? { blockerIds: r.outcome.blockerIds }
           : {}),
+        ...(r.outcome.kind === "delegated"
+          ? { childTaskId: r.outcome.childTaskId }
+          : {}),
         ...(r.outcome.kind === "ignored"
           ? { reason: r.outcome.reason }
           : {}),
@@ -239,11 +270,152 @@ export async function dispatchTask(
     }
   }
 
-  const nextStatus = nextStatusAfterDispatch({
+  // Bypass-delegation guard (predicate lives in services/delegation/policy.ts —
+  // single source of truth, shared with the prompt copy). Mirrors the
+  // missingRootReport safeguard below: that catches "root closed with
+  // no REPORT at all", this one catches "root closed via REPORT but
+  // the agent skipped its subordinates and self-executed". When the
+  // guard trips we refuse to commit the REPORT; the existing
+  // missingRootReport branch then flips the task into `review`.
+  const pendingReport = processed.find(
+    (p) => p.outcome.kind === "report_pending",
+  );
+  const pendingReportSummary =
+    pendingReport && pendingReport.outcome.kind === "report_pending"
+      ? pendingReport.outcome.summary
+      : null;
+  const isRootTask = taskRow.parentTaskId === null;
+  const hasSubordinates = spec.org.subordinatesForSelf.length > 0;
+  const hasCompletedChildren =
+    surface.kind === "task" && surface.completedChildren.length > 0;
+  const wasDelegated = processed.some(
+    (p) => p.outcome.kind === "delegated",
+  );
+  const bypassReport =
+    pendingReportSummary !== null &&
+    shouldBypassReport({
+      isRoot: isRootTask,
+      hasSubordinates,
+      wasDelegated,
+      hasCompletedChildren,
+    });
+
+  let wasReported = false;
+  if (pendingReportSummary !== null && !bypassReport) {
+    const postResult = await deps.postCeoChatMessage({
+      companyId: taskRow.companyId,
+      content: pendingReportSummary,
+      traceId,
+    });
+    wasReported = postResult.ok;
+    void appendTaskEventBestEffort({
+      companyId: taskRow.companyId,
+      taskId: taskRow.id,
+      eventType: "agent_action_emitted",
+      actorType: "agent",
+      actorId: agentRow.id,
+      payload: {
+        actionType: "REPORT",
+        channel: "block_marker",
+        outcome: postResult.ok ? "reported" : "ignored",
+        ...(postResult.ok ? {} : { reason: postResult.reason }),
+      },
+      traceId,
+    });
+    if (!postResult.ok) {
+      log.warn(
+        { taskId: taskRow.id, reason: postResult.reason },
+        "REPORT post failed",
+      );
+    }
+  } else if (bypassReport) {
+    log.warn(
+      { taskId: taskRow.id, deploymentId: agentRow.id, traceId },
+      "REPORT rejected: subordinates available but agent skipped DELEGATE",
+    );
+    void appendTaskEventBestEffort({
+      companyId: taskRow.companyId,
+      taskId: taskRow.id,
+      eventType: "agent_action_emitted",
+      actorType: "agent",
+      actorId: agentRow.id,
+      payload: {
+        actionType: "REPORT",
+        channel: "block_marker",
+        outcome: "ignored",
+        reason: "subordinates_available_must_delegate",
+      },
+      traceId,
+    });
+    publishTraceEvent(traceId, {
+      seq: seqRef.current++,
+      eventType: "lifecycle",
+      phase: "action_block_failed",
+      token: "REPORT",
+      error: "subordinates_available_must_delegate",
+      createdAt: new Date().toISOString(),
+    });
+  }
+
+  const computedStatus = nextStatusAfterDispatch({
     approvalsRequested,
+    delegationsSpawned,
     blockedBy,
     needsReview,
   });
+
+  // Safeguard against the silent-close failure mode — but only for
+  // CEO-assigned root tasks. Specialists/Heads holding chat-origin
+  // root tasks (Phase B's chat-mode DELEGATE creates such tasks)
+  // must NOT emit REPORT — that's CEO-only, enforced in the handler.
+  // For them, finishing without a marker is the correct exit;
+  // cascade-then-synthesis handles the user-facing reply via the
+  // `services/delegation/synthesis` service. Misfiring the guard on
+  // specialists would park their tasks in `review` forever and
+  // prevent the synthesis trigger from running.
+  const isCeoAssignee = getTier(agentRow.role) === "ceo";
+  const missingRootReport =
+    isRootTask &&
+    isCeoAssignee &&
+    computedStatus === "done" &&
+    !wasReported;
+  const nextStatus = missingRootReport ? "review" : computedStatus;
+  log.info(
+    {
+      taskId: taskRow.id,
+      isRootTask,
+      hasSubordinates,
+      hasCompletedChildren,
+      wasDelegated,
+      wasReported,
+      bypassReport,
+      computedStatus,
+      nextStatus,
+      missingRootReport,
+    },
+    "dispatch outcome summary",
+  );
+
+  if (missingRootReport) {
+    log.warn(
+      { taskId: taskRow.id, deploymentId: agentRow.id, traceId },
+      "root task closed without REPORT marker, parking in review",
+    );
+    void appendTaskEventBestEffort({
+      companyId: taskRow.companyId,
+      taskId: taskRow.id,
+      eventType: "agent_action_emitted",
+      actorType: "system",
+      actorId: "system",
+      payload: {
+        actionType: "REPORT",
+        channel: "block_marker",
+        outcome: "missing",
+        reason: "root_close_without_report",
+      },
+      traceId,
+    });
+  }
 
   await closeSucceededTrace({
     taskRow,
@@ -276,6 +448,14 @@ export async function dispatchTask(
         "autoSaveTaskAsDocument failed (non-fatal)",
       );
     });
+  }
+  // Cascade fires on both `done` and `review`: a subordinate that
+  // emitted [[OCCA:REVIEW]] is signalling "please look before I close",
+  // which for a chat-origin task means the user should be notified via
+  // CEO synthesis (framed as "wants review", not "shipped"). Without
+  // this, REVIEW tasks would stall in limbo with no user-facing DM.
+  // Auto-save stays done-only — review means not-yet-final.
+  if (nextStatus === "done" || nextStatus === "review") {
     void cascadeOnTaskDone({ taskId: taskRow.id }).catch((err) => {
       log.error({ err, taskId: taskRow.id }, "cascadeOnTaskDone failed");
     });

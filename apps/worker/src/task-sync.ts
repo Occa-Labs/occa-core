@@ -226,10 +226,10 @@ export async function syncTaskOnTraceSucceeded(args: {
   // them so the timeline shows the agent attempted the action, but the
   // actual side-effects (approval insert for DELEGATE, blockedByTaskIds
   // update for BLOCK, hierarchy validation, mention wake) live in the
-  // server's action-blocks/handlers and aren't reachable from here yet.
-  // Documented as a known limitation in occa/docs/agent-protocol.md.
-  // Closing the gap fully needs the handlers extracted from
-  // features/tasks/services/action-blocks/ into a worker-importable
+  // server's services/delegation/markers/handlers and aren't reachable
+  // from here yet. Documented as a known limitation in
+  // occa/docs/agent-protocol.md. Closing the gap fully needs the handlers
+  // extracted from services/delegation/markers/ into a worker-importable
   // module that takes db + canDeploy + createTaskComment as DI deps.
   const blocks = extractActionBlocks(responseText);
   for (const block of blocks) {

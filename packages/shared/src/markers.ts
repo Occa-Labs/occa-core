@@ -17,6 +17,9 @@
 // Examples:
 //   [[OCCA:REVIEW]]                            — flag review needed
 //   [[OCCA:DELEGATE]] {...} [[/OCCA:DELEGATE]] — request to delegate to existing agent
+//   [[OCCA:BLOCK]]    {...} [[/OCCA:BLOCK]]    — park task on other blockers
+//   [[OCCA:REPORT]]   {...} [[/OCCA:REPORT]]   — CEO ships synthesized result back
+//                                                to the user via chat (root tasks only)
 
 export const OCCA_MARKER_REGEX = /\[\[OCCA:[A-Z_]+\]\]/g;
 

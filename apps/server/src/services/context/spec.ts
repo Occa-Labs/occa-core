@@ -120,6 +120,18 @@ export type SurfacePayload =
       acceptanceCriteria: string | null;
       traceId: string;
       gatewayUrl: string | null;
+      // True when this task has no parent. Combined with `isCeoAssignee`
+      // below to decide whether the REPORT marker instructions are
+      // included in the prompt — REPORT is CEO-only (handler enforces
+      // `non_ceo_cannot_report`), and showing it to a specialist whose
+      // root task originates from a chat-mode DELEGATE causes them to
+      // emit it; the marker then gets stripped from the saved reply
+      // and the content is lost. Only show REPORT when both `isRoot`
+      // and `isCeoAssignee` are true (CEO self-execute path).
+      isRoot: boolean;
+      // True iff the task's assignee role is CEO tier. Gates the
+      // REPORT block in the prompt.
+      isCeoAssignee: boolean;
       completedChildren: {
         taskNumber: number;
         title: string;

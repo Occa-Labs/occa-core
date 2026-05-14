@@ -41,6 +41,7 @@ import { db } from "../../../infra/database/client";
 import {
   findOwnedByUserId,
   listByCompanyId as listDeploymentsByCompanyId,
+  setStatus as setDeploymentStatus,
 } from "../repositories/deployments";
 import { findByDeploymentId as findRuntimeProfile } from "../repositories/agent-runtime-profile";
 import { findById as findIdentityById } from "../repositories/agent-identities";
@@ -1162,6 +1163,61 @@ router.patch("/:id", requireAuth, async (req: Request, res: Response) => {
   }
 
   res.json({ agent: await hydrateDeploymentDTO(row) });
+});
+
+// POST /api/agents/:id/pause — flip deployment status to "paused".
+// Reversible alternative to retire — keeps row + identity intact, just
+// removes the agent from active-team filters (load-context excludes
+// non-active). CEO chat-mode sees "active team empty" if the only
+// teammate is paused → falls back to CREATE_TASK / self-execute.
+// CEO deployment cannot be paused — every other agent borrows CEO's
+// device keypair, and chat surfaces the CEO as the sole contact.
+router.post("/:id/pause", requireAuth, async (req: Request, res: Response) => {
+  const existing = await findOwnedByUserId({
+    userId: req.user!.userId,
+    deploymentId: req.params.id,
+  });
+  if (!existing) {
+    res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.NOT_FOUND });
+    return;
+  }
+  if (existing.role === CEO_ROLE) {
+    res
+      .status(StatusCodes.BAD_REQUEST)
+      .json({ error: "cannot_pause_ceo" });
+    return;
+  }
+  await setDeploymentStatus({
+    deploymentId: existing.id,
+    status: "paused",
+  });
+  const refreshed = await findOwnedByUserId({
+    userId: req.user!.userId,
+    deploymentId: req.params.id,
+  });
+  res.json({ agent: await hydrateDeploymentDTO(refreshed!) });
+});
+
+// POST /api/agents/:id/activate — reverse of /pause. Sets status back
+// to "active". Idempotent (calling on an already-active agent is a no-op).
+router.post("/:id/activate", requireAuth, async (req: Request, res: Response) => {
+  const existing = await findOwnedByUserId({
+    userId: req.user!.userId,
+    deploymentId: req.params.id,
+  });
+  if (!existing) {
+    res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.NOT_FOUND });
+    return;
+  }
+  await setDeploymentStatus({
+    deploymentId: existing.id,
+    status: "active",
+  });
+  const refreshed = await findOwnedByUserId({
+    userId: req.user!.userId,
+    deploymentId: req.params.id,
+  });
+  res.json({ agent: await hydrateDeploymentDTO(refreshed!) });
 });
 
 // DELETE /api/agents/:id — remove from gateway, then DB. Cascade from

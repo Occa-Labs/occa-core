@@ -274,6 +274,13 @@ export interface AgentDTO {
   // claim-and-skip. Non-NULL = pinned GLB url.
   modelOverride: string | null;
 
+  // Lifecycle status mirrored from `deployments.status`. "active" =
+  // dispatchable + visible in CEO's active team; "paused" = excluded
+  // from active-team filters but reversible; "retired" = archived,
+  // no longer dispatchable. CLAUDE.md regulatory naming forbids
+  // "fired"/"terminated" labels for this state.
+  status: AgentDeploymentStatus;
+
   // ── On-chain Registry mirror ───────────────────────────────────────
   // Populated after `register_agent` confirms on Solana.
   //
@@ -290,6 +297,10 @@ export interface AgentDTO {
 }
 
 export type AgentProvisioningState = "pending" | "ready" | "failed";
+
+// Deployment lifecycle status. Matches `deployments.status` column.
+// Per CLAUDE.md regulatory naming: use "retired" not "fired".
+export type AgentDeploymentStatus = "active" | "paused" | "retired";
 
 // ── Agent mutations ────────────────────────────────────────────────
 export interface UpdateAgentRequest {

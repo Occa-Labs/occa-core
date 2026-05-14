@@ -149,6 +149,11 @@ export async function listChildTasks(
     .where(eq(tasks.parentTaskId, parentTaskId));
 }
 
+// Returns siblings that have NOT reached a settled state. With the
+// post-2026-05-14 cascade policy, both `done` and `review` count as
+// settled (cascade fires for either, and review surfaces to the user
+// via synthesis as "wants your review"). Anything else (`todo`,
+// `in_progress`, `blocked`) keeps the parent asleep.
 export async function listPendingSiblings(
   parentTaskId: string,
 ): Promise<{ id: string; status: string }[]> {
@@ -156,7 +161,11 @@ export async function listPendingSiblings(
     .select({ id: tasks.id, status: tasks.status })
     .from(tasks)
     .where(
-      and(eq(tasks.parentTaskId, parentTaskId), ne(tasks.status, "done")),
+      and(
+        eq(tasks.parentTaskId, parentTaskId),
+        ne(tasks.status, "done"),
+        ne(tasks.status, "review"),
+      ),
     );
 }
 

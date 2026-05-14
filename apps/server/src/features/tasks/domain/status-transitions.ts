@@ -18,9 +18,14 @@ export const REVIEW_STATES = new Set<TaskStatus>(["review"]);
 export const ADVANCEABLE_STATES = new Set<TaskStatus>(["todo", "in_progress"]);
 
 export interface DispatchOutcomeFlags {
-  // Agent emitted at least one DELEGATE that produced a pending
-  // approval — task parks in `review` until the human decides.
+  // Legacy HITL approval path — kept for the (currently unused)
+  // approval-row flow if other action types ever resurface it. As of
+  // Phase A, DELEGATE no longer creates approval rows.
   approvalsRequested: number;
+  // Auto-approved delegations: child tasks the agent spawned this turn
+  // via [[OCCA:DELEGATE]]. While children are running the parent has
+  // nothing to do, so we park it in `review` until cascade re-wakes it.
+  delegationsSpawned: number;
   // BLOCK action flagged blockers — overrides everything else.
   blockedBy: string[] | null;
   // [[OCCA:REVIEW]] single-tag marker found in the reply.
@@ -31,7 +36,8 @@ export interface DispatchOutcomeFlags {
 // the agent's reply?" Decision tree:
 //   BLOCK    → `blocked` (overrides everything else)
 //   REVIEW   → `review`
-//   approval pending (DELEGATE) → `review`
+//   approval pending (legacy) → `review`
+//   delegation spawned a child → `review` (waiting on cascade)
 //   default  → `done`
 //
 // Clarification questions don't show up here: they go through
@@ -42,6 +48,7 @@ export function nextStatusAfterDispatch(
   if (flags.blockedBy && flags.blockedBy.length > 0) return "blocked";
   if (flags.needsReview) return "review";
   if (flags.approvalsRequested > 0) return "review";
+  if (flags.delegationsSpawned > 0) return "review";
   return "done";
 }
 

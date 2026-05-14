@@ -57,6 +57,13 @@
       "when": 1778448681938,
       "tag": "0007_keen_titanium_man",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1778698032191,
+      "tag": "0008_deep_bushwacker",
+      "breakpoints": true
     }
   ]
 }

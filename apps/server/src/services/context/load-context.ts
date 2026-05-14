@@ -36,6 +36,7 @@ import {
 } from "@occa/shared/schema";
 import { db } from "../../infra/database/client";
 import { listSubordinates } from "../../features/agents/services/deployment-hierarchy";
+import { sortByDelegationPriority } from "../delegation/policy";
 import {
   listByAnyTag as listDocumentsByAnyTag,
   listRecent as listRecentDocuments,
@@ -200,14 +201,18 @@ export async function loadContext(args: {
 
   // Subordinates-for-self — what THIS agent can delegate to. CEO sees
   // everyone; a Head sees only their specialists; a specialist sees
-  // nobody. Used by task surface for DELEGATE hints.
+  // nobody. Sorted via `services/delegation/policy.sortByDelegationPriority`
+  // so the renderer's "Available reports" block surfaces the highest-
+  // priority delegation target first (head → direct_report → specialist).
   const subordinatesRaw = await listSubordinates(args.deploymentId);
-  const subordinatesForSelf: ContextTeammate[] = subordinatesRaw.map((r) => ({
-    id: r.id,
-    name: r.name,
-    role: r.role,
-    tier: (getTier(r.role) ?? "unknown") as ContextTeammate["tier"],
-  }));
+  const subordinatesForSelf: ContextTeammate[] = sortByDelegationPriority(
+    subordinatesRaw.map((r) => ({
+      id: r.id,
+      name: r.name,
+      role: r.role,
+      tier: (getTier(r.role) ?? "unknown") as ContextTeammate["tier"],
+    })),
+  );
 
   const org: ContextOrg = { team, gaps, subordinatesForSelf };
 

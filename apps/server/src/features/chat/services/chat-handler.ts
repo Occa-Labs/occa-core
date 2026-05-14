@@ -23,7 +23,7 @@
 //     migrate it server-side later without parser fork.
 
 import { eq } from "drizzle-orm";
-import { traces } from "@occa/shared/schema";
+import { deployments, traces } from "@occa/shared/schema";
 import { extractActionBlocks, stripOccaMarkers } from "@occa/shared/markers";
 import { childLogger } from "../../../lib/logger";
 import { db } from "../../../infra/database/client";
@@ -31,10 +31,7 @@ import { getAdapter } from "../../../lib/adapter-registry";
 import { AGENT_WAIT_TIMEOUT_MS } from "../../../lib/timing";
 import { createTaskRecord } from "../../../infra/database/task-creation";
 import { enqueueTaskDispatch } from "../../../infra/queue/task-worker";
-import {
-  findActiveByRoleInCompany,
-  findCeoForCompany,
-} from "../../agents/repositories/deployments";
+import { findCeoForCompany } from "../../agents/repositories/deployments";
 import { findByDeploymentId as findRuntimeProfile } from "../../agents/repositories/agent-runtime-profile";
 import {
   earliestMessageId,
@@ -82,17 +79,25 @@ export interface SendUserTurnArgs {
 //     "priority":      "medium" | "high" | "low" (optional)
 //     "assignToRole":  "<role key from active team>" (optional)
 //   }
-// `assignToRole` lets the CEO route a task directly to a specialist
-// without re-bouncing through the task surface to emit DELEGATE. Resolved
-// against the same company; falls back to CEO if the named role isn't
-// staffed (with a note appended to the brief so CEO sees the gap on
-// re-dispatch and can ask the owner to deploy).
+// Chat-side markers (parsed from CEO's chat reply, distinct from the
+// task-mode markers parsed in services/delegation/markers):
+//
+//   [[OCCA:DELEGATE]] — CEO has a subordinate that fits; one task is
+//   created assigned to that subordinate. CEO is NOT given its own
+//   task — the user-facing REPORT happens via the delegation/synthesis
+//   callback when the subordinate's task completes.
+//
+//   [[OCCA:CREATE_TASK]] — CEO has no fitting subordinate; one task
+//   is created assigned to the CEO itself. CEO then runs it in
+//   task-mode and ships the result via [[OCCA:REPORT]] in that turn.
+//
+// Both paths stamp `originatingUserId` on the task so cascade knows
+// which chat thread the synthesis/report should land on.
 interface CreateTaskBody {
   title: string;
   brief: string;
   tags?: string[];
   priority?: string;
-  assignToRole?: string;
 }
 
 function readCreateTaskBody(
@@ -107,11 +112,44 @@ function readCreateTaskBody(
     : undefined;
   const priority =
     typeof body.priority === "string" ? body.priority.trim() : undefined;
-  const assignToRole =
-    typeof body.assignToRole === "string" && body.assignToRole.trim().length > 0
-      ? body.assignToRole.trim()
+  return { title, brief, tags, priority };
+}
+
+interface DelegateBody {
+  targetAgentId: string;
+  title: string;
+  description: string;
+  acceptanceCriteria?: string;
+  tags?: string[];
+  priority?: string;
+}
+
+function readDelegateBody(
+  body: Record<string, unknown> | null,
+): DelegateBody | null {
+  if (!body) return null;
+  const targetAgentId =
+    typeof body.targetAgentId === "string" ? body.targetAgentId.trim() : "";
+  const title = typeof body.title === "string" ? body.title.trim() : "";
+  const description =
+    typeof body.description === "string" ? body.description.trim() : "";
+  if (
+    targetAgentId.length === 0 ||
+    title.length === 0 ||
+    description.length === 0
+  ) {
+    return null;
+  }
+  const acceptanceCriteria =
+    typeof body.acceptanceCriteria === "string"
+      ? body.acceptanceCriteria.trim()
       : undefined;
-  return { title, brief, tags, priority, assignToRole };
+  const tags = Array.isArray(body.tags)
+    ? body.tags.filter((t): t is string => typeof t === "string")
+    : undefined;
+  const priority =
+    typeof body.priority === "string" ? body.priority.trim() : undefined;
+  return { targetAgentId, title, description, acceptanceCriteria, tags, priority };
 }
 
 // Per-user-CEO sessionKey with a session-boundary suffix. The suffix is
@@ -279,80 +317,179 @@ export async function sendUserTurn(
     return { kind: "adapter_failed", user: userMsg, assistant: sysMsg };
   }
 
-  // Parse markers BEFORE stripping so we can act on a CREATE_TASK body.
-  // Today only CREATE_TASK is honored from the chat surface; DELEGATE /
-  // BLOCK / REVIEW are task-scoped and intentionally ignored here.
+  // Parse markers BEFORE stripping. Chat surface honors two markers,
+  // DELEGATE preferred when present (CEO has a subordinate that fits)
+  // and CREATE_TASK as the fallback (CEO self-executes). BLOCK / REVIEW
+  // / REPORT are task-scoped only and intentionally ignored here.
   const blocks = extractActionBlocks(result.reply);
-  const createBlock = blocks.find((b) => b.token === "CREATE_TASK" && b.parsed);
-  const createBody = readCreateTaskBody(createBlock?.body ?? null);
+  const delegateBlock = blocks.find(
+    (b) => b.token === "DELEGATE" && b.parsed,
+  );
+  const createBlock = blocks.find(
+    (b) => b.token === "CREATE_TASK" && b.parsed,
+  );
 
   let createdTask: ChatHandlerResult extends infer R
     ? R extends { kind: "ok"; createdTask: infer T }
       ? T
       : never
     : never = null;
-  if (createBody) {
-    // Resolve assignee: if the CEO named a role, route directly to that
-    // active deployment. If the role isn't staffed, fall back to CEO and
-    // append a gap note to the brief so on re-dispatch CEO sees what's
-    // missing instead of silently working it themselves.
-    let assigneeDeploymentId = ceo.id;
-    let briefWithNote = createBody.brief;
-    if (createBody.assignToRole) {
-      const target = await findActiveByRoleInCompany({
-        companyId: args.companyId,
-        role: createBody.assignToRole,
-      });
-      if (target) {
-        assigneeDeploymentId = target.id;
+
+  if (delegateBlock) {
+    const dp = readDelegateBody(delegateBlock.body);
+    if (dp) {
+      // Validate target deployment exists in the same company. CEO is
+      // top-level with tier=ceo, so canDeploy would always pass — skip
+      // the full hierarchy check and just enforce the cross-company
+      // boundary directly.
+      const [target] = await db
+        .select({
+          id: deployments.id,
+          companyId: deployments.companyId,
+          status: deployments.status,
+        })
+        .from(deployments)
+        .where(eq(deployments.id, dp.targetAgentId))
+        .limit(1);
+      if (
+        !target ||
+        target.companyId !== args.companyId ||
+        target.status !== "active"
+      ) {
+        log.warn(
+          {
+            targetAgentId: dp.targetAgentId,
+            companyId: args.companyId,
+          },
+          "chat DELEGATE ignored: target not in company or not active",
+        );
+      } else if (target.id === ceo.id) {
+        log.warn(
+          { ceoId: ceo.id },
+          "chat DELEGATE ignored: target is the CEO itself (use CREATE_TASK for self-execute)",
+        );
       } else {
-        briefWithNote = [
-          createBody.brief,
-          ``,
-          `[router note] Owner intent was to route this to "${createBody.assignToRole}" but no active deployment with that role exists. Ask the owner to deploy one via the Agents window before this can ship.`,
-        ].join("\n");
+        const taskRow = await createTaskRecord({
+          companyId: args.companyId,
+          title: dp.title,
+          blocks: [{ type: "paragraph", text: dp.description }],
+          status: "todo",
+          priority: dp.priority ?? "medium",
+          taskType: "other",
+          effortLevel: "m",
+          tags: dp.tags ?? [],
+          dueDate: null,
+          assignedDeploymentId: dp.targetAgentId,
+          parentTaskId: null,
+          createdByUserId: args.userId,
+          createdByDeploymentId: null,
+          acceptanceCriteria: dp.acceptanceCriteria ?? null,
+          originatingUserId: args.userId,
+        });
+        createdTask = {
+          id: taskRow.id,
+          taskNumber: taskRow.taskNumber,
+          title: taskRow.title,
+        };
+        enqueueTaskDispatch(taskRow.id).catch((err) =>
+          log.error(
+            { err, taskId: taskRow.id },
+            "enqueueTaskDispatch from chat DELEGATE failed",
+          ),
+        );
       }
+    } else {
+      log.warn(
+        { ceoId: ceo.id },
+        "chat DELEGATE ignored: payload missing required fields",
+      );
     }
-
-    const taskRow = await createTaskRecord({
-      companyId: args.companyId,
-      title: createBody.title,
-      blocks: [{ type: "paragraph", text: briefWithNote }],
-      status: "todo",
-      priority: createBody.priority ?? "medium",
-      taskType: "other",
-      effortLevel: "m",
-      tags: createBody.tags ?? [],
-      dueDate: null,
-      assignedDeploymentId: assigneeDeploymentId,
-      parentTaskId: null,
-      createdByUserId: args.userId,
-      createdByDeploymentId: null,
-      acceptanceCriteria: null,
-    });
-    createdTask = {
-      id: taskRow.id,
-      taskNumber: taskRow.taskNumber,
-      title: taskRow.title,
-    };
-
-    // Enqueue immediately so the assignee starts working without waiting
-    // for a manual nudge. Fire-and-forget — same pattern as POST /tasks.
-    // If pg-boss is down the orphan-reaper will pick it up later.
-    enqueueTaskDispatch(taskRow.id).catch((err) =>
-      log.error(
-        { err, taskId: taskRow.id },
-        "enqueueTaskDispatch from chat CREATE_TASK failed",
-      ),
-    );
+  } else if (createBlock) {
+    const createBody = readCreateTaskBody(createBlock.body);
+    if (createBody) {
+      // No-subordinate self-execute path. CEO will run this task in
+      // task-mode and emit [[OCCA:REPORT]] to ship the result back to
+      // the originating user's chat thread when done.
+      const taskRow = await createTaskRecord({
+        companyId: args.companyId,
+        title: createBody.title,
+        blocks: [{ type: "paragraph", text: createBody.brief }],
+        status: "todo",
+        priority: createBody.priority ?? "medium",
+        taskType: "other",
+        effortLevel: "m",
+        tags: createBody.tags ?? [],
+        dueDate: null,
+        assignedDeploymentId: ceo.id,
+        parentTaskId: null,
+        createdByUserId: args.userId,
+        createdByDeploymentId: null,
+        acceptanceCriteria: null,
+        originatingUserId: args.userId,
+      });
+      createdTask = {
+        id: taskRow.id,
+        taskNumber: taskRow.taskNumber,
+        title: taskRow.title,
+      };
+      enqueueTaskDispatch(taskRow.id).catch((err) =>
+        log.error(
+          { err, taskId: taskRow.id },
+          "enqueueTaskDispatch from chat CREATE_TASK failed",
+        ),
+      );
+    }
   }
 
   const cleanReply = stripOccaMarkers(result.reply);
+
+  // Inline-deliverable suppression guard. Chat-mode CEO replies are
+  // meant for clarify / propose / confirm / status — not for shipping
+  // the actual artifact. When CEO emits a long body with no marker
+  // (no task gets created), we replace the content with a coaching
+  // notice so the user can see *why* their request didn't progress.
+  // The CEO sees this suppression in next-turn history and (over a
+  // few turns of the same session) learns to route via marker.
+  //
+  // Threshold sized to comfortably accommodate a multi-sentence
+  // clarify reply but trip on anything resembling a deliverable
+  // (a tweet thread, a draft, a research brief). Pure prose with no
+  // marker AND >1200 stripped chars is almost always a bypass.
+  const INLINE_DELIVERABLE_THRESHOLD = 1_200;
+  const didCreateTask = createdTask !== null;
+  const suppressInlineDeliverable =
+    !didCreateTask &&
+    cleanReply.length > INLINE_DELIVERABLE_THRESHOLD;
+  let finalContent: string;
+  if (suppressInlineDeliverable) {
+    log.warn(
+      {
+        ceoId: ceo.id,
+        traceId,
+        replyBytes: cleanReply.length,
+      },
+      "chat reply suppressed: long body with no marker (inline-deliverable bypass)",
+    );
+    finalContent = [
+      `[Reply suppressed by the runtime.]`,
+      ``,
+      `Your CEO tried to deliver the artifact directly in chat instead`,
+      `of routing it through a task. Chat replies are for clarify /`,
+      `propose / confirm only — never for the deliverable itself.`,
+      ``,
+      `Re-send your request and the CEO will emit a DELEGATE or`,
+      `CREATE_TASK marker so the work lives in the task system and the`,
+      `synthesized result lands back here on completion.`,
+    ].join("\n");
+  } else {
+    finalContent = cleanReply.length > 0 ? cleanReply : "(empty reply)";
+  }
+
   const assistantMsg = await insertMessage({
     companyId: args.companyId,
     deploymentId: ceo.id,
     role: "assistant",
-    content: cleanReply.length > 0 ? cleanReply : "(empty reply)",
+    content: finalContent,
     createdTaskId: createdTask?.id ?? null,
     traceId,
   });

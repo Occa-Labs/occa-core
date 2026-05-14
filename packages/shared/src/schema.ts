@@ -515,6 +515,16 @@ export const tasks = pgTable(
       () => deployments.id,
       { onDelete: "set null" },
     ),
+    // Set when the task was born from a CEO chat turn — either a
+    // `[[OCCA:DELEGATE]]` (to a subordinate) or `[[OCCA:CREATE_TASK]]`
+    // (CEO self-executes) emitted while replying to this user. When the
+    // task completes, cascade triggers `services/ceo-synthesis` to post
+    // the synthesized reply back to this user's CEO chat thread. Null
+    // for non-chat-origin tasks (nested delegations, manual UI creates).
+    originatingUserId: uuid("originating_user_id").references(
+      () => users.id,
+      { onDelete: "set null" },
+    ),
     // Delegation contract — what "done" means for this task. Set when the
     // task was created via DELEGATE so the assignee knows the bar.
     acceptanceCriteria: text("acceptance_criteria"),

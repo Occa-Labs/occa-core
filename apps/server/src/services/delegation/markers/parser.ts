@@ -5,18 +5,19 @@
 // cross-feature imports.
 
 import { extractActionBlocks } from "@occa/shared/markers";
-import { childLogger } from "../../../../lib/logger";
+import { childLogger } from "../../../lib/logger";
 import {
   type ActionBlockOutcome,
-} from "../../domain/action-blocks/schemas";
+} from "./schemas";
 import {
   handleBlockBlock,
   handleDelegateBlock,
+  handleReportBlock,
   type ActionBlockDeps,
   type ActionBlockHandlerArgs,
 } from "./handlers";
 
-const log = childLogger("services:tasks:action-blocks:parser");
+const log = childLogger("services:delegation:markers:parser");
 
 export interface ProcessedActionBlock {
   token: string;
@@ -27,8 +28,10 @@ export interface ProcessedActionBlock {
 export interface ProcessActionBlocksArgs {
   reply: string;
   agentId: string;
+  agentRole: string;
   companyId: string;
   currentTaskId: string;
+  traceId: string;
 }
 
 export async function processActionBlocks(
@@ -36,25 +39,41 @@ export async function processActionBlocks(
   deps: ActionBlockDeps,
 ): Promise<ProcessedActionBlock[]> {
   const blocks = extractActionBlocks(args.reply);
+  log.info(
+    {
+      taskId: args.currentTaskId,
+      agentId: args.agentId,
+      blockCount: blocks.length,
+      tokens: blocks.map((b) => b.token),
+    },
+    "action blocks extracted from reply",
+  );
   const results: ProcessedActionBlock[] = [];
   for (const block of blocks) {
-    if (!block.parsed || !block.body) {
-      log.warn({ token: block.token }, "action block had invalid JSON, ignored");
-      results.push({
-        token: block.token,
-        body: null,
-        outcome: { kind: "ignored", reason: "invalid_json" },
-      });
-      continue;
-    }
+    // Tokens that require JSON bodies (DELEGATE, BLOCK) validate via
+    // their per-handler zod schema below — `block.body` will be null
+    // when JSON parse failed, and the schema's safeParse returns
+    // `ignored:invalid_payload` cleanly. Tokens with plain-text bodies
+    // (REPORT) read `block.raw` directly. Either way the parser
+    // no longer short-circuits on invalid JSON.
     const handlerArgs: ActionBlockHandlerArgs = {
       block,
       agentId: args.agentId,
+      agentRole: args.agentRole,
       companyId: args.companyId,
       currentTaskId: args.currentTaskId,
+      traceId: args.traceId,
     };
     try {
       const outcome = await routeBlock(block.token, handlerArgs, deps);
+      log.info(
+        {
+          taskId: args.currentTaskId,
+          token: block.token,
+          outcomeKind: outcome.kind,
+        },
+        "action block handled",
+      );
       results.push({ token: block.token, body: block.body, outcome });
     } catch (err) {
       log.error(
@@ -81,6 +100,8 @@ async function routeBlock(
       return handleDelegateBlock(args, deps);
     case "BLOCK":
       return handleBlockBlock(args);
+    case "REPORT":
+      return handleReportBlock(args);
     default:
       log.warn({ token }, "unknown action-block token, ignored");
       return { kind: "ignored", reason: "unknown_token" };
