@@ -251,6 +251,82 @@ export function renderTaskPrompt(spec: ContextSpec): string {
   const acceptance = s.acceptanceCriteria
     ? [``, `Acceptance criteria: ${s.acceptanceCriteria}`]
     : [];
+
+  // Three-path turn matrix:
+  //   A) Children have already shipped → SYNTHESIZE (do NOT re-delegate
+  //      even if subordinates are still listed — they're done, looping
+  //      would re-assign the same work and cause the 2026-05-14 Nova
+  //      regress where a Head re-delegated 4× in a row).
+  //   B) Subordinates available + no completed children → DELEGATE
+  //      (route to the right teammate; you'll be re-woken on cascade).
+  //   C) No subordinates → EXECUTE SELF (write the deliverable).
+  // CEO root task adds the [[OCCA:REPORT]] marker to whichever finish
+  // path applies, because that's the only way content reaches the user.
+  const hasSubordinates = spec.org.subordinatesForSelf.length > 0;
+  const hasCompletedChildren = s.completedChildren.length > 0;
+  const isReportFinisher = s.isRoot && s.isCeoAssignee;
+
+  const turnInstructions: string[] = hasCompletedChildren
+    ? [
+        `- SYNTHESIS TURN. Children have already shipped — see the`,
+        `  "Children that have shipped" block below. Read their output,`,
+        `  judge quality, then write YOUR reply as the final deliverable`,
+        `  for this task (a synthesis, review notes, edits, or sign-off`,
+        `  on what they produced).`,
+        `- DO NOT re-delegate this turn. Your subordinates already`,
+        `  completed the work. Re-delegating would loop the task and`,
+        `  duplicate the assignment. If their output is unusable, write`,
+        `  feedback in your reply and end with [[OCCA:REVIEW]] so a human`,
+        `  decides next steps — but do NOT spawn another DELEGATE.`,
+        ...(isReportFinisher
+          ? [
+              `- THIS TASK IS THE USER'S REQUEST. Wrap your synthesis in`,
+              `  [[OCCA:REPORT]] — that body is what the user sees.`,
+            ]
+          : [
+              `- Your reply IS the final deliverable. Plain reply, no`,
+              `  [[OCCA:*]] marker. The runtime saves your full reply to`,
+              `  the task and forwards it up the chain on done.`,
+            ]),
+      ]
+    : hasSubordinates
+      ? [
+          ...(isReportFinisher
+            ? [
+                `- THIS TASK IS THE USER'S REQUEST. The user only ever sees`,
+                `  what you put inside an [[OCCA:REPORT]] marker.`,
+                `- DELEGATE this turn (see "Available reports" block).`,
+                `  REPORT comes on the NEXT dispatch (after children`,
+                `  cascade back). Do not emit REPORT and DELEGATE in the`,
+                `  same reply.`,
+              ]
+            : [
+                `- DELEGATE this turn — see "Available reports" block. Pick`,
+                `  a subordinate that fits and emit [[OCCA:DELEGATE]] with`,
+                `  their id. You'll be re-woken when they finish, and that`,
+                `  next dispatch is when you synthesize their result.`,
+              ]),
+        ]
+      : [
+          ...(isReportFinisher
+            ? [
+                `- THIS TASK IS THE USER'S REQUEST. Do the work yourself`,
+                `  and emit [[OCCA:REPORT]] in the SAME reply.`,
+                `- Closing a root task without REPORT parks it in 'review'`,
+                `  — the user sees nothing. REPORT is mandatory to ship.`,
+              ]
+            : [
+                `- Your reply is your final deliverable for this task.`,
+                `  Write it in full — markdown, code blocks, whatever the`,
+                `  brief calls for. Do NOT wrap it in any [[OCCA:*]] marker.`,
+                `  The runtime saves your full reply to the task and`,
+                `  forwards the result up the chain; any marker you emit`,
+                `  will be stripped and the content lost.`,
+                `- Otherwise your reply will automatically mark the task`,
+                `  as done.`,
+              ]),
+        ];
+
   return [
     `You are ${spec.agent.name}, the ${spec.agent.roleLabel} of ${spec.company.name} — running inside OCCA OS in TASK mode.`,
     ``,
@@ -266,27 +342,7 @@ export function renderTaskPrompt(spec: ContextSpec): string {
     `INSTRUCTIONS:`,
     `- Work on the task described below and respond with your findings or result.`,
     `- If the task requires human review before being closed, end your reply with: [[OCCA:REVIEW]]`,
-    ...(s.isRoot && s.isCeoAssignee
-      ? [
-          `- THIS TASK IS THE USER'S REQUEST. The user only ever sees what you`,
-          `  put inside an [[OCCA:REPORT]] marker (see block below).`,
-          `- TWO PATHS depending on the "Available reports" block:`,
-          `    A) Reports are listed → DELEGATE this turn. REPORT comes on`,
-          `       the NEXT dispatch (after children cascade back). Do not`,
-          `       emit REPORT and DELEGATE in the same reply.`,
-          `    B) No reports listed → do the work yourself this turn and`,
-          `       emit REPORT in the same reply.`,
-          `- Closing a root task without REPORT parks it in 'review' — the`,
-          `  user sees nothing. REPORT is mandatory to ship.`,
-        ]
-      : [
-          `- Your reply is your final deliverable for this task. Write it`,
-          `  in full — markdown, code blocks, whatever the brief calls for.`,
-          `  Do NOT wrap it in any [[OCCA:*]] marker. The runtime saves your`,
-          `  full reply to the task and forwards the result up the chain;`,
-          `  any marker you emit will be stripped and the content lost.`,
-          `- Otherwise your reply will automatically mark the task as done.`,
-        ]),
+    ...turnInstructions,
     `- If you can't finish solo, emit ONE of these BLOCK MARKERS in your`,
     `  reply (the server parses the JSON body and acts on it):`,
     ``,
@@ -326,7 +382,13 @@ export function renderTaskPrompt(spec: ContextSpec): string {
     `    payload: { title, taskType, acceptanceCriteria? } }.`,
     `- Do not add meta-commentary — focus on the task deliverable.`,
     ``,
-    renderReportsBlock(spec.org.subordinatesForSelf),
+    // Pass empty array when children have already shipped — synthesis
+    // turn must not contain "DELEGATION IS MANDATORY" language, which
+    // would contradict the turn instructions above and produce the
+    // re-delegation loop.
+    renderReportsBlock(
+      hasCompletedChildren ? [] : spec.org.subordinatesForSelf,
+    ),
     ``,
     ...(s.isRoot && s.isCeoAssignee ? [renderRootReportBlock(), ``] : []),
     ...(s.completedChildren.length > 0

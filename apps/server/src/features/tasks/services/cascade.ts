@@ -19,7 +19,7 @@
 
 import { childLogger } from "../../../lib/logger";
 import { enqueueTaskDispatch } from "../../../infra/queue/task-worker";
-import { synthesizeCeoReplyForTask } from "../../../services/delegation/synthesis";
+import { synthesizeForTask } from "../../../services/delegation/synthesis";
 import {
   findTaskById,
   listDependents,
@@ -112,18 +112,16 @@ export async function cascadeOnTaskDone(
     });
   }
   if (!task.parentTaskId) {
-    // Top-level task with no parent. If it originated from a CEO chat
-    // turn, the bubble-up point is the user's chat thread — invoke the
-    // synthesis service to post the CEO's reply there. The service
-    // itself short-circuits the CEO-self-execute path (where the CEO
-    // already emitted [[OCCA:REPORT]] in task-mode and inserted the
-    // chat row directly), so cascade always fires it for chat-origin
-    // tasks and lets the service decide.
-    if (task.originatingUserId) {
-      void synthesizeCeoReplyForTask({ taskId: task.id }).catch((err) => {
+    // Top-level task with no parent. If it originated from a chat
+    // thread (user_ceo or agent_dm in Phase C), kick the unified
+    // synthesis dispatcher which loads the thread, picks the right
+    // speaker, runs the synthesis turn, and recursively bubbles the
+    // result up parent_thread_id until the user_ceo root is reached.
+    if (task.originatingThreadId) {
+      void synthesizeForTask({ taskId: task.id }).catch((err) => {
         log.error(
           { err, taskId: task.id },
-          "ceo synthesis trigger failed",
+          "synthesis bubble trigger failed",
         );
       });
       return {

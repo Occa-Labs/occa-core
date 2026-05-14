@@ -4,6 +4,7 @@ import { dispatchTask } from "../../features/tasks/services/dispatcher";
 import { canDeploy } from "../../features/agents/services/deployment-hierarchy";
 import { findCeoForCompany } from "../../features/agents/repositories/deployments";
 import { insertMessage } from "../../features/chat/repositories/chat-messages";
+import { resolveUserCeoThreadId } from "../../features/chat/repositories/chat-threads";
 import { getBoss, TASK_DISPATCH_QUEUE, type TaskDispatchJobData } from "./boss";
 
 const log = childLogger("task-worker");
@@ -34,7 +35,12 @@ const dispatchDeps = {
       );
       return { ok: false, reason: "no_ceo_deployment" };
     }
+    const threadId = await resolveUserCeoThreadId({
+      companyId: args.companyId,
+      ceoDeploymentId: ceo.id,
+    });
     await insertMessage({
+      threadId,
       companyId: args.companyId,
       deploymentId: ceo.id,
       role: "assistant",

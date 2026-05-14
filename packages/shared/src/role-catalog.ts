@@ -299,3 +299,39 @@ export function canDelegate(role: AgentRole): boolean {
 export function getManagedRoles(role: AgentRole): readonly AgentRole[] {
   return CATALOG_BY_KEY[role]?.manages ?? [];
 }
+
+// Reverse lookup of `manages`: returns the role that canonically manages
+// `role` per the catalog. Used by deployment auto-resolve to pick the right
+// parent at deploy time (e.g. senior_writer → head_marketing), and by the
+// reparent post-hook when a new head lands and any specialist whose
+// canonical parent is that head should slide under it.
+//
+// Returns undefined for:
+//   • CEO (no canonical parent — top of the chart)
+//   • Roles unknown to the catalog (custom slugs)
+//   • Roles listed in zero `manages` arrays (opt-in heads with empty
+//     allow-lists, or specialists not yet wired into a head's lineup)
+//
+// Built lazily on first call and memoised — the catalog is static at
+// module-load so the map only needs one pass.
+let CANONICAL_PARENT_BY_ROLE: Map<AgentRole, AgentRole> | null = null;
+function buildCanonicalParentIndex(): Map<AgentRole, AgentRole> {
+  const idx = new Map<AgentRole, AgentRole>();
+  for (const def of ROLE_CATALOG) {
+    for (const child of def.manages) {
+      // First-writer-wins. If a child role appears in multiple `manages`
+      // arrays (rare but possible), the earlier catalog entry takes
+      // precedence — deterministic per `ROLE_CATALOG` declaration order.
+      if (!idx.has(child)) idx.set(child, def.key);
+    }
+  }
+  return idx;
+}
+export function findCanonicalParentRole(
+  role: AgentRole,
+): AgentRole | undefined {
+  if (!CANONICAL_PARENT_BY_ROLE) {
+    CANONICAL_PARENT_BY_ROLE = buildCanonicalParentIndex();
+  }
+  return CANONICAL_PARENT_BY_ROLE.get(role);
+}

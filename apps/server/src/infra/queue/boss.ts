@@ -5,6 +5,11 @@ const log = childLogger("pgboss");
 
 export const TASK_DISPATCH_QUEUE = "task.dispatch";
 export const WORKFLOW_EVALUATE_QUEUE = "workflow.evaluate";
+// Phase C: each new directive in an agent_dm thread enqueues one job
+// keyed by threadId so two concurrent callers can't double-process the
+// same thread. The worker resolves "what's pending" by reading the
+// thread's chat_messages.
+export const AGENT_DM_DISPATCH_QUEUE = "agent_dm.dispatch";
 
 export interface TaskDispatchJobData {
   taskId: string;
@@ -12,6 +17,10 @@ export interface TaskDispatchJobData {
 
 export interface WorkflowEvaluateJobData {
   taskId: string;
+}
+
+export interface AgentDmDispatchJobData {
+  threadId: string;
 }
 
 let instance: PgBoss | null = null;
@@ -48,6 +57,9 @@ export async function getBoss(): Promise<PgBoss> {
     // Same exclusive policy for workflow evaluations — ensures a single
     // task done-transition can't trigger concurrent engine runs.
     await boss.createQueue(WORKFLOW_EVALUATE_QUEUE, { policy: "exclusive" });
+    // Phase C: agent_dm thread dispatch. Exclusive per-thread so a
+    // burst of directives on the same DM thread serialises.
+    await boss.createQueue(AGENT_DM_DISPATCH_QUEUE, { policy: "exclusive" });
 
     instance = boss;
     return boss;

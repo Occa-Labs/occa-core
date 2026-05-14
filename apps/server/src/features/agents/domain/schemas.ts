@@ -29,6 +29,10 @@ export const createAgentBody = z.object({
   // when the user already owns a company — agents always attach to the
   // existing one so we never end up with split companies.
   companyName: z.string().trim().min(1).max(LIMITS.NAME).optional(),
+  // Optional explicit parent. When omitted / null the server falls back
+  // to catalog-driven auto-resolve. Validated against the requester's
+  // company in the route handler before insert.
+  parentAgentId: z.string().uuid().nullable().optional(),
 });
 
 // POST /api/agents/:id/reprovision

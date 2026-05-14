@@ -64,6 +64,13 @@
       "when": 1778698032191,
       "tag": "0008_deep_bushwacker",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1778772488161,
+      "tag": "0009_steep_mojo",
+      "breakpoints": true
     }
   ]
 }

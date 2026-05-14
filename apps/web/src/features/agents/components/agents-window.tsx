@@ -28,6 +28,7 @@ import { FilesTab } from "./files-tab";
 import { TracesTab } from "./traces-tab";
 import { ChatModal } from "./chat-modal";
 import { DeployAgentModal } from "./deploy-agent-modal";
+import { buildTree, type TreeNode } from "./hierarchy-tab";
 
 interface AgentsWindowProps {
   companyName: string;
@@ -53,6 +54,9 @@ type TabId =
 // honest) but disabled in production preview mode. Same for the Chat
 // button below. Re-enable everything by clearing
 // NEXT_PUBLIC_PREVIEW_PRODUCTION in apps/web/.env.local.
+//
+// Hierarchy view lives in the sidebar (toggle), not as a per-agent tab —
+// it's an org-wide navigation surface, not a per-agent detail.
 const TABS: { id: TabId; label: string; disabled?: boolean }[] = [
   { id: "overview", label: "Overview" },
   { id: "skills", label: "Skills" },
@@ -167,6 +171,9 @@ function AgentSidebar({
   onDeploy: () => void;
 }) {
   const [query, setQuery] = useState("");
+  // Default to tree so the org structure is visible at a glance.
+  // List view stays available for quick role-grouped lookup.
+  const [view, setView] = useState<"tree" | "list">("tree");
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -192,6 +199,11 @@ function AgentSidebar({
     });
   }, [filtered]);
 
+  // Tree always uses the unfiltered agents — preserves the hierarchy so
+  // a child match doesn't orphan its parent. Visual highlight could be
+  // added later; for now search is list-only.
+  const tree = useMemo(() => buildTree(agents), [agents]);
+
   return (
     <div className="w-60 shrink-0 flex flex-col border-r border-white/8">
       <div className="px-4 py-3 border-b border-white/8 space-y-2">
@@ -201,24 +213,59 @@ function AgentSidebar({
         <div className="text-sm font-medium text-white/80 truncate">
           {companyName}
         </div>
-        <div className="relative">
-          <Search className="absolute left-2 top-1/2 -translate-y-1/2 size-3 text-white/30" />
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search agents…"
-            className="w-full bg-white/5 rounded-lg pl-7 pr-2 py-1.5 text-xs text-white/80 placeholder:text-white/25 outline-none focus:ring-1 focus:ring-white/20"
-          />
+        {/* View toggle */}
+        <div className="flex gap-1 rounded-lg bg-white/5 p-0.5">
+          <button
+            type="button"
+            onClick={() => setView("tree")}
+            className={`flex-1 rounded-md py-1 text-[11px] font-medium transition-colors cursor-pointer ${
+              view === "tree"
+                ? "bg-white/12 text-white"
+                : "text-white/55 hover:text-white/80"
+            }`}
+          >
+            Tree
+          </button>
+          <button
+            type="button"
+            onClick={() => setView("list")}
+            className={`flex-1 rounded-md py-1 text-[11px] font-medium transition-colors cursor-pointer ${
+              view === "list"
+                ? "bg-white/12 text-white"
+                : "text-white/55 hover:text-white/80"
+            }`}
+          >
+            List
+          </button>
         </div>
+        {view === "list" && (
+          <div className="relative">
+            <Search className="absolute left-2 top-1/2 -translate-y-1/2 size-3 text-white/30" />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search agents…"
+              className="w-full bg-white/5 rounded-lg pl-7 pr-2 py-1.5 text-xs text-white/80 placeholder:text-white/25 outline-none focus:ring-1 focus:ring-white/20"
+            />
+          </div>
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto py-1">
-        {filtered.length === 0 && (
-          <div className="px-4 py-6 text-center text-xs text-white/30">
-            {agents.length === 0 ? "No agents yet" : "No matches"}
-          </div>
-        )}
-        {sortedAgents.map((agent) => {
+        {view === "tree" ? (
+          <SidebarTree
+            tree={tree}
+            selectedId={selectedId}
+            onSelect={onSelect}
+          />
+        ) : (
+          <>
+            {filtered.length === 0 && (
+              <div className="px-4 py-6 text-center text-xs text-white/30">
+                {agents.length === 0 ? "No agents yet" : "No matches"}
+              </div>
+            )}
+            {sortedAgents.map((agent) => {
           const active = agent.id === selectedId;
           return (
             <button
@@ -258,6 +305,8 @@ function AgentSidebar({
             </button>
           );
         })}
+          </>
+        )}
       </div>
 
       {/* Deploy button */}
@@ -274,6 +323,198 @@ function AgentSidebar({
           Deploy agent
         </button>
       </div>
+    </div>
+  );
+}
+
+// Compact tree view rendered in the sidebar. Mirrors the detail-panel
+// HierarchyTab layout but uses tighter padding + smaller indent so it
+// fits the 240px sidebar column. Click any node → selects that agent.
+// File-explorer-style connector lines run between parent and child via
+// absolutely-positioned guide bars on each row.
+//
+// Each row carries an `ancestorsHasMore` mask — one boolean per ancestor
+// depth. true = that ancestor still has siblings below it in the tree,
+// so a vertical pipe is drawn through this row in that column. false =
+// the ancestor was its parent's last child, so no pipe (subtree ended).
+function SidebarTree({
+  tree,
+  selectedId,
+  onSelect,
+}: {
+  tree: { roots: TreeNode[]; orphans: TreeNode[] };
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  if (tree.roots.length === 0 && tree.orphans.length === 0) {
+    return (
+      <div className="px-4 py-6 text-center text-xs text-white/30">
+        No agents yet
+      </div>
+    );
+  }
+  const renderGroup = (nodes: TreeNode[]) =>
+    nodes.map((n, i) => (
+      <SidebarTreeRow
+        key={n.agent.id}
+        node={n}
+        ancestorsHasMore={[]}
+        isLastChild={i === nodes.length - 1}
+        selectedId={selectedId}
+        onSelect={onSelect}
+      />
+    ));
+  return (
+    <div className="px-1 py-1 space-y-2">
+      {tree.roots.length > 0 && <div>{renderGroup(tree.roots)}</div>}
+      {tree.orphans.length > 0 && (
+        <div>
+          <div className="px-3 pt-2 pb-1 text-[10px] uppercase tracking-wider text-amber-300/70 font-semibold">
+            Unparented
+          </div>
+          {renderGroup(tree.orphans)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Column geometry — must stay in sync. INDENT_PX is the width each
+// depth level consumes (where the connector line lives); ROW_MIN_PX
+// is the row's min-height (drives where the elbow's horizontal stub
+// lands vertically).
+const TREE_INDENT_PX = 14;
+const TREE_ROW_MIN_PX = 32;
+
+function SidebarTreeRow({
+  node,
+  ancestorsHasMore,
+  isLastChild,
+  selectedId,
+  onSelect,
+}: {
+  node: TreeNode;
+  // One entry per ancestor — true = ancestor at that depth has more
+  // siblings, draw a continuing pipe through this row in that column.
+  ancestorsHasMore: boolean[];
+  // Is this row its parent's last child? Decides whether the elbow's
+  // own vertical extends past mid-row (continues to next sibling) or
+  // stops at mid-row (subtree ends here).
+  isLastChild: boolean;
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  const { agent, children } = node;
+  const depth = ancestorsHasMore.length;
+  const isHead = agent.role === "ceo" || agent.role.startsWith("head_");
+  const isSelected = selectedId === agent.id;
+  const isPaused = agent.status === "paused";
+  return (
+    <div>
+      <div
+        className={`relative flex items-center transition-colors cursor-pointer rounded-md ${
+          isSelected ? "bg-white/12" : "hover:bg-white/5"
+        }`}
+        style={{ minHeight: TREE_ROW_MIN_PX }}
+        onClick={() => onSelect(agent.id)}
+      >
+        {/* Pass-through pipes from ancestors that still have more
+            siblings below. Drawn only when `ancestorsHasMore[i]` is
+            true so the line ends cleanly at the last child of each
+            subtree. */}
+        {ancestorsHasMore.map((hasMore, i) =>
+          hasMore ? (
+            <span
+              key={i}
+              className="absolute top-0 bottom-0 w-px bg-white/14"
+              style={{ left: i * TREE_INDENT_PX + TREE_INDENT_PX / 2 }}
+            />
+          ) : null,
+        )}
+        {/* Elbow for THIS row's parent column. Top-to-middle vertical
+            + middle horizontal stub forms the L. If this row isn't the
+            last child, the vertical continues past mid-row so the next
+            sibling row connects naturally. */}
+        {depth > 0 && (
+          <>
+            <span
+              className="absolute top-0 w-px bg-white/14"
+              style={{
+                left: (depth - 1) * TREE_INDENT_PX + TREE_INDENT_PX / 2,
+                height: TREE_ROW_MIN_PX / 2,
+              }}
+            />
+            <span
+              className="absolute h-px bg-white/14"
+              style={{
+                left: (depth - 1) * TREE_INDENT_PX + TREE_INDENT_PX / 2,
+                top: TREE_ROW_MIN_PX / 2,
+                width: TREE_INDENT_PX / 2,
+              }}
+            />
+            {!isLastChild && (
+              <span
+                className="absolute bottom-0 w-px bg-white/14"
+                style={{
+                  left: (depth - 1) * TREE_INDENT_PX + TREE_INDENT_PX / 2,
+                  top: TREE_ROW_MIN_PX / 2,
+                }}
+              />
+            )}
+          </>
+        )}
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onSelect(agent.id);
+          }}
+          className="relative flex items-center gap-1.5 py-1 pr-2 text-left flex-1 min-w-0 cursor-pointer"
+          style={{ paddingLeft: depth * TREE_INDENT_PX + 10 }}
+        >
+          <div className="flex flex-col min-w-0 flex-1">
+            {/* Name + inline status dot. Dot is sized down (6px) and
+                sits on the name baseline so it visually belongs to the
+                name row instead of floating between the two text lines.
+                Same indicator the list-view avatar shows. */}
+            <div className="flex items-center gap-1.5 min-w-0">
+              <span
+                className={`text-[11.5px] font-medium truncate ${
+                  isSelected ? "text-white" : "text-white/85"
+                } ${isHead ? "text-emerald-200/90" : ""} ${
+                  isPaused ? "opacity-50" : ""
+                }`}
+              >
+                {agent.name}
+              </span>
+              <StatusDot agent={agent} size={6} />
+            </div>
+            <span className="text-[9.5px] text-white/40 truncate">
+              {formatRoleLabel(agent.role)}
+            </span>
+          </div>
+          {isPaused && (
+            <span className="shrink-0 rounded-full bg-amber-500/15 px-1.5 py-0 text-[9px] font-medium text-amber-200/85 ring-1 ring-inset ring-amber-500/22">
+              paused
+            </span>
+          )}
+        </button>
+      </div>
+      {children.length > 0 && (
+        <div>
+          {children.map((c, i) => (
+            <SidebarTreeRow
+              key={c.agent.id}
+              node={c}
+              // Append this row's "has more siblings" flag for descendants
+              ancestorsHasMore={[...ancestorsHasMore, !isLastChild]}
+              isLastChild={i === children.length - 1}
+              selectedId={selectedId}
+              onSelect={onSelect}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -423,8 +664,10 @@ function AgentDetail({
           <div className="h-full overflow-y-auto">
             <SettingsTab
               agent={agent}
+              agents={agents}
               canRetire={isLifecycleControllable}
               onOpenRetire={() => setRetireModalOpen(true)}
+              onReloadMe={onReloadMe}
             />
           </div>
         ) : (
@@ -451,16 +694,92 @@ function AgentDetail({
 // Settings tab — destructive lifecycle actions (Retire) live here so
 // the card header stays focused on the reversible toggle (Pause/Resume).
 // Mirrors the pattern from settings panels where "delete account" is
-// pushed deep into a "Danger zone" section.
+// pushed deep into a "Danger zone" section. Also hosts the "Reports to"
+// reassign control, which moves the agent under a different parent.
 function SettingsTab({
   agent,
+  agents,
   canRetire,
   onOpenRetire,
+  onReloadMe,
 }: {
   agent: AgentDTO;
+  agents: AgentDTO[];
   canRetire: boolean;
   onOpenRetire: () => void;
+  onReloadMe: () => Promise<void> | void;
 }) {
+  const isCeo = agent.role === CEO_ROLE;
+
+  // Eligible parents: any active agent in the same company that isn't
+  // self AND isn't a descendant of self (server validates cycle too,
+  // but the picker pre-filters by role tier — specialists can't manage
+  // anyone). For minimum UX we just exclude self + self's descendants
+  // by walking the tree; the server enforces hard rules.
+  const descendantIds = useMemo(() => {
+    const desc = new Set<string>();
+    const childrenByParent = new Map<string, AgentDTO[]>();
+    for (const a of agents) {
+      if (!a.parentAgentId) continue;
+      const arr = childrenByParent.get(a.parentAgentId) ?? [];
+      arr.push(a);
+      childrenByParent.set(a.parentAgentId, arr);
+    }
+    const queue: string[] = [agent.id];
+    while (queue.length > 0) {
+      const id = queue.shift()!;
+      const kids = childrenByParent.get(id) ?? [];
+      for (const k of kids) {
+        if (desc.has(k.id)) continue;
+        desc.add(k.id);
+        queue.push(k.id);
+      }
+    }
+    return desc;
+  }, [agent.id, agents]);
+
+  const eligibleParents = agents.filter(
+    (a) => a.id !== agent.id && a.status === "active" && !descendantIds.has(a.id),
+  );
+
+  const currentParent = agents.find((a) => a.id === agent.parentAgentId);
+  const [parentDraft, setParentDraft] = useState<string>(
+    agent.parentAgentId ?? "",
+  );
+  const [parentSaving, setParentSaving] = useState(false);
+  const [parentError, setParentError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setParentDraft(agent.parentAgentId ?? "");
+  }, [agent.parentAgentId, agent.id]);
+
+  const parentDirty = parentDraft !== (agent.parentAgentId ?? "");
+
+  const onSaveParent = useCallback(async () => {
+    if (!parentDirty || parentSaving) return;
+    setParentSaving(true);
+    setParentError(null);
+    try {
+      await agentsApi.patch(agent.id, {
+        parentAgentId: parentDraft === "" ? null : parentDraft,
+      });
+      await onReloadMe();
+    } catch (err) {
+      setParentError(
+        err instanceof ApiError &&
+          err.body &&
+          typeof err.body === "object" &&
+          "error" in err.body
+          ? String((err.body as Record<string, unknown>).error)
+          : err instanceof Error
+            ? err.message
+            : "Failed to update parent",
+      );
+    } finally {
+      setParentSaving(false);
+    }
+  }, [agent.id, parentDraft, parentDirty, parentSaving, onReloadMe]);
+
   return (
     <div className="px-5 py-5 space-y-6">
       <section className="space-y-3">
@@ -473,6 +792,66 @@ function SettingsTab({
           Retiring is destructive and lives below.
         </p>
       </section>
+
+      {!isCeo && (
+        <section className="space-y-3">
+          <h3 className="text-xs font-semibold text-white/55 uppercase tracking-wider">
+            Reports to
+          </h3>
+          <p className="text-[12px] text-white/55">
+            Currently:{" "}
+            <span className="text-white/85 font-medium">
+              {currentParent ? currentParent.name : "—"}
+            </span>
+            {currentParent && (
+              <span className="text-white/40">
+                {" "}
+                ({formatRoleLabel(currentParent.role)})
+              </span>
+            )}
+          </p>
+          <div className="flex items-center gap-2">
+            <select
+              value={parentDraft}
+              onChange={(e) => setParentDraft(e.target.value)}
+              disabled={parentSaving}
+              className="flex-1 rounded-xl bg-white/5 ring-1 ring-inset ring-white/10 focus:ring-white/22 focus:outline-none px-3.5 py-2 text-[13px] text-white/85 transition disabled:opacity-50 cursor-pointer appearance-none"
+            >
+              <option value="">— Top-level (no parent) —</option>
+              {eligibleParents.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name} ({formatRoleLabel(p.role)})
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={onSaveParent}
+              disabled={!parentDirty || parentSaving}
+              className="px-3 py-2 rounded-lg text-[12px] font-semibold text-white transition-all disabled:opacity-35 disabled:cursor-not-allowed cursor-pointer"
+              style={{
+                background:
+                  parentDirty && !parentSaving
+                    ? "linear-gradient(150deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.10) 100%)"
+                    : "rgba(255,255,255,0.06)",
+              }}
+            >
+              {parentSaving ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                "Save"
+              )}
+            </button>
+          </div>
+          {parentError && (
+            <div className="flex items-center gap-2 rounded-md bg-red-500/10 px-3 py-2 text-[11px] text-red-300 ring-1 ring-inset ring-red-500/18">
+              <AlertTriangle className="size-3.5 shrink-0" />
+              {parentError}
+            </div>
+          )}
+        </section>
+      )}
+
       <section className="space-y-3">
         <h3 className="text-xs font-semibold text-red-300/80 uppercase tracking-wider">
           Danger zone

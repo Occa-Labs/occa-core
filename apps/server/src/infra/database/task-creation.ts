@@ -43,8 +43,13 @@ export interface CreateTaskRecordInput {
   // callback in cascade — when the task completes, the synthesized
   // reply lands on this user's CEO chat thread. Null for tasks born
   // from nested DELEGATE inside another task, manual UI creation, or
-  // EmitFollowUp.
+  // EmitFollowUp. Deprecated: prefer originatingThreadId (Phase C).
   originatingUserId?: string | null;
+  // Set when the task originates from a chat turn (user_ceo or agent_dm).
+  // Cascade walks parent_thread_id from this thread up to the user_ceo
+  // root, firing synthesis at each layer. Replaces originatingUserId
+  // (Phase C); both columns are populated during the migration window.
+  originatingThreadId?: string | null;
 }
 
 async function insertWithCompanyLock(
@@ -76,6 +81,7 @@ async function insertWithCompanyLock(
       createdByDeploymentId: input.createdByDeploymentId,
       acceptanceCriteria: input.acceptanceCriteria,
       originatingUserId: input.originatingUserId ?? null,
+      originatingThreadId: input.originatingThreadId ?? null,
     })
     .returning();
   return row;

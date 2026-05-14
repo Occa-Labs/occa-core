@@ -14,6 +14,7 @@ import { enqueuePendingTasks, reapOrphans } from "./services/orphan-reaper";
 import { getBoss, stopBoss } from "./infra/queue/boss";
 import { registerTaskWorker } from "./infra/queue/task-worker";
 import { registerWorkflowWorker } from "./infra/queue/workflow-worker";
+import { registerAgentDmWorker } from "./infra/queue/agent-dm-worker";
 import {
   startWorkflowTriggerPoller,
   stopWorkflowTriggerPoller,
@@ -110,6 +111,7 @@ async function main() {
   await getBoss();
   await registerTaskWorker();
   await registerWorkflowWorker();
+  await registerAgentDmWorker();
   // Polls task_events for done transitions and enqueues workflow.evaluate
   // jobs. Single hook point covers both server- and worker-finalised tasks.
   startWorkflowTriggerPoller();

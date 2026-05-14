@@ -25,6 +25,7 @@
 import { eq } from "drizzle-orm";
 import { deployments, traces } from "@occa/shared/schema";
 import { extractActionBlocks, stripOccaMarkers } from "@occa/shared/markers";
+import { getTier } from "@occa/shared/role-catalog";
 import { childLogger } from "../../../lib/logger";
 import { db } from "../../../infra/database/client";
 import { getAdapter } from "../../../lib/adapter-registry";
@@ -38,6 +39,10 @@ import {
   insertMessage,
   type ChatMessageRow,
 } from "../repositories/chat-messages";
+import {
+  resolveUserCeoThreadId,
+  openAgentDmThread,
+} from "../repositories/chat-threads";
 import {
   loadContext,
   renderChatPrompt,
@@ -207,10 +212,16 @@ export async function sendUserTurn(
       deploymentId: ceo.id,
     })) === null;
 
+  const threadId = await resolveUserCeoThreadId({
+    companyId: args.companyId,
+    ceoDeploymentId: ceo.id,
+  });
+
   // Persist the user turn first so the FE has something to render even if
   // the adapter call hangs. The trace + assistant turn follow once we
   // know the gateway's verdict.
   const userMsg = await insertMessage({
+    threadId,
     companyId: args.companyId,
     deploymentId: ceo.id,
     role: "user",
@@ -307,6 +318,7 @@ export async function sendUserTurn(
       "CEO chat turn failed at adapter",
     );
     const sysMsg = await insertMessage({
+      threadId,
       companyId: args.companyId,
       deploymentId: ceo.id,
       role: "system",
@@ -347,6 +359,7 @@ export async function sendUserTurn(
           id: deployments.id,
           companyId: deployments.companyId,
           status: deployments.status,
+          role: deployments.role,
         })
         .from(deployments)
         .where(eq(deployments.id, dp.targetAgentId))
@@ -368,7 +381,39 @@ export async function sendUserTurn(
           { ceoId: ceo.id },
           "chat DELEGATE ignored: target is the CEO itself (use CREATE_TASK for self-execute)",
         );
+      } else if (getTier(target.role) === "head") {
+        // Phase C: non-leaf target → open an agent_dm thread for the
+        // Head and post the directive there. No task is created; the
+        // Head's worker will pick up the DM thread and emit its own
+        // DELEGATE / CREATE_TASK to route the work further down.
+        const opened = await openAgentDmThread({
+          companyId: args.companyId,
+          callerDeploymentId: ceo.id,
+          calleeDeploymentId: target.id,
+          parentThreadId: threadId,
+          directive: {
+            title: dp.title,
+            body: dp.description,
+            acceptanceCriteria: dp.acceptanceCriteria ?? null,
+            priority: dp.priority ?? null,
+            tags: dp.tags ?? null,
+          },
+        });
+        log.info(
+          {
+            ceoId: ceo.id,
+            calleeDeploymentId: target.id,
+            dmThreadId: opened.threadId,
+            directiveMessageId: opened.messageId,
+          },
+          "chat DELEGATE → agent_dm thread opened (non-leaf target)",
+        );
+        // No `createdTask` to surface in the API response — Phase C
+        // hides the routing layer from the board.
       } else {
+        // Leaf target (specialist or direct_report): create the task
+        // and stamp `originatingThreadId` so cascade can bubble the
+        // synthesised result back to this user_ceo thread on completion.
         const taskRow = await createTaskRecord({
           companyId: args.companyId,
           title: dp.title,
@@ -385,6 +430,7 @@ export async function sendUserTurn(
           createdByDeploymentId: null,
           acceptanceCriteria: dp.acceptanceCriteria ?? null,
           originatingUserId: args.userId,
+          originatingThreadId: threadId,
         });
         createdTask = {
           id: taskRow.id,
@@ -426,6 +472,7 @@ export async function sendUserTurn(
         createdByDeploymentId: null,
         acceptanceCriteria: null,
         originatingUserId: args.userId,
+        originatingThreadId: threadId,
       });
       createdTask = {
         id: taskRow.id,
@@ -486,6 +533,7 @@ export async function sendUserTurn(
   }
 
   const assistantMsg = await insertMessage({
+    threadId,
     companyId: args.companyId,
     deploymentId: ceo.id,
     role: "assistant",

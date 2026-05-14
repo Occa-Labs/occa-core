@@ -388,6 +388,10 @@ export interface CreateAgentRequest {
   adapterType: AdapterType;
   adapterConfig: OpenclawAdapterConfig;
   companyName?: string;
+  // Optional explicit parent. When omitted / null, the server falls back
+  // to catalog-driven auto-resolve (canonical head per role-catalog →
+  // CEO → null). Pass an active deployment id to override that default.
+  parentAgentId?: string | null;
 }
 
 export interface CreateAgentResponse {
@@ -395,6 +399,11 @@ export interface CreateAgentResponse {
   // Present when this call also created the company (first-time onboarding).
   // Lets the client hydrate company state without a follow-up /api/me fetch.
   company?: CompanyDTO;
+  // Number of existing specialists that were auto-reparented under this
+  // new head. Non-zero only when role is a head AND specialists existed
+  // under CEO whose canonical parent is the new head's role. Client uses
+  // this to surface a "Reparented N specialists under Nova" toast.
+  reparentedCount?: number;
 }
 
 // ── GET /api/agents ──

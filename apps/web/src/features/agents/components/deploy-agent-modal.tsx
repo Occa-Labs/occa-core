@@ -58,6 +58,11 @@ export function DeployAgentModal({
   const [role, setRole] = useState("");
   const [gatewayUrl, setGatewayUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
+  // Empty string = "auto-resolve from catalog". Non-empty = explicit
+  // parent deployment id. Picker shown only when active candidates
+  // exist (i.e. company has at least one non-CEO agent — first deploy
+  // has nothing to pick from).
+  const [parentAgentId, setParentAgentId] = useState<string>("");
   const [step, setStep] = useState<DeployStep>("form");
   const [probeResult, setProbeResult] = useState<{
     ok: boolean;
@@ -101,6 +106,7 @@ export function DeployAgentModal({
     setRole("");
     setGatewayUrl("");
     setApiKey("");
+    setParentAgentId("");
     setStep("form");
     setProbeResult(null);
     setSubmitError(null);
@@ -177,6 +183,7 @@ export function DeployAgentModal({
             gatewayUrl: gatewayUrl.trim(),
             apiKey: apiKey.trim(),
           },
+          parentAgentId: parentAgentId || null,
         },
         (evt) => {
           setStepStatuses((prev) => ({
@@ -193,7 +200,16 @@ export function DeployAgentModal({
     } catch (e) {
       handleStreamError(e);
     }
-  }, [canCreate, name, role, gatewayUrl, apiKey, handleStreamError, onDeployed]);
+  }, [
+    canCreate,
+    name,
+    role,
+    gatewayUrl,
+    apiKey,
+    parentAgentId,
+    handleStreamError,
+    onDeployed,
+  ]);
 
   const handleRetry = useCallback(async () => {
     if (!failedAgentId) return;
@@ -297,6 +313,39 @@ export function DeployAgentModal({
                   : undefined
               }
             />
+            {/* Parent picker — only when active candidates exist + role
+                is not CEO. Blank = auto-resolve from catalog. */}
+            {role !== "ceo" &&
+              agents.filter((a) => a.status === "active" && a.role !== role)
+                .length > 0 && (
+                <label className="block">
+                  <span className="text-[11px] text-white/50 mb-1.5 block">
+                    Reports to{" "}
+                    <span className="text-white/30">
+                      (optional — auto-resolved from catalog if blank)
+                    </span>
+                  </span>
+                  <select
+                    value={parentAgentId}
+                    onChange={(e) => setParentAgentId(e.target.value)}
+                    disabled={busy}
+                    className="w-full rounded-xl bg-white/5 ring-1 ring-inset ring-white/10 focus:ring-white/22 focus:outline-none px-3.5 py-2.5 text-[13px] text-white/85 transition disabled:opacity-50 cursor-pointer appearance-none"
+                  >
+                    <option value="">
+                      Auto-resolve from role catalog
+                    </option>
+                    {agents
+                      .filter(
+                        (a) => a.status === "active" && a.role !== role,
+                      )
+                      .map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {a.name} — {ROLE_LABELS[a.role] ?? a.role}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+              )}
           </div>
         </section>
 

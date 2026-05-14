@@ -279,7 +279,7 @@ async function loadHistory(args: {
   companyId: string;
   surface: SurfacePayload;
 }): Promise<ContextHistory | undefined> {
-  if (args.surface.kind === "chat") {
+  if (args.surface.kind === "chat" || args.surface.kind === "agent_dm") {
     const recent = await listRecentDoneTasksByCompany({
       companyId: args.companyId,
       limit: HISTORY_RECENT_TASKS_LIMIT,

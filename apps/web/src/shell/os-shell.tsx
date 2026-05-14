@@ -7,10 +7,9 @@ import {
   Building2,
   CheckSquare,
   CheckCircle2,
-  Clock,
   FileText,
   Files,
-  Library,
+  Network,
   Settings,
   Users,
   Workflow,
@@ -23,8 +22,7 @@ import { TaskManager } from "@/features/tasks/components/task-manager";
 import { AgentsWindow } from "@/features/agents/components/agents-window";
 import { ApprovalsWindow } from "@/features/approvals/components/approvals-window";
 import { CompanyWindow } from "@/features/companies/components/company-window";
-import { SkillLibrary } from "@/features/skills/components/skill-library";
-import { RoutinesWindow } from "@/components/routines-window";
+import { OrgChartWindow } from "@/features/agents/components/org-chart-window";
 import { WorkflowsWindow } from "@/features/workflows/components/workflows-window";
 import { SettingsWindow } from "@/components/settings-window";
 import { ChangelogsWindow } from "@/components/changelogs-window";
@@ -107,6 +105,7 @@ export function OsShell({
   type WindowId =
     | "tasks"
     | "agents"
+    | "org-chart"
     | "approvals"
     | "company"
     | "company-brain"
@@ -118,6 +117,14 @@ export function OsShell({
     | "settings"
     | "dev";
   const [activeWindow, setActiveWindow] = useState<WindowId | null>(null);
+  // Local agent-focus that lets OrgChartWindow (or anything else inside
+  // the shell) request AgentsWindow open with a specific agent
+  // pre-selected. Falls back to the upstream `focusedAgentId` prop when
+  // unset so theater clicks still work.
+  const [localAgentFocusId, setLocalAgentFocusId] = useState<string | null>(
+    null,
+  );
+  const effectiveAgentFocusId = localAgentFocusId ?? focusedAgentId ?? null;
 
   // External focus request (theater click) → open AgentsWindow. Tracking
   // by id rather than truthy-check so re-clicking the same agent twice
@@ -132,9 +139,11 @@ export function OsShell({
   }, [pendingApprovalId]);
 
   // Closing the AgentsWindow always clears upstream focus so the camera
-  // can return to idle. Other windows close without touching focus.
+  // can return to idle. Local agent-focus (set by OrgChart click) also
+  // clears so a subsequent theater click isn't shadowed.
   const closeAgentsWindow = useCallback(() => {
     setActiveWindow(null);
+    setLocalAgentFocusId(null);
     onClearFocus?.();
   }, [onClearFocus]);
 
@@ -197,6 +206,12 @@ export function OsShell({
             onClick: () => toggle("agents"),
           },
           {
+            icon: <Network className="size-5" />,
+            label: "Org Chart",
+            active: activeWindow === "org-chart",
+            onClick: () => toggle("org-chart"),
+          },
+          {
             icon: <CheckCircle2 className="size-5" />,
             label: "Approvals",
             active: activeWindow === "approvals",
@@ -214,22 +229,10 @@ export function OsShell({
             active: activeWindow === "documents",
             onClick: () => toggle("documents"),
           },
-          {
-            icon: <Library className="size-5" />,
-            label: "Skills",
-            active: activeWindow === "skills",
-            disabled: !FEATURES.skills,
-            disabledHint: "coming soon",
-            onClick: () => toggle("skills"),
-          },
-          {
-            icon: <Clock className="size-5" />,
-            label: "Routines",
-            active: activeWindow === "routines",
-            disabled: !FEATURES.routines,
-            disabledHint: "coming soon",
-            onClick: () => toggle("routines"),
-          },
+          // Skills + Routines hidden from the dock for now to keep the
+          // rail short. Both are still "coming soon" feature-flagged
+          // and accessible via Library/Clock import sites if needed.
+          // Restore when fully shipped.
           ...(IS_DEV_MODE
             ? [
                 {
@@ -266,7 +269,7 @@ export function OsShell({
           companyName={me.company.name}
           agents={me.agents}
           onReloadMe={me.reload}
-          initialAgentId={focusedAgentId ?? null}
+          initialAgentId={effectiveAgentFocusId}
           onClose={closeAgentsWindow}
         />
       )}
@@ -282,11 +285,16 @@ export function OsShell({
       )}
       {activeWindow === "company-brain" && <BrainWindow onClose={close} />}
       {activeWindow === "documents" && <DocumentsWindow onClose={close} />}
-      {activeWindow === "skills" && FEATURES.skills && (
-        <SkillLibrary onClose={close} onReloadMe={me.reload} />
-      )}
-      {activeWindow === "routines" && FEATURES.routines && (
-        <RoutinesWindow agents={me.agents} onClose={close} />
+      {activeWindow === "org-chart" && (
+        <OrgChartWindow
+          companyName={me.company.name}
+          agents={me.agents}
+          onClose={close}
+          onOpenAgent={(agentId) => {
+            setLocalAgentFocusId(agentId);
+            setActiveWindow("agents");
+          }}
+        />
       )}
       {activeWindow === "workflows" && FEATURES.workflows && (
         <WorkflowsWindow onClose={close} />

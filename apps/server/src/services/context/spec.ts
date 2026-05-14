@@ -106,6 +106,19 @@ export type SurfacePayload =
       userMessage: string;
     }
   | {
+      // Phase C: directive surface between two agents. The callee is the
+      // ContextSpec.agent (recipient); the caller is one tier up and
+      // sent the directive. Renderer reuses the chat-mode framing
+      // (subordinates, HEAD-FIRST rule, DELEGATE/CREATE_TASK markers)
+      // but swaps "owner" with the caller and frames the directive as
+      // the inbound message.
+      kind: "agent_dm";
+      isFirstTurn: boolean;
+      directive: string;
+      callerName: string;
+      callerRole: string;
+    }
+  | {
       kind: "task";
       taskId: string;
       taskNumber: number;

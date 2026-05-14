@@ -515,14 +515,22 @@ export const tasks = pgTable(
       () => deployments.id,
       { onDelete: "set null" },
     ),
-    // Set when the task was born from a CEO chat turn — either a
-    // `[[OCCA:DELEGATE]]` (to a subordinate) or `[[OCCA:CREATE_TASK]]`
-    // (CEO self-executes) emitted while replying to this user. When the
-    // task completes, cascade triggers `services/ceo-synthesis` to post
-    // the synthesized reply back to this user's CEO chat thread. Null
-    // for non-chat-origin tasks (nested delegations, manual UI creates).
+    // Deprecated (Phase C): use `originatingThreadId` instead. Kept
+    // for back-compat during the migration window; will be dropped once
+    // all chat-origin writes have moved to the thread FK.
     originatingUserId: uuid("originating_user_id").references(
       () => users.id,
+      { onDelete: "set null" },
+    ),
+    // Set when the task was born from a chat turn — either a
+    // `[[OCCA:DELEGATE]]` to a leaf specialist or `[[OCCA:CREATE_TASK]]`
+    // (self-execute). The thread can be a user↔CEO chat (kind=user_ceo)
+    // or an agent_dm thread (Head receiving CEO directive in Phase C).
+    // Cascade walks parent_thread_id from this thread upward, firing
+    // synthesis at each layer until the user_ceo root is reached.
+    // Null for non-chat-origin tasks (manual UI creates).
+    originatingThreadId: uuid("originating_thread_id").references(
+      (): AnyPgColumn => chatThreads.id,
       { onDelete: "set null" },
     ),
     // Delegation contract — what "done" means for this task. Set when the
@@ -1180,21 +1188,71 @@ export const workflows = pgTable(
   ],
 );
 
-// ── Chat messages — user ↔ deployment (CEO) conversational thread ─────
+// ── Chat threads — explicit thread entity (Phase C) ──────────────────
+// Replaces the prior implicit "thread = (companyId, deploymentId)" model.
+// Two kinds:
+//   • user_ceo — user chats with the CEO deployment. One per (company, CEO).
+//   • agent_dm — agent-to-agent directive thread opened when a non-leaf
+//     agent (Head) is delegated to. Caller posts a directive; callee
+//     replies with routing decision. No task wrapper for the callee.
+// `parentThreadId` forms a linked-list bubble-up chain so cascade can
+// walk from a settled task or DM thread up to the originating user
+// thread, synthesising at each layer.
+export const chatThreads = pgTable(
+  "chat_threads",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    // 'user_ceo' | 'agent_dm'
+    kind: text("kind").notNull(),
+    // user_ceo: the human owner. agent_dm: null.
+    userId: uuid("user_id").references(() => users.id, {
+      onDelete: "cascade",
+    }),
+    // Owner / recipient agent for this thread. user_ceo: the CEO
+    // deployment. agent_dm: the callee (the Head receiving the directive).
+    deploymentId: uuid("deployment_id")
+      .notNull()
+      .references(() => deployments.id, { onDelete: "cascade" }),
+    // agent_dm: the caller deployment one tier up. Null for user_ceo.
+    callerDeploymentId: uuid("caller_deployment_id").references(
+      () => deployments.id,
+      { onDelete: "cascade" },
+    ),
+    // Linked-list bubble-up; null only for user_ceo (root).
+    parentThreadId: uuid("parent_thread_id").references(
+      (): AnyPgColumn => chatThreads.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("uq_chat_threads_user_ceo")
+      .on(t.companyId, t.deploymentId)
+      .where(sql`kind = 'user_ceo'`),
+    index("idx_chat_threads_parent").on(t.parentThreadId),
+  ],
+);
+
+// ── Chat messages — one row per turn, attached to a chat_threads row ──
 // Phase 2.5 of the hierarchical agent system: the user's only entry surface
 // is a real chat with the CEO. Each turn (user prompt + agent reply) lands
 // here as one row. CEO can clarify ambiguity over multiple turns and emits
-// `[[OCCA:CREATE_TASK]]` markers when scope is agreed; the marker is
-// stripped from `content` before persist and the spawned task id stored on
-// `createdTaskId` for audit.
-//
-// One thread per (companyId, deploymentId). Today only CEO is a chat
-// target, but the schema is target-agnostic so a future "DM any agent"
-// feature reuses the same table.
+// `[[OCCA:CREATE_TASK]]` / `[[OCCA:DELEGATE]]` markers; markers are
+// stripped from `content` before persist and the spawned task id stored
+// on `createdTaskId` for audit. Phase C extends this to agent_dm threads
+// (caller↔callee directive surface) using the same row shape.
 export const chatMessages = pgTable(
   "chat_messages",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    threadId: uuid("thread_id")
+      .notNull()
+      .references(() => chatThreads.id, { onDelete: "cascade" }),
     companyId: uuid("company_id")
       .notNull()
       .references(() => companies.id, { onDelete: "cascade" }),
@@ -1220,9 +1278,8 @@ export const chatMessages = pgTable(
       .defaultNow(),
   },
   (t) => [
-    index("idx_chat_messages_thread").on(
-      t.companyId,
-      t.deploymentId,
+    index("idx_chat_messages_thread_chronological").on(
+      t.threadId,
       t.createdAt,
     ),
   ],

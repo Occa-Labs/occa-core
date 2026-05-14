@@ -41,6 +41,8 @@ import {
   deployments,
 } from "@occa/shared/schema";
 import type { AgentRole } from "@occa/shared/types";
+import { CEO_ROLE } from "@occa/shared/role-catalog";
+import { resolveAutoParentIndex } from "./deployment-reparent";
 import { db } from "../../../infra/database/client";
 import { childLogger } from "../../../lib/logger";
 import {
@@ -144,7 +146,16 @@ export async function createDeploymentInternal(
   const ownerWallet =
     companyRow.ownerWallet ?? `placeholder:${input.companyId}`;
 
-  // 3. Resolve parent → deploymentIndex (if provided).
+  // 3. Resolve parent → deploymentIndex.
+  //
+  // Three modes:
+  //   (a) Caller passed explicit `parentDeploymentId` — verify + use it.
+  //   (b) Role is CEO — top of the chart, no parent.
+  //   (c) No explicit parent + non-CEO — auto-resolve from the role
+  //       catalog. Pick the canonical head if deployed; otherwise fall
+  //       back to the company's CEO so the deployment isn't orphaned
+  //       (loop incident 2026-05-13 showed that null-parent + non-CEO
+  //       breaks `listSubordinates` defensive guards).
   let parentDeploymentIndex: number | null = null;
   if (input.parentDeploymentId) {
     const [parent] = await db
@@ -164,6 +175,11 @@ export async function createDeploymentInternal(
       };
     }
     parentDeploymentIndex = parent.deploymentIndex;
+  } else if (input.role !== CEO_ROLE) {
+    parentDeploymentIndex = await resolveAutoParentIndex({
+      companyId: input.companyId,
+      role: input.role,
+    });
   }
 
   // 4. Assign 3D office seat.

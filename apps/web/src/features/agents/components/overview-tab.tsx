@@ -34,9 +34,25 @@ export function OverviewTab({
 }) {
   const [seatModalOpen, setSeatModalOpen] = useState(false);
 
+  // Resolve parent name from the flat agents list. CEO has no parent
+  // by design (top of the chart); other agents fall back to "—" when
+  // parent isn't found in the current snapshot (race vs reload).
+  const parentAgent = agent.parentAgentId
+    ? agents.find((a) => a.id === agent.parentAgentId)
+    : null;
+  const reportsToValue =
+    agent.role === CEO_ROLE
+      ? "— (top of the chart)"
+      : parentAgent
+        ? `${parentAgent.name} (${formatRoleLabel(parentAgent.role)})`
+        : agent.parentAgentId
+          ? "—"
+          : "— (top-level)";
+
   const rows: { label: string; value: string }[] = [
     { label: "Name", value: agent.name },
     { label: "Role", value: formatRoleLabel(agent.role) },
+    { label: "Reports to", value: reportsToValue },
     { label: "Adapter", value: agent.adapterType },
     { label: "External ID", value: agent.externalAgentId ?? "—" },
     { label: "Created", value: formatWhen(agent.createdAt) },

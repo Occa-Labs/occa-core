@@ -63,7 +63,12 @@ import {
 } from "../../../lib/workspace-templates";
 import { assignSeatForCompany } from "../services/seat-assignment";
 import { ALL_DESKS } from "@occa/shared/seating";
-import { CEO_ROLE } from "@occa/shared/role-catalog";
+import { CEO_ROLE, getTier } from "@occa/shared/role-catalog";
+import {
+  reparentOnHeadDeploy,
+  reparentOnHeadRetire,
+  resolveAutoParentIndex,
+} from "../services/deployment-reparent";
 import { PG_ERROR_CODES } from "../../../lib/pg-errors";
 import {
   buildExternalAgentId,
@@ -118,7 +123,14 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
     return;
   }
   const userId = req.user!.userId;
-  const { name, role, adapterType, adapterConfig, companyName } = parsed.data;
+  const {
+    name,
+    role,
+    adapterType,
+    adapterConfig,
+    companyName,
+    parentAgentId,
+  } = parsed.data;
 
   const existingCompanyId = await userCompanyId(userId);
   if (!existingCompanyId && !companyName) {
@@ -335,6 +347,37 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
       const nextIdx =
         sibs.length === 0 ? 0 : Math.max(...sibs.map((r) => r.idx)) + 1;
 
+      // Resolve parent. Priority:
+      //   1. Caller passed `parentAgentId` (Deploy modal parent picker)
+      //      → look up its deployment_index, verify same company, use it.
+      //   2. CEO role → null (top of the chart).
+      //   3. Else auto-resolve from catalog (canonical head → CEO → null).
+      let parentIdx: number | null = null;
+      if (parentAgentId) {
+        const [parentRow] = await t
+          .select({
+            id: deployments.id,
+            companyId: deployments.companyId,
+            deploymentIndex: deployments.deploymentIndex,
+            status: deployments.status,
+          })
+          .from(deployments)
+          .where(eq(deployments.id, parentAgentId))
+          .limit(1);
+        if (!parentRow || parentRow.companyId !== cid) {
+          throw new Error("parent_not_in_company");
+        }
+        if (parentRow.status !== "active") {
+          throw new Error("parent_not_active");
+        }
+        parentIdx = parentRow.deploymentIndex;
+      } else if (role !== CEO_ROLE) {
+        parentIdx = await resolveAutoParentIndex({
+          companyId: cid,
+          role,
+        });
+      }
+
       const [dRow] = await t
         .insert(deployments)
         .values({
@@ -344,6 +387,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
           deploymentIndex: nextIdx,
           role,
           status: "active",
+          parentDeploymentIndex: parentIdx,
         })
         .returning();
 
@@ -563,11 +607,35 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
   const companyProfileRow = companyRow
     ? await findCompanyProfileByCompanyId(companyRow.id)
     : null;
+
+  // Post-deploy reparent: if this deploy created a head, slide any
+  // existing specialists currently parented under CEO whose canonical
+  // parent is this head's role under the new head. Silent no-op for
+  // non-head roles or when no eligible specialists exist.
+  let reparentedCount: number | undefined;
+  if (getTier(role) === "head") {
+    try {
+      const result = await reparentOnHeadDeploy({
+        companyId: deploymentRow.companyId,
+        newHeadDeploymentId: deploymentRow.id,
+        newHeadRole: role,
+        newHeadDeploymentIndex: deploymentRow.deploymentIndex,
+      });
+      reparentedCount = result.movedCount;
+    } catch (err) {
+      log.warn(
+        { err, deploymentId: deploymentRow.id, role },
+        "reparentOnHeadDeploy threw — deploy succeeds, hierarchy may be stale",
+      );
+    }
+  }
+
   const body: CreateAgentResponse = {
     agent: await hydrateDeploymentDTO(deploymentRow),
     company: companyRow
       ? toCompanyDTO(companyRow, companyProfileRow)
       : undefined,
+    reparentedCount,
   };
   emit("done", body);
   res.end();
@@ -1268,6 +1336,27 @@ router.delete("/:id", requireAuth, async (req: Request, res: Response) => {
       }
     } catch (err) {
       log.warn({ err, deploymentId: existing.id }, "deprovision threw");
+    }
+  }
+
+  // Pre-delete reparent: if retiring a head, slide its specialists back
+  // to the CEO. Without this, the children's parent_deployment_index
+  // points at a deleted row and listSubordinates returns empty via the
+  // null-parent defensive guard. Reparent BEFORE delete so the parent
+  // index briefly overlaps (no FK constraint on parent_index — it's an
+  // integer denormalised reference).
+  if (getTier(existing.role) === "head") {
+    try {
+      await reparentOnHeadRetire({
+        companyId: existing.companyId,
+        retiringHeadDeploymentId: existing.id,
+        retiringHeadDeploymentIndex: existing.deploymentIndex,
+      });
+    } catch (err) {
+      log.warn(
+        { err, deploymentId: existing.id, role: existing.role },
+        "reparentOnHeadRetire threw — retire continues, children may be orphaned",
+      );
     }
   }
 
