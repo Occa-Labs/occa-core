@@ -37,6 +37,10 @@ export async function generateDeploymentKey(input: {
   deploymentId: string;
   companyId: string;
   name: string;
+  // Absolute expiry. Per-trace dispatcher keys set this 30 min out so a
+  // leaked key from gateway conversation history can only be replayed
+  // briefly. Omit for long-lived operator keys.
+  expiresAt?: Date;
 }): Promise<{ rawKey: string; row: DeploymentApiKeyRow }> {
   const raw = `${KEY_PREFIX}${randomBytes(32).toString("base64url")}`;
   const row = await insertKey({
@@ -44,6 +48,7 @@ export async function generateDeploymentKey(input: {
     companyId: input.companyId,
     name: input.name,
     keyHash: hashKey(raw),
+    expiresAt: input.expiresAt,
   });
   return { rawKey: raw, row };
 }
@@ -62,6 +67,7 @@ export async function verifyDeploymentKey(
   const row = await findByHash(hash);
   if (!row) return null;
   if (row.revokedAt) return null;
+  if (row.expiresAt && row.expiresAt.getTime() <= Date.now()) return null;
 
   // Constant-time hash compare guards against length-leak attacks. We
   // already filtered by hash above, so this is belt-and-suspenders for

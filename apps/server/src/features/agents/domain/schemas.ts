@@ -17,6 +17,20 @@ export const adapterConfigSchema = z.object({
   apiKey: z.string().min(1).max(LIMITS.API_KEY),
 });
 
+// Upper bound for a per-task invoice rate (lamports). 1000 SOL — far above
+// any realistic devnet rate; guards against fat-finger / overflow input.
+const MAX_TASK_RATE_LAMPORTS = 1_000_000_000_000;
+
+// Shared rate field — flat per-task invoice amount in lamports. `null`
+// clears the rate (no auto-invoicing); omitted leaves it unchanged.
+const taskRateLamportsSchema = z
+  .number()
+  .int()
+  .min(0)
+  .max(MAX_TASK_RATE_LAMPORTS)
+  .nullable()
+  .optional();
+
 // ── Mutations ────────────────────────────────────────────────────────────
 
 // POST /api/agents — initial onboarding (CEO) or subsequent agent.
@@ -33,6 +47,8 @@ export const createAgentBody = z.object({
   // to catalog-driven auto-resolve. Validated against the requester's
   // company in the route handler before insert.
   parentAgentId: z.string().uuid().nullable().optional(),
+  // Optional flat per-task invoice rate, set at deploy time.
+  taskRateLamports: taskRateLamportsSchema,
 });
 
 // POST /api/agents/:id/reprovision
@@ -67,6 +83,15 @@ export const patchAgentBody = z.object({
     .regex(/^\/models\/characters\/[a-z0-9_]+\.glb$/)
     .nullable()
     .optional(),
+  // Flat per-task invoice rate. `null` clears it (no auto-invoicing).
+  taskRateLamports: taskRateLamportsSchema,
+});
+
+// PATCH /api/agents/:id/files/:filename — edit one workspace file.
+// `:filename` is validated against the canonical 8-file set at the route
+// level (see WORKSPACE_FILENAMES in lib/workspace-templates).
+export const updateAgentFileBody = z.object({
+  content: z.string().max(LIMITS.WORKSPACE_FILE_CONTENT),
 });
 
 // POST /api/agents/:id/skills/sync

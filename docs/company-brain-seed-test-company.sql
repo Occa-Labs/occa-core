@@ -111,7 +111,7 @@ $$,
 
 How the owner likes to work. Use this to calibrate tone, format, and timing in chat.
 
-- **Communication style**: direct, low-corporate, casual Indonesian/English mix is fine.
+- **Communication style**: direct, low-corporate, casual English.
 - **Decision style**: prefers options + reasoning over single recommendations. Will push back if you skip the why.
 - **Pacing**: one phase / step at a time. Don't dump giant laundry lists.
 - **Code-related preference**: ask before bigger refactors; for small fixes, just do it.

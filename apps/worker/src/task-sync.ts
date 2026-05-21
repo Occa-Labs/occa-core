@@ -13,7 +13,8 @@ import { appendTaskEventBestEffort } from "./task-events";
 //  - `todo` → `in_progress` when a trace starts against the task
 //  - `in_progress` → `done` (or `review`) when a trace succeeds with a real reply
 //  - liveness ≠ normal → stay at `in_progress`; continuation will re-trigger
-//  - failed traces → status unchanged (error surfaces via notifications)
+//  - failed/timed_out traces (retry exhausted) → archive the task with a
+//    failure block so the kanban doesn't pile up. See syncTaskOnTraceFailed.
 //
 // On success we also append an `agent_result` block to the task body so the
 // user sees inline what the agent produced. Full text stays on the trace;
@@ -156,7 +157,18 @@ export async function syncTaskOnTraceSucceeded(args: {
   if (!responseText.trim()) return;
 
   const needsReview = REVIEW_MARKER.test(responseText);
-  const target: TaskStatus = needsReview ? "review" : "done";
+  // Routine wrapper tasks: when the orchestrator emits DELEGATE the work
+  // isn't really finished — it just spawned children. Keep the wrapper
+  // in_progress so cascade.ts can re-wake the orchestrator when each
+  // child completes; otherwise the parent_already_done short-circuit at
+  // cascade.ts:160 swallows the wake.
+  const emittedActionBlocks = extractActionBlocks(responseText);
+  const hasDelegate = emittedActionBlocks.some((b) => b.token === "DELEGATE");
+  const target: TaskStatus = needsReview
+    ? "review"
+    : hasDelegate
+      ? "in_progress"
+      : "done";
 
   // Append a result block. Drop empty trailing paragraph so fresh tasks (which
   // start with a single blank paragraph) don't render an awkward gap.
@@ -231,8 +243,7 @@ export async function syncTaskOnTraceSucceeded(args: {
   // occa/docs/agent-protocol.md. Closing the gap fully needs the handlers
   // extracted from services/delegation/markers/ into a worker-importable
   // module that takes db + canDeploy + createTaskComment as DI deps.
-  const blocks = extractActionBlocks(responseText);
-  for (const block of blocks) {
+  for (const block of emittedActionBlocks) {
     if (block.token !== "DELEGATE" && block.token !== "BLOCK") continue;
     void appendTaskEventBestEffort({
       companyId: row.companyId,
@@ -250,4 +261,85 @@ export async function syncTaskOnTraceSucceeded(args: {
       traceId: args.traceId,
     });
   }
+}
+
+// Generic terminal-failure sync. Mirrors syncTaskOnTraceSucceeded but for
+// non-success trace outcomes (failed-no-retry, timed_out, dispatcher_crash).
+// Without this, every failed trace leaves its task pinned at in_progress
+// and the kanban accumulates dead cards until someone archives them by
+// hand — the routine wrapper pile-up that prompted this helper.
+//
+// Behavior is intentionally symmetric across all callers (routine,
+// chat-origin, manual, delegated child): append a failure block, audit
+// the transition, archive the task. Archive is the deterministic option
+// because there is no "task failed" status in TASK_STATUSES — surfacing
+// to `review` would keep the card around but require manual cleanup,
+// which is exactly the loop we're closing here. Archived tasks remain
+// fully searchable; users can unarchive if they want to retry.
+export async function syncTaskOnTraceFailed(args: {
+  taskId: string | null;
+  traceId: string;
+  agentId: string;
+  outcome: "failed" | "timed_out" | "cancelled";
+  errorCode: string | null;
+  errorMessage: string | null;
+  finishedAt: Date;
+}): Promise<void> {
+  if (!args.taskId) return;
+
+  const row = await loadTaskStatusAndBlocks(args.taskId);
+  if (!row) return;
+  // Already archived (e.g. by a parallel worker tick) — nothing to do.
+  if (row.status === "done") return;
+
+  const agentName = await loadAgentName(args.agentId);
+  const summary =
+    args.outcome === "timed_out"
+      ? `Trace timed out (${args.errorMessage ?? "no detail"}).`
+      : args.outcome === "cancelled"
+        ? `Trace cancelled.`
+        : `Trace failed${
+            args.errorCode ? ` [${args.errorCode}]` : ""
+          }${args.errorMessage ? `: ${args.errorMessage}` : ""}.`;
+
+  const failureBlock: ContentBlock = {
+    type: "agent_result",
+    traceId: args.traceId,
+    agentId: args.agentId,
+    agentName,
+    timestamp: args.finishedAt.toISOString(),
+    preview: summary.slice(0, PREVIEW_MAX_CHARS),
+  };
+
+  const trimmed =
+    row.blocks.length > 0 &&
+    row.blocks[row.blocks.length - 1].type === "paragraph" &&
+    !(row.blocks[row.blocks.length - 1] as { text: string }).text.trim()
+      ? row.blocks.slice(0, -1)
+      : row.blocks;
+  await appendBlocks(args.taskId, [...trimmed, failureBlock]);
+
+  await db
+    .update(tasks)
+    .set({
+      archivedAt: args.finishedAt,
+      archiveReason: `trace_${args.outcome}`,
+      updatedAt: args.finishedAt,
+    })
+    .where(eq(tasks.id, args.taskId));
+
+  void appendTaskEventBestEffort({
+    companyId: row.companyId,
+    taskId: args.taskId,
+    eventType: "task_archived",
+    actorType: "system",
+    actorId: "system",
+    payload: {
+      reason: `trace_${args.outcome}`,
+      traceId: args.traceId,
+      errorCode: args.errorCode,
+      errorMessage: args.errorMessage,
+    },
+    traceId: args.traceId,
+  });
 }

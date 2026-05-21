@@ -36,6 +36,8 @@ import type {
   CreateAgentResponse,
   ListAgentFilesResponse,
   ListAgentsResponse,
+  UpdateAgentFileResponse,
+  WorkspaceFileDTO,
 } from "@occa/shared/types";
 import { db } from "../../../infra/database/client";
 import {
@@ -70,6 +72,7 @@ import {
   resolveAutoParentIndex,
 } from "../services/deployment-reparent";
 import { PG_ERROR_CODES } from "../../../lib/pg-errors";
+import { reconcileInvoicesForDeployment } from "../../billing/services/reconcile-invoices";
 import {
   buildExternalAgentId,
   buildWorkspacePath,
@@ -78,7 +81,13 @@ import {
   createAgentBody,
   patchAgentBody,
   reprovisionAgentBody,
+  updateAgentFileBody,
 } from "../domain/schemas";
+import {
+  findByName as findWorkspaceFile,
+  updateContent as updateWorkspaceFileContent,
+} from "../repositories/deployment-workspace-files";
+import { WORKSPACE_FILENAMES } from "../../../lib/workspace-templates";
 import { log } from "./_shared";
 
 const router: Router = Router();
@@ -130,6 +139,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
     adapterConfig,
     companyName,
     parentAgentId,
+    taskRateLamports,
   } = parsed.data;
 
   const existingCompanyId = await userCompanyId(userId);
@@ -403,6 +413,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
         },
         provisioningState: "pending",
         workstationId,
+        taskRateLamports: taskRateLamports ?? null,
       });
 
       return { iRow, dRow, createdCompanyRow };
@@ -1089,6 +1100,120 @@ router.get("/:id/files", requireAuth, async (req: Request, res: Response) => {
   res.json(body);
 });
 
+// PATCH /api/agents/:id/files/:filename — edit one workspace file.
+// Writes to deployment_workspace_files with source='user_edit', then
+// best-effort pushes the single file to the gateway via seedWorkspace.
+// On gateway failure the DB write still lands (syncedAt=null) and the
+// response includes a syncWarning the client can surface or retry on.
+router.patch(
+  "/:id/files/:filename",
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const existing = await findOwnedByUserId({
+      userId: req.user!.userId,
+      deploymentId: req.params.id,
+    });
+    if (!existing) {
+      res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.NOT_FOUND });
+      return;
+    }
+
+    const filename = req.params.filename;
+    if (!(WORKSPACE_FILENAMES as readonly string[]).includes(filename)) {
+      res
+        .status(StatusCodes.BAD_REQUEST)
+        .json({ error: ERROR_CODES.FILE_NOT_IN_INVENTORY });
+      return;
+    }
+
+    const parsed = updateAgentFileBody.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(StatusCodes.BAD_REQUEST).json({
+        error: ERROR_CODES.INVALID_BODY,
+        detail: parsed.error.flatten(),
+      });
+      return;
+    }
+
+    const fileRow = await findWorkspaceFile({
+      deploymentId: existing.id,
+      filename,
+    });
+    if (!fileRow) {
+      res
+        .status(StatusCodes.NOT_FOUND)
+        .json({ error: ERROR_CODES.FILE_NOT_IN_INVENTORY });
+      return;
+    }
+
+    // Best-effort push the single file to the gateway. Missing creds or
+    // an unprovisioned agent skip the push, return the DB write with a
+    // sync warning.
+    const profile = await findRuntimeProfile(existing.id);
+    const cfg = (profile?.adapterConfig as Record<string, unknown>) ?? {};
+    const gatewayUrl =
+      typeof cfg.gatewayUrl === "string" ? cfg.gatewayUrl : undefined;
+    const apiKey = typeof cfg.apiKey === "string" ? cfg.apiKey : undefined;
+    const deviceKeypair = cfg.deviceKeypair as SerializedKeypair | undefined;
+    const externalAgentId = profile?.externalAgentId ?? null;
+
+    let pushResult:
+      | Awaited<ReturnType<typeof seedWorkspace>>
+      | null = null;
+    if (gatewayUrl && apiKey && deviceKeypair && externalAgentId) {
+      try {
+        pushResult = await seedWorkspace({
+          gatewayUrl,
+          apiKey,
+          device: deserializeKeypair(deviceKeypair),
+          externalAgentId,
+          files: [{ filename, content: parsed.data.content }],
+        });
+      } catch (err) {
+        log.warn(
+          { err, deploymentId: existing.id, filename },
+          "workspace file edit: gateway push threw",
+        );
+      }
+    }
+
+    const syncedAt = pushResult?.ok ? new Date() : null;
+    const updated = await updateWorkspaceFileContent({
+      deploymentId: existing.id,
+      filename,
+      content: parsed.data.content,
+      source: "user_edit",
+      syncedAt,
+    });
+
+    if (!updated) {
+      res
+        .status(StatusCodes.INTERNAL_SERVER_ERROR)
+        .json({ error: ERROR_CODES.INTERNAL_ERROR });
+      return;
+    }
+
+    const fileDTO: WorkspaceFileDTO = {
+      id: updated.id,
+      filename: updated.filename,
+      content: updated.content,
+      source: updated.source,
+      templateOrigin: updated.templateOrigin ?? null,
+      syncedAt: updated.syncedAt?.toISOString() ?? null,
+      updatedAt: updated.updatedAt.toISOString(),
+    };
+
+    const body: UpdateAgentFileResponse = { file: fileDTO };
+    if (!pushResult?.ok) {
+      body.syncWarning = {
+        code: pushResult?.error ?? "gateway_sync_skipped",
+        detail: pushResult?.reason,
+      };
+    }
+    res.json(body);
+  },
+);
+
 // PATCH /api/agents/:id — edit name/role/adapterConfig.
 // Writes fan out to three tables: identity (name), deployment (role,
 // parentDeploymentIndex), runtime profile (adapterConfig, workstationId,
@@ -1177,6 +1302,9 @@ router.patch("/:id", requireAuth, async (req: Request, res: Response) => {
   if (parsed.data.modelOverride !== undefined) {
     profilePatch.modelOverride = parsed.data.modelOverride;
   }
+  if (parsed.data.taskRateLamports !== undefined) {
+    profilePatch.taskRateLamports = parsed.data.taskRateLamports;
+  }
 
   const noop =
     Object.keys(identityPatch).length === 0 &&
@@ -1231,6 +1359,22 @@ router.patch("/:id", requireAuth, async (req: Request, res: Response) => {
   }
 
   res.json({ agent: await hydrateDeploymentDTO(row) });
+
+  // Phase 1b-ii: setting a task rate back-fills invoices for any `done`
+  // tasks this agent finished before the rate existed. Fire-and-forget —
+  // the response already went out; reconcile self-heals the invoice set.
+  if (
+    parsed.data.taskRateLamports !== undefined &&
+    parsed.data.taskRateLamports !== null &&
+    parsed.data.taskRateLamports > 0
+  ) {
+    void reconcileInvoicesForDeployment(existing.id).catch((err) => {
+      req.log.error(
+        { err, agentId: existing.id },
+        "reconcileInvoicesForDeployment failed after rate set (non-fatal)",
+      );
+    });
+  }
 });
 
 // POST /api/agents/:id/pause — flip deployment status to "paused".

@@ -121,6 +121,21 @@ export type AdapterSendPromptResult =
   | { ok: true; reply: string }
   | { ok: false; error: string; reason?: string };
 
+// ── Session reset ────────────────────────────────────────────────────────────
+// Wipes the adapter-side conversation memory for a session key. Used when
+// the user clears a chat thread — the OCCA-side messages are deleted, and
+// this drops the agent's gateway-side memory so the next turn starts fresh.
+
+export interface AdapterResetSessionInput {
+  adapterConfig: Record<string, unknown>;
+  /** Full session key whose conversation memory should be wiped. */
+  sessionKey: string;
+}
+
+export type AdapterResetSessionResult =
+  | { ok: true }
+  | { ok: false; error: string; reason?: string };
+
 export interface AgentAdapter {
   type: string;
 
@@ -145,6 +160,13 @@ export interface AgentAdapter {
   sendPrompt(input: AdapterSendPromptInput): Promise<AdapterSendPromptResult>;
   /** Run a full wake/trace cycle (worker dispatcher). */
   executeTrace(ctx: AdapterExecutionContext): Promise<AdapterTraceResult>;
+
+  // ── Session lifecycle ───────────────────────────────────────────────────
+  /** Wipe the adapter-side conversation memory for a session key.
+   *  Best-effort — callers treat failure as non-fatal. */
+  resetSession(
+    input: AdapterResetSessionInput,
+  ): Promise<AdapterResetSessionResult>;
 }
 
 // Re-exports so callers don't have to import from multiple subpaths.

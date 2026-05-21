@@ -7,6 +7,7 @@ import {
   BarChart3,
   Building2,
   Check,
+  Coins,
   Copy,
   ExternalLink,
   Globe,
@@ -28,6 +29,7 @@ import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useCompany } from "@/features/companies/api/use-company";
+import { TreasuryPane } from "./treasury-pane";
 import {
   CLUSTER_LABEL,
   explorerAddressUrl,
@@ -60,6 +62,7 @@ type SectionId =
   | "presence"
   | "crypto"
   | "chain"
+  | "treasury"
   | "overview";
 
 const SECTIONS: Array<{
@@ -70,6 +73,7 @@ const SECTIONS: Array<{
 }> = [
   { id: "identity", label: "Identity", icon: Building2, hint: "Name, tagline, niche" },
   { id: "chain", label: "On-chain", icon: Anchor, hint: "Registry, PDA, signatures" },
+  { id: "treasury", label: "Treasury", icon: Coins, hint: "Balance, budget, fees" },
   { id: "voice", label: "Voice", icon: Mic, hint: "Editorial coverage + tone" },
   { id: "mission", label: "Mission", icon: Target, hint: "Mission, vision, audience" },
   { id: "output", label: "Output", icon: Sparkles, hint: "Offering + services" },
@@ -251,7 +255,10 @@ export function CompanyWindow({
   const isReadOnly = isPaused;
   const isEditing = editingSection === active && !isReadOnly;
   const canEdit =
-    !isReadOnly && active !== "overview" && active !== "chain";
+    !isReadOnly &&
+    active !== "overview" &&
+    active !== "chain" &&
+    active !== "treasury";
   const paneEditProps = {
     canEdit,
     editing: isEditing,
@@ -351,7 +358,10 @@ export function CompanyWindow({
 
             {company && form && (
               <>
-                {isPaused && active !== "overview" && active !== "chain" && (
+                {isPaused &&
+                  active !== "overview" &&
+                  active !== "chain" &&
+                  active !== "treasury" && (
                   <Alert variant="warning" className="mb-4">
                     <p className="font-semibold text-amber-300">
                       Read-only — company is paused
@@ -680,6 +690,15 @@ export function CompanyWindow({
                 )}
 
                 {active === "chain" && <ChainPane company={company} />}
+
+                {active === "treasury" && (
+                  <Pane
+                    title="Treasury"
+                    desc="On-chain company funds, monthly disbursement budget, and Agent Operating Fee."
+                  >
+                    <TreasuryPane company={company} />
+                  </Pane>
+                )}
 
                 {active === "overview" && (
                   <Pane

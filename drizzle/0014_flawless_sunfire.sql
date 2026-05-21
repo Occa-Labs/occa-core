@@ -1,0 +1,2 @@
+ALTER TABLE "agent_runtime_profile" ADD COLUMN "enabled_tools" uuid[] DEFAULT ARRAY[]::uuid[] NOT NULL;--> statement-breakpoint
+ALTER TABLE "company_tools" ADD COLUMN "allowed_roles" text[] DEFAULT ARRAY[]::text[] NOT NULL;

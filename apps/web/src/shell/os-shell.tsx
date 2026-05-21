@@ -5,11 +5,15 @@ import type { UseMeResult } from "@/hooks/use-me";
 import {
   Brain,
   Building2,
+  CalendarClock,
   CheckSquare,
   CheckCircle2,
   FileText,
   Files,
+  Library,
+  MessagesSquare,
   Network,
+  Plug,
   Settings,
   Users,
   Workflow,
@@ -24,11 +28,15 @@ import { ApprovalsWindow } from "@/features/approvals/components/approvals-windo
 import { CompanyWindow } from "@/features/companies/components/company-window";
 import { OrgChartWindow } from "@/features/agents/components/org-chart-window";
 import { WorkflowsWindow } from "@/features/workflows/components/workflows-window";
+import { RoutinesWindow } from "@/features/routines/components/routines-window";
 import { SettingsWindow } from "@/components/settings-window";
 import { ChangelogsWindow } from "@/components/changelogs-window";
 import { DevWindow } from "@/features/dev-tools/components/dev-window";
 import { BrainWindow } from "@/features/company-brain/components/brain-window";
 import { DocumentsWindow } from "@/features/documents/components/documents-window";
+import { ChatsWindow } from "@/features/chats/components/chats-window";
+import { SkillLibrary } from "@/features/skills/components/skill-library";
+import { ToolsWindow } from "@/features/tools/components/tools-window";
 import { CeoChatBubble } from "./ceo-chat-bubble";
 
 interface OsShellProps {
@@ -107,12 +115,14 @@ export function OsShell({
     | "agents"
     | "org-chart"
     | "approvals"
+    | "chats"
     | "company"
     | "company-brain"
     | "documents"
     | "skills"
     | "routines"
     | "workflows"
+    | "tools"
     | "changelogs"
     | "settings"
     | "dev";
@@ -159,6 +169,11 @@ export function OsShell({
     name: a.name,
     role: a.role,
   }));
+
+  // Distinct roles currently deployed in this company. Threaded into the
+  // role pickers (skill import, tool install/edit) so operators can pick
+  // custom roles like `social_media_editor` without retyping the slug.
+  const companyRoles = Array.from(new Set(me.agents.map((a) => a.role)));
 
   const toggle = (id: WindowId) => {
     setActiveWindow((prev) => {
@@ -218,6 +233,12 @@ export function OsShell({
             onClick: () => toggle("approvals"),
           },
           {
+            icon: <MessagesSquare className="size-5" />,
+            label: "Chats",
+            active: activeWindow === "chats",
+            onClick: () => toggle("chats"),
+          },
+          {
             icon: <Brain className="size-5" />,
             label: "Brain",
             active: activeWindow === "company-brain",
@@ -229,10 +250,39 @@ export function OsShell({
             active: activeWindow === "documents",
             onClick: () => toggle("documents"),
           },
-          // Skills + Routines hidden from the dock for now to keep the
-          // rail short. Both are still "coming soon" feature-flagged
-          // and accessible via Library/Clock import sites if needed.
-          // Restore when fully shipped.
+          // Skills — feature-flagged (FEATURES.skills hides it in
+          // production until fully shipped). Routines stays out of the
+          // dock until shipped.
+          ...(FEATURES.skills
+            ? [
+                {
+                  icon: <Library className="size-5" />,
+                  label: "Skills",
+                  active: activeWindow === "skills",
+                  onClick: () => toggle("skills"),
+                },
+              ]
+            : []),
+          ...(FEATURES.routines
+            ? [
+                {
+                  icon: <CalendarClock className="size-5" />,
+                  label: "Routines",
+                  active: activeWindow === "routines",
+                  onClick: () => toggle("routines"),
+                },
+              ]
+            : []),
+          ...(FEATURES.tools
+            ? [
+                {
+                  icon: <Plug className="size-5" />,
+                  label: "Tools",
+                  active: activeWindow === "tools",
+                  onClick: () => toggle("tools"),
+                },
+              ]
+            : []),
           ...(IS_DEV_MODE
             ? [
                 {
@@ -285,6 +335,27 @@ export function OsShell({
       )}
       {activeWindow === "company-brain" && <BrainWindow onClose={close} />}
       {activeWindow === "documents" && <DocumentsWindow onClose={close} />}
+      {activeWindow === "skills" && FEATURES.skills && (
+        <SkillLibrary
+          onClose={close}
+          onReloadMe={me.reload}
+          extraRoles={companyRoles}
+        />
+      )}
+      {activeWindow === "routines" && FEATURES.routines && (
+        <RoutinesWindow agents={agentList} onClose={close} />
+      )}
+      {activeWindow === "tools" && FEATURES.tools && (
+        <ToolsWindow
+          companyId={me.company.id}
+          companyName={me.company.name}
+          onClose={close}
+          extraRoles={companyRoles}
+        />
+      )}
+      {activeWindow === "chats" && (
+        <ChatsWindow agents={me.agents} onClose={close} />
+      )}
       {activeWindow === "org-chart" && (
         <OrgChartWindow
           companyName={me.company.name}
@@ -303,7 +374,6 @@ export function OsShell({
       {activeWindow === "settings" && (
         <SettingsWindow
           onClose={close}
-          onReset={me.reload}
           onStartTour={onStartTour}
           tourActive={tourActive}
         />

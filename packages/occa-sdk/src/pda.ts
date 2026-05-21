@@ -3,7 +3,11 @@ import {
   AGENT_IDENTITY_SEED,
   COMPANY_SEED,
   DEPLOYMENT_SEED,
+  POLICY_SEED,
+  PROTOCOL_FEES_SEED,
   REGISTRY_PROGRAM_ID,
+  TREASURY_PROGRAM_ID,
+  TREASURY_SEED,
 } from "./constants";
 
 /**
@@ -78,6 +82,61 @@ export function deriveDeploymentPda(
 ): { pda: PublicKey; bump: number } {
   const [pda, bump] = PublicKey.findProgramAddressSync(
     [DEPLOYMENT_SEED, companyPda.toBuffer(), u32LeBytes(deploymentIndex)],
+    programId,
+  );
+  return { pda, bump };
+}
+
+/**
+ * TreasuryAccount PDA — owned by Treasury program.
+ *
+ *   seeds = ["treasury", company_pda]
+ *
+ * Initialized atomically with PolicyAccount via Registry's `create_company`
+ * CPI to `treasury::init_treasury` (design doc §6).
+ */
+export function deriveTreasuryPda(
+  companyPda: PublicKey,
+  programId: PublicKey = TREASURY_PROGRAM_ID,
+): { pda: PublicKey; bump: number } {
+  const [pda, bump] = PublicKey.findProgramAddressSync(
+    [TREASURY_SEED, companyPda.toBuffer()],
+    programId,
+  );
+  return { pda, bump };
+}
+
+/**
+ * PolicyAccount PDA — owned by Treasury program.
+ *
+ *   seeds = ["policy", company_pda]
+ *
+ * Initialized atomically with TreasuryAccount via the same `create_company`
+ * CPI flow.
+ */
+export function derivePolicyPda(
+  companyPda: PublicKey,
+  programId: PublicKey = TREASURY_PROGRAM_ID,
+): { pda: PublicKey; bump: number } {
+  const [pda, bump] = PublicKey.findProgramAddressSync(
+    [POLICY_SEED, companyPda.toBuffer()],
+    programId,
+  );
+  return { pda, bump };
+}
+
+/**
+ * ProtocolFeeAccount PDA — owned by Treasury program. Singleton: one
+ * per program deployment, collects the Agent Operating Fee from every
+ * intra-company agent disbursement.
+ *
+ *   seeds = ["protocol_fees"]
+ */
+export function deriveProtocolFeePda(
+  programId: PublicKey = TREASURY_PROGRAM_ID,
+): { pda: PublicKey; bump: number } {
+  const [pda, bump] = PublicKey.findProgramAddressSync(
+    [PROTOCOL_FEES_SEED],
     programId,
   );
   return { pda, bump };

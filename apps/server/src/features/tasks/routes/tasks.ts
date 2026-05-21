@@ -19,6 +19,7 @@ import { findCeoForCompany } from "../../agents/repositories/deployments";
 import { createTaskBody, updateTaskBody } from "../domain/schemas";
 import { isUserStatusTransitionAllowed } from "../domain/status-transitions";
 import { appendTaskEventBestEffort } from "../services/events";
+import { ensureInvoiceForCompletedTask } from "../../billing/services/invoice-on-task-complete";
 import { toTaskDTO, userCompanyId } from "./helpers";
 
 const log = childLogger("routes:tasks");
@@ -266,6 +267,17 @@ router.patch("/:id", requireAuth, async (req: Request, res: Response) => {
         reason: "user_edit",
       },
     });
+    // Phase 1b-ii: a manual move to `done` bills the company too, same as
+    // the autonomous dispatcher path. Idempotent — the unique index keeps
+    // it to one invoice per task even if the dispatcher also fired.
+    if (row.status === "done") {
+      void ensureInvoiceForCompletedTask({ taskId: row.id }).catch((err) => {
+        req.log.error(
+          { err, taskId: row.id },
+          "ensureInvoiceForCompletedTask failed (non-fatal)",
+        );
+      });
+    }
   }
 });
 

@@ -4,8 +4,10 @@
 
 import { Router } from "express";
 import ceoChatRouter from "./chat";
+import inboxRouter from "./inbox";
 
 const chatRouter: Router = Router();
 chatRouter.use("/", ceoChatRouter);
+chatRouter.use("/", inboxRouter);
 
 export default chatRouter;

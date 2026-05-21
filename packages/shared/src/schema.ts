@@ -11,6 +11,7 @@ import {
   integer,
   bigint,
   bigserial,
+  real,
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 
@@ -398,6 +399,13 @@ export const agentRuntimeProfile = pgTable(
     skillsInitializedAt: timestamp("skills_initialized_at", {
       withTimezone: true,
     }),
+    // Per-agent tool whitelist. UUIDs reference company_tools.id. Filter
+    // applied on /api/me/agent/tools so each agent only sees the tools
+    // an operator explicitly enabled for it. Empty array = no tools.
+    enabledTools: uuid("enabled_tools")
+      .array()
+      .notNull()
+      .default(sql`ARRAY[]::uuid[]`),
     // Background provisioning state for the kickoff async flow.
     // 'pending' → 'ready' | 'failed'.
     provisioningState: text("provisioning_state").notNull().default("ready"),
@@ -407,6 +415,12 @@ export const agentRuntimeProfile = pgTable(
     workstationId: text("workstation_id"),
     // Optional override for the 3D character model.
     modelOverride: text("model_override"),
+    // Off-chain billing config — flat amount invoiced to the company each
+    // time this agent completes a task, in lamports. NULL = rate not set;
+    // no invoice is auto-created until the operator sets one. Not on-chain:
+    // the treasury program carries no per-agent rate field, so this is
+    // operator-defined operational config that lives DB-side only.
+    taskRateLamports: bigint("task_rate_lamports", { mode: "number" }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -577,6 +591,62 @@ export const tasks = pgTable(
     index("idx_tasks_company_active")
       .on(t.companyId, t.status)
       .where(sql`archived_at IS NULL`),
+  ],
+);
+
+// ── Invoices — per-task billing record (Phase 1b) ─────────────────────
+// When an agent completes a task, an invoice is auto-created billing the
+// company `amount_lamports` (the agent's flat `task_rate_lamports`). The
+// invoice is an off-chain commerce record — settlement happens later via
+// the treasury program's `disburse_routine` (Phase 1c), which writes back
+// `tx_signature` once the on-chain disbursement confirms.
+//
+// Lifecycle: pending → approved → paid. `void` is the terminal escape
+// hatch (operator declines, or the source task was archived). Not on-chain
+// — chain only sees the eventual aggregate disbursement, not per-invoice
+// rows.
+export const invoices = pgTable(
+  "invoices",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    // The agent being paid.
+    deploymentId: uuid("deployment_id")
+      .notNull()
+      .references(() => deployments.id, { onDelete: "cascade" }),
+    // The completed task that triggered this invoice. `set null` so the
+    // invoice survives task deletion/archival — billing history is kept
+    // even when the originating task is gone.
+    taskId: uuid("task_id").references(() => tasks.id, {
+      onDelete: "set null",
+    }),
+    // Snapshot of the agent's `task_rate_lamports` at completion time.
+    // Stored on the invoice so later rate edits don't rewrite history.
+    amountLamports: bigint("amount_lamports", { mode: "number" }).notNull(),
+    // pending | approved | paid | void.
+    status: text("status").notNull().default("pending"),
+    // Solana tx signature of the disbursement that settled this invoice.
+    // NULL until Phase 1c pays it out.
+    txSignature: text("tx_signature"),
+    approvedAt: timestamp("approved_at", { withTimezone: true }),
+    paidAt: timestamp("paid_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("idx_invoices_company_status").on(t.companyId, t.status),
+    index("idx_invoices_deployment").on(t.deploymentId),
+    // One task completion produces at most one invoice — guards against a
+    // double-fire if the task-complete hook runs twice.
+    uniqueIndex("uniq_invoices_task")
+      .on(t.taskId)
+      .where(sql`${t.taskId} IS NOT NULL`),
   ],
 );
 
@@ -972,6 +1042,12 @@ export const deploymentApiKeys = pgTable(
     keyHash: text("key_hash").notNull().unique(),
     lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    // Optional absolute expiry. NULL = no expiry (long-lived operator
+    // keys). Per-trace keys minted by the dispatcher set this 30 min out
+    // so a leaked key from an OpenClaw conversation log can only be
+    // replayed within that window. `verifyDeploymentKey` enforces the
+    // bound on every call.
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -1282,5 +1358,199 @@ export const chatMessages = pgTable(
       t.threadId,
       t.createdAt,
     ),
+  ],
+);
+
+// ── Company webhooks — outbound delivery of completed work ───────────
+// A company registers a webhook to forward a completed task's
+// deliverable to an external surface (a research studio → its publishing
+// API, a trading desk → an execution service, a dev agency → a PR bot).
+// OCCA core stays generic: it only knows "task completed → POST a
+// standard payload to the registered URL". All destination-specific
+// shaping lives on the receiver's side, never in OCCA.
+//
+// Ephemeral tier — operational integration config, not on-chain.
+export const companyWebhooks = pgTable(
+  "company_webhooks",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    targetUrl: text("target_url").notNull(),
+    // Shared secret for HMAC-SHA256 request signing.
+    secret: text("secret").notNull(),
+    // Subscribed event. Only "task.completed" exists today.
+    event: text("event").notNull().default("task.completed"),
+    // Delivery filters. An empty array means "match anything"; a
+    // non-empty array must contain the task's value for the webhook to
+    // fire. All non-empty filters must pass (AND across filters).
+    filterRoles: text("filter_roles")
+      .array()
+      .notNull()
+      .default(sql`ARRAY[]::text[]`),
+    filterTags: text("filter_tags")
+      .array()
+      .notNull()
+      .default(sql`ARRAY[]::text[]`),
+    filterTaskTypes: text("filter_task_types")
+      .array()
+      .notNull()
+      .default(sql`ARRAY[]::text[]`),
+    enabled: boolean("enabled").notNull().default(true),
+    // Last-delivery diagnostics, best-effort.
+    lastDeliveredAt: timestamp("last_delivered_at", { withTimezone: true }),
+    lastStatus: text("last_status"),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("idx_company_webhooks_company_event").on(t.companyId, t.event),
+  ],
+);
+
+// ── Episodic memory — what the company has done, cycle by cycle ───────
+// A curated record of completed work, distinct from `documents` (the raw
+// deliverables). One row per published piece: category, title, a
+// one-line recap, structured detail. It is the input that stops Heads
+// repeating the same topic daily and the CEO daily review reads to
+// assess coverage health.
+//
+// Ephemeral tier — operational learning, not on-chain.
+export const episodicMemory = pgTable(
+  "episodic_memory",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    // Episode type. Only "story_published" today.
+    kind: text("kind").notNull().default("story_published"),
+    // When the work happened (the deliverable's completion time).
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+    // Coverage category, derived from the deliverable.
+    category: text("category").notNull(),
+    title: text("title").notNull(),
+    // One-line human-readable recap.
+    summary: text("summary").notNull(),
+    // Structured detail — taskId, agent, outcome, and so on.
+    payload: jsonb("payload")
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    // Recency-weighted importance; higher surfaces sooner. A decay
+    // function lands here later — for now a flat default.
+    salience: real("salience").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("idx_episodic_memory_company_occurred").on(
+      t.companyId,
+      t.occurredAt,
+    ),
+  ],
+);
+
+// ── Company tools — per-company installed tool instances ────────────
+// Tool = an external service (X, Notion, Shopify, custom MCP) installed
+// to a company. Credentials stored encrypted at rest. Agents call tools
+// via the generic invocation endpoint; they never see the credentials.
+// See tools-primitive-design.md (workspace root) for the full design.
+export const companyTools = pgTable(
+  "company_tools",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    // Handler type identifier — matches a registered handler in
+    // apps/server/src/features/tools/handlers/. Examples: "x", "notion",
+    // "shopify", "mcp". Free text since handlers are code-discovered;
+    // FE catalog endpoint enumerates the valid set.
+    type: text("type").notNull(),
+    // Operator-facing nickname ("Crypoch X account", "Internal Notion").
+    label: text("label").notNull(),
+    // AES-256-GCM encrypted JSON blob. Shape:
+    //   { alg, iv, ciphertext, tag, kid }
+    // Plaintext form is per-handler (defined by credentialsSchema).
+    // Never returned in API responses; decrypted on invocation only.
+    credentialsEncrypted: jsonb("credentials_encrypted").notNull(),
+    // Tool-type-specific non-secret config. Examples: MCP server URL,
+    // selected scopes, default workspace id. Not encrypted because
+    // it's not sensitive on its own.
+    metadata: jsonb("metadata").notNull().default(sql`'{}'::jsonb`),
+    // active | paused | failed. Paused tools reject invocations but
+    // keep credentials; failed tools surfaced to operator for retry.
+    status: text("status").notNull().default("active"),
+    // Role gate. Empty array = visible to all roles. Otherwise the agent's
+    // role must be in this list for the tool to surface in its discovery
+    // endpoint. Mirrors company_skills.allowed_roles semantics so operators
+    // get the same mental model for both.
+    allowedRoles: text("allowed_roles")
+      .array()
+      .notNull()
+      .default(sql`ARRAY[]::text[]`),
+    // Last error from gateway / handler invocation. Cleared on next success.
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("uniq_company_tool_type_label").on(
+      t.companyId,
+      t.type,
+      t.label,
+    ),
+    index("idx_company_tools_company").on(t.companyId),
+    index("idx_company_tools_status").on(t.status),
+  ],
+);
+
+// ── Tool call logs — append-only audit log of tool invocations ───────
+// Every invocation of a tool by an agent lands one row here. Drives the
+// "Recent activity" view in Settings → Tools per company, and supports
+// per-tool failure inspection. Result summary stays small (e.g. tweet_id,
+// not full response body) to keep the table cheap.
+export const toolCallLogs = pgTable(
+  "tool_call_logs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    toolId: uuid("tool_id")
+      .notNull()
+      .references(() => companyTools.id, { onDelete: "cascade" }),
+    deploymentId: uuid("deployment_id").references(() => deployments.id, {
+      onDelete: "set null",
+    }),
+    // Action name as declared by the handler (e.g. "tweet", "create_page").
+    action: text("action").notNull(),
+    // success | failed | rate_limited
+    status: text("status").notNull(),
+    // Small result payload — id refs, urls, counts. Capped server-side.
+    resultSummary: jsonb("result_summary"),
+    errorCode: text("error_code"),
+    errorMessage: text("error_message"),
+    latencyMs: integer("latency_ms"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("idx_tool_call_logs_company_created").on(t.companyId, t.createdAt),
+    index("idx_tool_call_logs_tool_created").on(t.toolId, t.createdAt),
+    index("idx_tool_call_logs_status").on(t.status),
   ],
 );

@@ -1,8 +1,8 @@
 // Single source of truth for the hierarchical delegation algorithm
 // (User ↔ CEO ↔ Head ↔ Specialist). Used by:
-//   • services/context/load-context.ts — sort subordinates by tier
+//   • services/memory/stores/org.ts — sort subordinates by tier
 //     preference before they reach the prompt
-//   • services/context/render-task.ts — render the "Available reports"
+//   • services/memory/render/task.ts — render the "Available reports"
 //     + REPORT instructions blocks shown to every task-running agent
 //   • features/tasks/services/dispatcher.ts — server-side bypass guard
 //     that rejects REPORT when delegation was due but skipped
@@ -36,7 +36,7 @@
 // up via cascade-on-done (parent task wakes when all children finish).
 
 import type { RoleTier } from "@occa/shared/role-catalog";
-import type { ContextTeammate } from "../context/spec";
+import type { ContextTeammate } from "../memory/spec";
 
 // Delegation preference ordering for an agent's subordinates list. Lower
 // rank = surfaced first to the LLM. The task-surface prompt teaches the
@@ -105,13 +105,50 @@ export function shouldBypassReport(args: {
 // When the subordinates list is empty, the wording flips to a clean
 // "you ARE the doer" path so the agent doesn't stall trying to
 // delegate into a void.
-export function renderReportsBlock(reports: ContextTeammate[]): string {
+export function renderReportsBlock(
+  reports: ContextTeammate[],
+  options: {
+    // Synthesis turn (at least one child has shipped). The MANDATORY
+    // verbiage is unsafe here — it triggers the 2026-05-14 re-delegate
+    // loop. But suppressing the list entirely blocks legitimate
+    // multi-step delegation (e.g. routine wrappers that hand off to a
+    // different teammate for the next step). Soft-wording mode keeps
+    // the subordinate list visible with a "may, not must" framing so
+    // the agent can chain to a DIFFERENT teammate when the mandate
+    // calls for it.
+    synthesisMode?: boolean;
+  } = {},
+): string {
   if (reports.length === 0) {
     return [
       `Available reports (DELEGATE): none.`,
       `You have no agents reporting to you. Execute the task yourself`,
       `end-to-end this turn — you ARE the doer.`,
     ].join("\n");
+  }
+  if (options.synthesisMode) {
+    const lines = [
+      `Available reports (DELEGATE — optional this turn):`,
+      ``,
+      `*** DELEGATION IS OPTIONAL THIS TURN. ***`,
+      `One or more of your subordinates already shipped — see the`,
+      `"Children that have shipped" block. Default expectation: synthesize`,
+      `their output and finalize the task in your reply.`,
+      ``,
+      `Only delegate again if your standing mandate explicitly requires a`,
+      `NEXT STEP that hands off to a DIFFERENT teammate (e.g. writer first,`,
+      `then social-media editor). In that case emit [[OCCA:DELEGATE]] with`,
+      `the next teammate's id from the list below.`,
+      ``,
+      `Hard rule: NEVER re-delegate the same work to a subordinate who`,
+      `just shipped — that creates an infinite loop. If their output is`,
+      `unusable, write feedback in your reply and end with [[OCCA:REVIEW]]`,
+      `to park the task for a human decision.`,
+    ];
+    for (const r of reports) {
+      lines.push(`  - ${r.name} (role: ${r.role}, id: ${r.id})`);
+    }
+    return lines.join("\n");
   }
   const groups: Record<string, ContextTeammate[]> = {
     head: [],

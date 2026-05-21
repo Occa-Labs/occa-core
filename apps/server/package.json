@@ -8,7 +8,8 @@
     "gc-orphans": "tsx scripts/gc-orphan-openclaw-agents.ts",
     "cancel-legacy-hire-approvals": "tsx --env-file=../../.env scripts/cancel-legacy-hire-approvals.ts",
     "smoke:workflows": "tsx --env-file=../../.env scripts/smoke-workflows.ts",
-    "smoke:workflow-engine": "tsx --env-file=../../.env scripts/smoke-workflow-engine.ts"
+    "smoke:workflow-engine": "tsx --env-file=../../.env scripts/smoke-workflow-engine.ts",
+    "smoke:verification": "tsx scripts/smoke-verification.ts"
   },
   "dependencies": {
     "@noble/ed25519": "^3.1.0",
@@ -30,6 +31,7 @@
     "pino": "^10.3.1",
     "pino-http": "^11.0.0",
     "uuid": "^13.0.0",
+    "yaml": "^2.8.4",
     "zod": "^3.23.8"
   },
   "devDependencies": {

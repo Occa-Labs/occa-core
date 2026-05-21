@@ -120,11 +120,14 @@ function extractSessionId(
   );
 }
 
-// Renders the assigned-skill roster as YAML-ish preamble text. We include key +
-// slug + description but not markdown body — the body lives at
-// `GET {apiUrl}/api/me/agent/skills` and agents fetch it only when they decide
-// a skill applies. Keeps the wake message small even for agents with many
-// skills assigned.
+// Renders the assigned-skill roster inline with full markdown content. We
+// used to ship just the key + description and tell the agent to GET
+// /api/me/agent/skills on demand, but agents frequently skipped that step
+// and hallucinated "no integration available" responses instead. Inlining
+// the SKILL.md body up-front removes the round-trip and the laziness
+// failure mode — the protocol text is right there in the wake message.
+// Trade-off: bigger wake payload (~1-3 KB per skill). Acceptable since
+// agents rarely have more than a handful of skills assigned.
 // Decide whether a raw gateway frame is worth persisting as a run event. The
 // gateway emits three kinds of spam we drop:
 //   • `tick` — 2s keep-alive, no semantic payload
@@ -151,14 +154,19 @@ function isNoisyFrame(
 function renderSkillsBlock(skills: AdapterExecutionContext["skills"]): string {
   if (!skills || skills.length === 0) return "";
   const lines = [
-    "OCCA skills assigned to you:",
-    "  Fetch instructions: GET {apiUrl}/api/me/agent/skills (Bearer {apiKey})",
-    "  Fetch a single file: GET {apiUrl}/api/me/agent/skills/{urlEncodedKey}/files/{path}",
-    "  Use a skill when the task matches its description; ignore otherwise.",
+    "OCCA skills assigned to you (full content below — read before acting):",
+    "",
+    "Auxiliary lookups (only if you need extra files for a multi-file skill):",
+    "  GET {apiUrl}/api/me/agent/skills/{urlEncodedKey}/files/{path}",
   ];
   for (const s of skills) {
     const desc = s.description ? ` — ${s.description}` : "";
-    lines.push(`  - ${s.key} (slug: ${s.slug}, name: ${s.name})${desc}`);
+    lines.push("");
+    lines.push(`=== SKILL: ${s.key} (slug: ${s.slug}, name: ${s.name})${desc} ===`);
+    lines.push("");
+    lines.push(s.markdown.trim());
+    lines.push("");
+    lines.push(`=== END SKILL: ${s.key} ===`);
   }
   return lines.join("\n");
 }
@@ -205,6 +213,15 @@ export async function executeTrace(
   // phase="end"; errors surface as phase in {error,failed,cancelled} or as
   // stream="error" frames.
   const assistantChunks: string[] = [];
+  // Coalesced final-answer frames. The gateway emits ONE assistant frame
+  // carrying `data.text` (the complete answer) at run-end, just before
+  // `lifecycle phase=end`. Unlike the per-token `delta` stream — which
+  // shares the WS connection and can interleave foreign content under a
+  // matching runId — this frame is atomic, so it is the authoritative
+  // source for the deliverable. Observed 2026-05-18: a foreign DELEGATE
+  // block spliced token-by-token into the middle of a claims block,
+  // corrupting the JSON; the coalesced frame would not have spliced.
+  const coalescedTexts: string[] = [];
   const trackedTraceIds = new Set<string>([payload.traceId]);
   let lifecycleError: string | null = null;
 
@@ -234,8 +251,11 @@ export async function executeTrace(
             if (stream === "assistant") {
               const delta = asString(data.delta);
               const text = asString(data.text);
+              // `delta` = one streamed token (interleave-prone). `text` =
+              // the coalesced final answer (atomic). Keep them apart so
+              // the deliverable can prefer the coalesced frame.
               if (delta) assistantChunks.push(delta);
-              else if (text) assistantChunks.push(text);
+              else if (text) coalescedTexts.push(text);
             } else if (stream === "error") {
               lifecycleError =
                 asString(data.error) ??
@@ -306,6 +326,14 @@ export async function executeTrace(
       agentName: (sessionParams?.agentName as string) ?? "agent",
       taskTitle: sessionParams?.taskTitle as string | undefined,
       taskDescription: sessionParams?.taskDescription as string | undefined,
+      routineTitle: sessionParams?.routineTitle as string | undefined,
+      routineMandate: sessionParams?.routineMandate as string | undefined,
+      subordinates: sessionParams?.subordinates as
+        | { id: string; name: string; role: string }[]
+        | undefined,
+      recentCoverage: sessionParams?.recentCoverage as
+        | { date: string; category: string; title: string }[]
+        | undefined,
     });
 
     const message = `${envPreamble}\n\n${wakeText}`;
@@ -389,12 +417,22 @@ export async function executeTrace(
       }
     }
 
-    // Success path. Final text prefers accumulated stream chunks; only falls
-    // back to payload.text/result.text when the gateway didn't stream.
+    // Success path. Deliverable source priority:
+    //   1. coalesced run-end `text` frame — atomic, splice-proof;
+    //   2. joined `delta` chunks — fallback when no coalesced frame
+    //      arrived (interleave risk, but better than nothing);
+    //   3. the gateway accept/wait payload text.
+    // The last coalesced frame wins: the gateway emits it once per run
+    // right before `lifecycle phase=end`, so it carries the final answer.
+    const summaryFromCoalesced =
+      coalescedTexts.length > 0
+        ? coalescedTexts[coalescedTexts.length - 1].trim()
+        : "";
     const summaryFromChunks = assistantChunks.join("").trim();
     const summaryFromPayload =
       extractResultText(finalPayload) ?? extractResultText(accepted);
-    const summary = summaryFromChunks || summaryFromPayload || "";
+    const summary =
+      summaryFromCoalesced || summaryFromChunks || summaryFromPayload || "";
 
     // Deltas were dropped as noise; surface the coalesced assistant text as a
     // single event so the run detail view still shows what the agent said.

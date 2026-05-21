@@ -104,11 +104,16 @@ export interface FetchedSkill {
 
 export async function fetchGithubSkill(
   source: string,
+  options: { forceDefaultBranch?: boolean } = {},
 ): Promise<FetchedSkill> {
   const parsed = parseSkillSource(source);
 
-  // 1. Resolve ref → commit SHA. Default branch if no ref.
-  const sha = await resolveRefToSha(parsed.owner, parsed.repo, parsed.ref);
+  // 1. Resolve ref → commit SHA. Default branch if no ref. When
+  // forceDefaultBranch is set, ignore the ref baked into `source` (which
+  // is typically the previously-pinned commit SHA on a refresh round-trip)
+  // and resolve the repo's current default-branch HEAD instead.
+  const refForResolve = options.forceDefaultBranch ? undefined : parsed.ref;
+  const sha = await resolveRefToSha(parsed.owner, parsed.repo, refForResolve);
 
   // 2. Fetch recursive tree at sha.
   const tree = await fetchTree(parsed.owner, parsed.repo, sha);

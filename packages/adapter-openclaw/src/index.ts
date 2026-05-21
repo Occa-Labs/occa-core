@@ -14,9 +14,12 @@ import type {
   AdapterSeedResult,
   AdapterSendPromptInput,
   AdapterSendPromptResult,
+  AdapterResetSessionInput,
+  AdapterResetSessionResult,
 } from "@occa/runtime-core";
 import { probeConnection } from "./probe";
 import { executeTrace } from "./execute";
+import { deleteAgentSession } from "./delete-session";
 import {
   generateEphemeralKeypair,
   deserializeKeypair,
@@ -299,6 +302,32 @@ export const openclawAdapter: AgentAdapter = {
       },
       { waitTimeoutMs: input.waitTimeoutMs },
     );
+  },
+
+  async resetSession(
+    input: AdapterResetSessionInput,
+  ): Promise<AdapterResetSessionResult> {
+    const cfg = input.adapterConfig;
+    if (
+      typeof cfg.gatewayUrl !== "string" ||
+      typeof cfg.apiKey !== "string" ||
+      !cfg.deviceKeypair
+    ) {
+      return {
+        ok: false,
+        error: "config_invalid",
+        reason: "gatewayUrl, apiKey, deviceKeypair required",
+      };
+    }
+    const device = deserializeKeypair(cfg.deviceKeypair as SerializedKeypair);
+    return deleteAgentSession({
+      gatewayUrl: cfg.gatewayUrl,
+      apiKey: cfg.apiKey,
+      device,
+      deviceToken:
+        typeof cfg.deviceToken === "string" ? cfg.deviceToken : undefined,
+      sessionKey: input.sessionKey,
+    });
   },
 
   executeTrace,

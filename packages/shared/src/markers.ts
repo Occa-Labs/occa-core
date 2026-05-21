@@ -20,6 +20,10 @@
 //   [[OCCA:BLOCK]]    {...} [[/OCCA:BLOCK]]    — park task on other blockers
 //   [[OCCA:REPORT]]   {...} [[/OCCA:REPORT]]   — CEO ships synthesized result back
 //                                                to the user via chat (root tasks only)
+//   [[OCCA:REVIEW_VERDICT]] {...} [[/OCCA:REVIEW_VERDICT]] — a Head's editorial
+//                                                verdict (approve/revise) on a
+//                                                delegated deliverable that
+//                                                landed in `review`
 
 export const OCCA_MARKER_REGEX = /\[\[OCCA:[A-Z_]+\]\]/g;
 

@@ -15,6 +15,7 @@ import { getBoss, stopBoss } from "./infra/queue/boss";
 import { registerTaskWorker } from "./infra/queue/task-worker";
 import { registerWorkflowWorker } from "./infra/queue/workflow-worker";
 import { registerAgentDmWorker } from "./infra/queue/agent-dm-worker";
+import { registerReviewWorker } from "./infra/queue/review-worker";
 import {
   startWorkflowTriggerPoller,
   stopWorkflowTriggerPoller,
@@ -35,12 +36,17 @@ import agentsRouter from "./features/agents/routes";
 import companiesRouter from "./features/companies/routes";
 import chainRouter from "./features/chain/routes";
 import tracesRouter from "./routes/traces";
-import routinesRouter from "./routes/routines";
+import routinesRouter from "./features/routines/routes";
 import approvalsRouter from "./routes/approvals";
 import workflowsRouter from "./features/workflows/routes";
 import chatRouter from "./features/chat/routes";
 import companyBrainRouter from "./features/company-brain/routes";
 import documentsRouter from "./features/documents/routes";
+import {
+  catalogRouter as toolCatalogRouter,
+  companyToolsRouter,
+  invokeRouter as toolInvokeRouter,
+} from "./features/tools/routes";
 import devRouter from "./routes/dev";
 
 const port = parseInt(process.env.PORT || "3002", 10);
@@ -67,6 +73,9 @@ app.use("/api/workflows", workflowsRouter);
 app.use("/api/chat", chatRouter);
 app.use("/api/company-brain", companyBrainRouter);
 app.use("/api/documents", documentsRouter);
+app.use("/api/tool-catalog", toolCatalogRouter);
+app.use("/api/companies/:companyId/tools", companyToolsRouter);
+app.use("/api/tools", toolInvokeRouter);
 app.use("/api/dev", devRouter);
 
 app.get("/health", (_req, res) => {
@@ -112,6 +121,7 @@ async function main() {
   await registerTaskWorker();
   await registerWorkflowWorker();
   await registerAgentDmWorker();
+  await registerReviewWorker();
   // Polls task_events for done transitions and enqueues workflow.evaluate
   // jobs. Single hook point covers both server- and worker-finalised tasks.
   startWorkflowTriggerPoller();

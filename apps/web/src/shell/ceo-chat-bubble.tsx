@@ -9,6 +9,12 @@ import { useClearCeoChat } from "@/features/chat/api/use-ceo-chat";
 import { taskKeys } from "@/features/tasks/api/keys";
 import { FloatingPanel } from "@/components/ui/floating-panel";
 
+// Top menu bar sits at top-2 (8px) with ~40px chip row → clear ~56px.
+const TOP_OFFSET = 56;
+const PANEL_WIDTH = 420;
+// Reserve room below the panel for the bubble (bottom-6 + size-14 + breathing).
+const BOTTOM_RESERVED = 100;
+
 interface AgentRef {
   id: string;
   name: string;
@@ -25,7 +31,10 @@ interface AgentRef {
 // import features/tasks; the shell composes them.
 export function CeoChatBubble({ agents }: { agents: AgentRef[] }) {
   const [open, setOpen] = useState(false);
-  const [bubbleRect, setBubbleRect] = useState<DOMRect | null>(null);
+  const [panelPos, setPanelPos] = useState<{ x: number; y: number } | undefined>(
+    undefined,
+  );
+  const [panelHeight, setPanelHeight] = useState<number | undefined>(undefined);
   const bubbleRef = useRef<HTMLButtonElement>(null);
   const queryClient = useQueryClient();
   const clearChat = useClearCeoChat();
@@ -33,7 +42,18 @@ export function CeoChatBubble({ agents }: { agents: AgentRef[] }) {
   const ceo = agents.find((a) => getTier(a.role) === "ceo") ?? null;
 
   const handleOpen = () => {
-    setBubbleRect(bubbleRef.current?.getBoundingClientRect() ?? null);
+    // Right-align the panel with the bubble (bubble.right === panel.right)
+    // and clear the top menu bar. FloatingPanel's `triggerRect` path
+    // left-aligns to the trigger and clamps to viewport edge, so we
+    // bypass it via `defaultPosition`.
+    const rect = bubbleRef.current?.getBoundingClientRect();
+    const x = rect
+      ? Math.max(12, Math.round(rect.right - PANEL_WIDTH))
+      : Math.round((window.innerWidth - PANEL_WIDTH) / 2);
+    setPanelPos({ x, y: TOP_OFFSET });
+    setPanelHeight(
+      Math.max(360, window.innerHeight - TOP_OFFSET - BOTTOM_RESERVED),
+    );
     setOpen(true);
   };
 
@@ -70,8 +90,9 @@ export function CeoChatBubble({ agents }: { agents: AgentRef[] }) {
         <FloatingPanel
           title={ceo ? `Talk to ${ceo.name}` : "Talk to CEO"}
           subtitle={ceo ? "CEO · routes your request" : undefined}
-          width={420}
-          triggerRect={bubbleRect}
+          width={PANEL_WIDTH}
+          height={panelHeight}
+          defaultPosition={panelPos}
           onClose={() => setOpen(false)}
           backdrop="transparent"
           headerRight={headerRight}

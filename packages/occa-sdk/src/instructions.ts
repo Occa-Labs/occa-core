@@ -3,11 +3,18 @@ import {
   SystemProgram,
   TransactionInstruction,
 } from "@solana/web3.js";
-import { REGISTRY_PROGRAM_ID } from "./constants";
+import {
+  REGISTRY_PROGRAM_ID,
+  SOL_PSEUDO_MINT,
+  TREASURY_PROGRAM_ID,
+} from "./constants";
 import {
   deriveAgentIdentityPda,
   deriveCompanyPda,
   deriveDeploymentPda,
+  derivePolicyPda,
+  deriveProtocolFeePda,
+  deriveTreasuryPda,
   u32LeBytes,
 } from "./pda";
 
@@ -30,7 +37,7 @@ export const INSTRUCTION_DISCRIMINATOR = {
   updateDeploymentMetadata: Buffer.from([100, 135, 41, 32, 16, 41, 29, 76]),
   updateDeploymentStatus: Buffer.from([225, 195, 150, 254, 178, 203, 53, 147]),
   retireDeployment: Buffer.from([45, 188, 162, 197, 136, 180, 202, 153]),
-  setOperatingWallet: Buffer.from([20, 151, 94, 114, 217, 30, 52, 132]),
+  setReceivingAddress: Buffer.from([70, 63, 44, 87, 16, 6, 156, 200]),
 } as const;
 
 // ── Borsh primitives ────────────────────────────────────────────────────────
@@ -92,6 +99,8 @@ export interface CreateCompanyParams {
 export function buildCreateCompanyInstruction(params: CreateCompanyParams): {
   instruction: TransactionInstruction;
   companyPda: PublicKey;
+  treasuryPda: PublicKey;
+  policyPda: PublicKey;
   bump: number;
 } {
   const programId = params.programId ?? REGISTRY_PROGRAM_ID;
@@ -100,6 +109,12 @@ export function buildCreateCompanyInstruction(params: CreateCompanyParams): {
     params.nonce,
     programId,
   );
+  // Treasury + Policy PDAs initialized atomically inside the chain ix
+  // via CPI to `treasury::init_treasury` (registry/lib.rs CreateCompany
+  // accounts struct). Both must be passed in the tx even though they're
+  // not yet allocated — chain CPI does the `init` against them.
+  const { pda: treasuryPda } = deriveTreasuryPda(companyPda);
+  const { pda: policyPda } = derivePolicyPda(companyPda);
 
   const data = Buffer.concat([
     INSTRUCTION_DISCRIMINATOR.createCompany,
@@ -112,16 +127,21 @@ export function buildCreateCompanyInstruction(params: CreateCompanyParams): {
 
   const instruction = new TransactionInstruction({
     programId,
+    // Order MUST match registry/lib.rs `CreateCompany` accounts struct:
+    // company, owner, payer, treasury, policy, treasury_program, system_program.
     keys: [
       { pubkey: companyPda, isSigner: false, isWritable: true },
       { pubkey: params.owner, isSigner: true, isWritable: false },
       { pubkey: params.payer, isSigner: true, isWritable: true },
+      { pubkey: treasuryPda, isSigner: false, isWritable: true },
+      { pubkey: policyPda, isSigner: false, isWritable: true },
+      { pubkey: TREASURY_PROGRAM_ID, isSigner: false, isWritable: false },
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
     ],
     data,
   });
 
-  return { instruction, companyPda, bump };
+  return { instruction, companyPda, treasuryPda, policyPda, bump };
 }
 
 export interface UpdateCompanyMetadataParams {
@@ -406,28 +426,221 @@ export function buildRetireDeploymentInstruction(
   return { instruction };
 }
 
-export interface SetOperatingWalletParams {
+export interface SetReceivingAddressParams {
   deploymentPda: PublicKey;
   /** User wallet — must equal `deployment.owner`. */
   owner: PublicKey;
-  /** New operating wallet. Pass `PublicKey.default` to clear. */
-  newOperatingWallet: PublicKey;
+  /** New receiving address (passive destination wallet for funds disbursed
+   *  *to* this agent). Pass `PublicKey.default` to clear. NEVER a signer
+   *  on chain — receiving address never authorizes any on-chain action. */
+  newReceivingAddress: PublicKey;
   programId?: PublicKey;
 }
 
-export function buildSetOperatingWalletInstruction(
-  params: SetOperatingWalletParams,
+export function buildSetReceivingAddressInstruction(
+  params: SetReceivingAddressParams,
 ): { instruction: TransactionInstruction } {
   const programId = params.programId ?? REGISTRY_PROGRAM_ID;
   const data = Buffer.concat([
-    INSTRUCTION_DISCRIMINATOR.setOperatingWallet,
-    encodePubkey(params.newOperatingWallet),
+    INSTRUCTION_DISCRIMINATOR.setReceivingAddress,
+    encodePubkey(params.newReceivingAddress),
   ]);
   const instruction = new TransactionInstruction({
     programId,
     keys: [
       { pubkey: params.deploymentPda, isSigner: false, isWritable: true },
       { pubkey: params.owner, isSigner: true, isWritable: false },
+    ],
+    data,
+  });
+  return { instruction };
+}
+
+// ── Treasury program ────────────────────────────────────────────────────────
+//
+// The treasury program is a SEPARATE program from registry — these
+// instructions target `TREASURY_PROGRAM_ID`. Discriminators copied from
+// `occa-programs/target/idl/treasury.json`.
+
+export const TREASURY_INSTRUCTION_DISCRIMINATOR = {
+  setPolicy: Buffer.from([40, 133, 12, 157, 235, 202, 2, 132]),
+  disburseDiscretionary: Buffer.from([102, 176, 14, 127, 210, 4, 96, 175]),
+} as const;
+
+// ── Borsh helpers for treasury args ─────────────────────────────────────────
+
+function encodeU16(n: number): Buffer {
+  if (!Number.isInteger(n) || n < 0 || n > 0xffff) {
+    throw new RangeError(`u16 out of range: ${n}`);
+  }
+  const buf = Buffer.alloc(2);
+  buf.writeUInt16LE(n, 0);
+  return buf;
+}
+
+function encodeU64(n: bigint): Buffer {
+  if (n < 0n || n > 0xffff_ffff_ffff_ffffn) {
+    throw new RangeError(`u64 out of range: ${n}`);
+  }
+  const buf = Buffer.alloc(8);
+  buf.writeBigUInt64LE(n, 0);
+  return buf;
+}
+
+/** A per-asset budget / balance entry. `SOL_PSEUDO_MINT` for SOL. */
+export interface AssetBudget {
+  mint: PublicKey;
+  amount: bigint;
+}
+
+function encodeAssetBudget(b: AssetBudget): Buffer {
+  return Buffer.concat([encodePubkey(b.mint), encodeU64(b.amount)]);
+}
+
+/** Borsh `Vec<T>` = 4-byte LE length + each item. */
+function encodeVec<T>(items: T[], encodeItem: (item: T) => Buffer): Buffer {
+  return Buffer.concat([u32LeBytes(items.length), ...items.map(encodeItem)]);
+}
+
+/** Borsh `Option<T>` = 1-byte tag (0=None, 1=Some) + optional payload. */
+function encodeOption<T>(
+  value: T | null | undefined,
+  encodeSome: (v: T) => Buffer,
+): Buffer {
+  if (value === null || value === undefined) return Buffer.from([0]);
+  return Buffer.concat([Buffer.from([1]), encodeSome(value)]);
+}
+
+// ── set_policy ──────────────────────────────────────────────────────────────
+
+export interface SetPolicyParams {
+  companyPda: PublicKey;
+  treasuryPda: PublicKey;
+  policyPda: PublicKey;
+  /** Must equal `company.owner` — the sole Privileged-class signer. */
+  controllingAuthority: PublicKey;
+  /** Per-month routine-class cap. Omit to leave unchanged. */
+  routineBudgetPerMonth?: AssetBudget[];
+  /** Per-month discretionary-class cap. Omit to leave unchanged. */
+  discretionaryBudgetPerMonth?: AssetBudget[];
+  /** Agent Operating Fee in basis points. Omit to leave unchanged. */
+  agentOperatingFeeBps?: number;
+  /** Accepted-asset allow-list. Omit to leave unchanged. */
+  acceptedAssets?: PublicKey[];
+  programId?: PublicKey;
+}
+
+/**
+ * Build a `set_policy` instruction. Privileged-class — signed by the
+ * controlling authority (= company owner).
+ *
+ * `SetPolicyParams` on-chain has 7 `Option` fields; each omitted field
+ * encodes as `None` ("leave unchanged"). This builder exposes the four
+ * fields OCCA uses today; `privileged_threshold_lamports`,
+ * `privileged_threshold_per_token`, and `secondary_signer` are always
+ * encoded `None`.
+ */
+export function buildSetPolicyInstruction(params: SetPolicyParams): {
+  instruction: TransactionInstruction;
+} {
+  const programId = params.programId ?? TREASURY_PROGRAM_ID;
+
+  // Field order MUST match the on-chain `SetPolicyParams` struct.
+  const data = Buffer.concat([
+    TREASURY_INSTRUCTION_DISCRIMINATOR.setPolicy,
+    // 1. routine_budget_per_month: Option<Vec<AssetBudget>>
+    encodeOption(params.routineBudgetPerMonth, (v) =>
+      encodeVec(v, encodeAssetBudget),
+    ),
+    // 2. discretionary_budget_per_month: Option<Vec<AssetBudget>>
+    encodeOption(params.discretionaryBudgetPerMonth, (v) =>
+      encodeVec(v, encodeAssetBudget),
+    ),
+    // 3. privileged_threshold_lamports: Option<u64> — always None.
+    Buffer.from([0]),
+    // 4. privileged_threshold_per_token: Option<Vec<AssetBudget>> — None.
+    Buffer.from([0]),
+    // 5. secondary_signer: Option<Option<Pubkey>> — None.
+    Buffer.from([0]),
+    // 6. agent_operating_fee_bps: Option<u16>
+    encodeOption(params.agentOperatingFeeBps, encodeU16),
+    // 7. accepted_assets: Option<Vec<Pubkey>>
+    encodeOption(params.acceptedAssets, (v) => encodeVec(v, encodePubkey)),
+  ]);
+
+  const instruction = new TransactionInstruction({
+    programId,
+    // Order: company, controlling_authority, treasury, policy.
+    keys: [
+      { pubkey: params.companyPda, isSigner: false, isWritable: false },
+      {
+        pubkey: params.controllingAuthority,
+        isSigner: true,
+        isWritable: false,
+      },
+      { pubkey: params.treasuryPda, isSigner: false, isWritable: true },
+      { pubkey: params.policyPda, isSigner: false, isWritable: true },
+    ],
+    data,
+  });
+  return { instruction };
+}
+
+// ── disburse_discretionary ──────────────────────────────────────────────────
+
+export interface DisburseDiscretionaryParams {
+  companyPda: PublicKey;
+  treasuryPda: PublicKey;
+  policyPda: PublicKey;
+  /** Must equal `company.owner`. */
+  controllingAuthority: PublicKey;
+  /** Deployment PDA of the agent being paid — chain matches `destination`
+   *  against its `receiving_address`. */
+  deploymentPda: PublicKey;
+  /** The agent's receiving address — destination of the funds. */
+  destination: PublicKey;
+  /** Amount in lamports (SOL only — Phase 1). */
+  amountLamports: bigint;
+  /** Defaults to `SOL_PSEUDO_MINT`. */
+  mint?: PublicKey;
+  programId?: PublicKey;
+}
+
+/**
+ * Build a `disburse_discretionary` instruction — Discretionary-class
+ * payout to an agent's receiving address, signed by the controlling
+ * authority. The 3% Agent Operating Fee is deducted on-chain and routed
+ * to the ProtocolFeeAccount.
+ */
+export function buildDisburseDiscretionaryInstruction(
+  params: DisburseDiscretionaryParams,
+): { instruction: TransactionInstruction } {
+  const programId = params.programId ?? TREASURY_PROGRAM_ID;
+  const mint = params.mint ?? SOL_PSEUDO_MINT;
+  const { pda: protocolFeePda } = deriveProtocolFeePda();
+
+  const data = Buffer.concat([
+    TREASURY_INSTRUCTION_DISCRIMINATOR.disburseDiscretionary,
+    encodePubkey(mint),
+    encodeU64(params.amountLamports),
+  ]);
+
+  const instruction = new TransactionInstruction({
+    programId,
+    // Order: company, controlling_authority, treasury, policy,
+    // deployment, destination, protocol_fee_account.
+    keys: [
+      { pubkey: params.companyPda, isSigner: false, isWritable: false },
+      {
+        pubkey: params.controllingAuthority,
+        isSigner: true,
+        isWritable: false,
+      },
+      { pubkey: params.treasuryPda, isSigner: false, isWritable: true },
+      { pubkey: params.policyPda, isSigner: false, isWritable: true },
+      { pubkey: params.deploymentPda, isSigner: false, isWritable: false },
+      { pubkey: params.destination, isSigner: false, isWritable: true },
+      { pubkey: protocolFeePda, isSigner: false, isWritable: true },
     ],
     data,
   });

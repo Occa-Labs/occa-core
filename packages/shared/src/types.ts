@@ -79,6 +79,47 @@ export interface ListChatMessagesResponse {
   messages: ChatMessageDTO[];
 }
 
+// ── Chat Inbox (Chats window) ─────────────────────────────────────────
+// Observer-style view across both `user_ceo` and `agent_dm` threads,
+// grouped by (self, partner) pair so multiple threads with the same
+// counterpart collapse into one inbox row. See `chat-inbox.ts` repo for
+// the aggregation contract.
+export type InboxPartyKind = "user" | "deployment";
+export type InboxThreadKind = "user_ceo" | "agent_dm";
+
+export interface InboxPartySummaryDTO {
+  kind: InboxPartyKind;
+  /** userId when kind="user", deploymentId when kind="deployment". */
+  id: string;
+  lastMessageAt: string;
+  lastMessagePreview: string;
+  lastMessageRole: ChatMessageRole;
+  /** Number of distinct threads collapsed into this partner row. */
+  threadCount: number;
+}
+
+export interface ListInboxPartnersResponse {
+  partners: InboxPartySummaryDTO[];
+}
+
+export interface InboxMessageDTO {
+  id: string;
+  threadId: string;
+  threadKind: InboxThreadKind;
+  role: ChatMessageRole;
+  content: string;
+  createdAt: string;
+  /** Resolved sender — derived from thread metadata + message role so the
+   *  UI can align bubbles without knowing thread semantics. */
+  senderKind: InboxPartyKind;
+  senderId: string;
+  createdTaskId: string | null;
+}
+
+export interface ListInboxMessagesResponse {
+  messages: InboxMessageDTO[];
+}
+
 // ── Heartbeat policy — stored inside agents.runtimeConfig.heartbeat ──
 // Read with `runtimeConfig.heartbeat ?? defaults`.
 export interface HeartbeatConfig {
@@ -252,6 +293,10 @@ export interface AgentDTO {
   adapterType: string;
   externalAgentId: string | null;
   desiredSkills: string[];
+  // Per-agent tool whitelist (company_tools.id values). Drives the
+  // /api/me/agent/tools discovery filter alongside the tool's own
+  // allowed_roles gate. Empty array = no tools available.
+  enabledTools: string[];
   // Reports-to / manager link. NULL = top-level (typically the CEO,
   // reporting to the human owner). Drives the delegate-approval scope
   // rule: an agent may only delegate to targets inside its own subtree.
@@ -273,6 +318,12 @@ export interface AgentDTO {
   // Optional override for the 3D character model. NULL = auto-pick via
   // claim-and-skip. Non-NULL = pinned GLB url.
   modelOverride: string | null;
+
+  // Flat amount (lamports) invoiced to the company each time this agent
+  // completes a task. NULL = rate not set; no invoice is auto-created
+  // until the operator configures one. Off-chain operational config —
+  // not mirrored on-chain.
+  taskRateLamports: number | null;
 
   // Lifecycle status mirrored from `deployments.status`. "active" =
   // dispatchable + visible in CEO's active team; "paused" = excluded
@@ -318,10 +369,19 @@ export interface UpdateAgentRequest {
   // Pass `null` to clear (revert to auto-pick). Pass a GLB url string to
   // pin the agent to that character model.
   modelOverride?: string | null;
+  // Flat per-task invoice amount in lamports. Pass `null` to clear (no
+  // auto-invoicing). Off-chain operational config — DB write only.
+  taskRateLamports?: number | null;
 }
 
 export interface SyncAgentSkillsRequest {
   desiredSkills: string[];
+}
+
+// Replace the agent's `enabled_tools` array. UUIDs must reference tools
+// owned by the same company; backend rejects with TOOL_NOT_FOUND otherwise.
+export interface SyncAgentToolsRequest {
+  enabledTools: string[];
 }
 
 export interface AgentResponse {
@@ -392,6 +452,10 @@ export interface CreateAgentRequest {
   // to catalog-driven auto-resolve (canonical head per role-catalog →
   // CEO → null). Pass an active deployment id to override that default.
   parentAgentId?: string | null;
+  // Optional flat per-task invoice amount in lamports, set at deploy time.
+  // Omitted / null = no rate yet (operator sets it later from the Wallet
+  // tab). Off-chain operational config.
+  taskRateLamports?: number | null;
 }
 
 export interface CreateAgentResponse {
@@ -437,6 +501,22 @@ export interface WorkspaceFileDTO {
 
 export interface ListAgentFilesResponse {
   files: WorkspaceFileDTO[];
+}
+
+// ── PATCH /api/agents/:id/files/:filename ──
+export interface UpdateAgentFileRequest {
+  content: string;
+}
+
+export interface UpdateAgentFileResponse {
+  file: WorkspaceFileDTO;
+  // Present when the DB write succeeded but the gateway push did not.
+  // The local edit is persisted with syncedAt=null; client can retry or
+  // surface the warning. Absent on full success.
+  syncWarning?: {
+    code: string;
+    detail?: string;
+  };
 }
 
 // ── Agent skill syncs ─────────────────────────────────────────────────
@@ -1064,4 +1144,150 @@ export interface WorkflowDTO {
 
 export interface ListWorkflowsResponse {
   workflows: WorkflowDTO[];
+}
+
+// ── Tools primitive (catalog + per-company instance management) ────────
+// See tools-primitive-design.md at workspace root for the full design.
+
+// A field declaration derived from a handler's Zod credential schema.
+// The UI uses this to render the install form (one input per field) so
+// the OCCA team doesn't write a form per integration.
+export interface ToolCredentialField {
+  name: string;
+  type: "string" | "number" | "boolean";
+  required: boolean;
+  // True when this field stores a secret (password/token). UI masks it.
+  secret: boolean;
+  description?: string;
+}
+
+export interface ToolActionSpec {
+  name: string;
+  description: string;
+}
+
+export interface ToolCatalogEntry {
+  type: string;
+  displayName: string;
+  description: string;
+  credentialFields: ToolCredentialField[];
+  metadataFields: ToolCredentialField[];
+  actions: ToolActionSpec[];
+  hasTestConnection: boolean;
+  hasDynamicActions: boolean;
+}
+
+export interface ToolCatalogResponse {
+  tools: ToolCatalogEntry[];
+}
+
+// A serialized company-installed tool. NEVER includes the plaintext
+// credentials — those decrypt only at invocation time, in memory.
+export interface CompanyToolDTO {
+  id: string;
+  companyId: string;
+  type: string;
+  displayName: string; // resolved from the catalog at serialize time
+  label: string;
+  metadata: Record<string, unknown>;
+  status: "active" | "paused" | "failed";
+  // Role gate. Empty array = visible to all roles. Same semantics as
+  // company_skills.allowed_roles.
+  allowedRoles: AgentRole[];
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ListCompanyToolsResponse {
+  tools: CompanyToolDTO[];
+}
+
+export interface InstallCompanyToolRequest {
+  type: string;
+  label: string;
+  // Plaintext credentials matching the handler's credentialsSchema.
+  // Validated server-side and encrypted before persistence; never logged.
+  credentials: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+  // Role gate. Omit or empty array = visible to all roles. Otherwise
+  // only listed roles can have the tool surfaced via discovery.
+  allowedRoles?: AgentRole[];
+  // When true, run the handler's testConnection (if available) right
+  // after install and surface the result in the response.
+  testAfterInstall?: boolean;
+}
+
+export interface UpdateCompanyToolRequest {
+  label?: string;
+  credentials?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+  status?: "active" | "paused";
+  allowedRoles?: AgentRole[];
+}
+
+export interface CompanyToolResponse {
+  tool: CompanyToolDTO;
+  testConnection?: ToolTestConnectionResult;
+}
+
+export type ToolTestConnectionResult =
+  | { ok: true; detail?: string }
+  | { ok: false; errorCode: string; errorMessage: string };
+
+export interface TestCompanyToolResponse {
+  result: ToolTestConnectionResult;
+}
+
+export interface ToolCallLogDTO {
+  id: string;
+  toolId: string;
+  deploymentId: string | null;
+  action: string;
+  status: "success" | "failed" | "rate_limited";
+  resultSummary: Record<string, unknown> | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  latencyMs: number | null;
+  createdAt: string;
+}
+
+export interface ListToolCallLogsResponse {
+  logs: ToolCallLogDTO[];
+}
+
+// Agent-facing tool discovery (GET /api/me/agent/tools).
+// Same shape as the operator-side CompanyToolDTO but trimmed to what
+// the agent needs to decide which tool to call. Action list pulled in
+// from the catalog at serialize time.
+export interface AgentToolDTO {
+  id: string;
+  type: string;
+  label: string;
+  displayName: string;
+  status: "active" | "paused" | "failed";
+  actions: ToolActionSpec[];
+}
+
+export interface ListAgentToolsResponse {
+  tools: AgentToolDTO[];
+}
+
+// Agent-facing invocation. Body is passed straight through after the
+// generic-shape check; the handler's inputSchema does the strong
+// validation server-side.
+export interface InvokeToolRequest {
+  input: Record<string, unknown>;
+}
+
+export interface InvokeToolResponse {
+  ok: true;
+  output: unknown;
+}
+
+export interface InvokeToolErrorResponse {
+  ok: false;
+  errorCode: string;
+  errorMessage: string;
+  rateLimited?: boolean;
 }

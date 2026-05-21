@@ -17,15 +17,17 @@ import { useAgentTraces } from "@/hooks/use-traces";
 import { useAgentActivity } from "@/features/agents/api/use-agent-activity";
 import { formatRoleLabel } from "@/lib/format-role";
 import { ApiError, agentsApi } from "@/lib/api";
-import { IS_PRODUCTION_MODE } from "@/lib/env-flags";
+import { IS_PRODUCTION_MODE, UNLOCK_PRODUCTION } from "@/lib/env-flags";
 import type { AgentDTO } from "@occa/shared/types";
 import { CEO_ROLE } from "@occa/shared/role-catalog";
 import { initial, ROLE_ORDER, StatusDot, StatusPill } from "./_shared";
 import { OverviewTab } from "./overview-tab";
 import { SkillsTab } from "./skills-tab";
+import { ToolsTab } from "./tools-tab";
 import { ActivityTab } from "./activity-tab";
 import { FilesTab } from "./files-tab";
 import { TracesTab } from "./traces-tab";
+import { WalletTab } from "./wallet-tab";
 import { ChatModal } from "./chat-modal";
 import { DeployAgentModal } from "./deploy-agent-modal";
 import { buildTree, type TreeNode } from "./hierarchy-tab";
@@ -45,23 +47,29 @@ interface AgentsWindowProps {
 type TabId =
   | "overview"
   | "skills"
+  | "tools"
   | "activity"
   | "traces"
   | "files"
+  | "wallet"
   | "settings";
 
 // Activity + Traces surfaces are WIP — kept visible (so the IA stays
-// honest) but disabled in production preview mode. Same for the Chat
-// button below. Re-enable everything by clearing
-// NEXT_PUBLIC_PREVIEW_PRODUCTION in apps/web/.env.local.
+// honest) but disabled on a stock production build. The unlocked
+// operator instance (NEXT_PUBLIC_UNLOCK_PRODUCTION=1) gets them. Same
+// for the Chat button below.
 //
 // Hierarchy view lives in the sidebar (toggle), not as a per-agent tab —
 // it's an org-wide navigation surface, not a per-agent detail.
+const FEATURE_LOCKED = IS_PRODUCTION_MODE && !UNLOCK_PRODUCTION;
+
 const TABS: { id: TabId; label: string; disabled?: boolean }[] = [
   { id: "overview", label: "Overview" },
+  { id: "wallet", label: "Wallet" },
   { id: "skills", label: "Skills" },
-  { id: "activity", label: "Activity", disabled: IS_PRODUCTION_MODE },
-  { id: "traces", label: "Traces", disabled: IS_PRODUCTION_MODE },
+  { id: "tools", label: "Tools" },
+  { id: "activity", label: "Activity", disabled: FEATURE_LOCKED },
+  { id: "traces", label: "Traces", disabled: FEATURE_LOCKED },
   { id: "files", label: "Files" },
   { id: "settings", label: "Settings" },
 ];
@@ -582,9 +590,9 @@ function AgentDetail({
             <button
               type="button"
               onClick={() => setChatOpen(true)}
-              disabled={IS_PRODUCTION_MODE}
+              disabled={FEATURE_LOCKED}
               title={
-                IS_PRODUCTION_MODE
+                FEATURE_LOCKED
                   ? "Chat is not available in production preview"
                   : undefined
               }
@@ -654,11 +662,19 @@ function AgentDetail({
           <div className="h-full overflow-y-auto">
             <SkillsTab agent={agent} onReloadMe={onReloadMe} />
           </div>
+        ) : tab === "tools" ? (
+          <div className="h-full overflow-y-auto">
+            <ToolsTab agent={agent} onReloadMe={onReloadMe} />
+          </div>
         ) : tab === "activity" ? (
           <ActivityTab agentId={agent.id} activityState={activityState} />
         ) : tab === "files" ? (
           <div className="h-full overflow-y-auto">
             <FilesTab agentId={agent.id} />
+          </div>
+        ) : tab === "wallet" ? (
+          <div className="h-full min-h-0">
+            <WalletTab agent={agent} onReloadMe={onReloadMe} />
           </div>
         ) : tab === "settings" ? (
           <div className="h-full overflow-y-auto">

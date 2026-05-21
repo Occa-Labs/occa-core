@@ -1,5 +1,5 @@
 import { randomBytes, createHash } from "node:crypto";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import {
   agentIdentities,
   agentRuntimeProfile,
@@ -8,6 +8,7 @@ import {
   deploymentRuntimeState,
   deploymentTaskSessions,
   deployments,
+  episodicMemory,
   tasks,
   traceEvents,
   traces,
@@ -23,7 +24,12 @@ import type { TraceStatus, TraceUsage } from "@occa/shared/types";
 import { db } from "./db";
 import { getAdapter } from "./adapter-registry";
 import { decideRetryOnFailure, decideTraceContinuation } from "./continuation";
-import { syncTaskOnTraceStart, syncTaskOnTraceSucceeded } from "./task-sync";
+import {
+  syncTaskOnTraceFailed,
+  syncTaskOnTraceStart,
+  syncTaskOnTraceSucceeded,
+} from "./task-sync";
+import { executeRoutineDelegations } from "./delegation";
 
 const TICK_INTERVAL_MS = 2_000;
 const DEFAULT_CONCURRENCY = 4;
@@ -36,6 +42,7 @@ interface ClaimedTrace {
   retryOfTraceId: string | null;
   invocationSource: string;
   triggerDetail: string | null;
+  wakePayload: Record<string, unknown> | null;
   continuationAttempt: number;
   failureRetryAttempt: number;
 }
@@ -53,12 +60,13 @@ async function claimTraces(limit: number): Promise<ClaimedTrace[]> {
       retry_of_trace_id: string | null;
       invocation_source: string;
       trigger_detail: string | null;
+      wake_payload: Record<string, unknown> | null;
       continuation_attempt: number;
       failure_retry_attempt: number;
     }>(sql`
       SELECT id, company_id, deployment_id, task_id, retry_of_trace_id,
-             invocation_source, trigger_detail, continuation_attempt,
-             failure_retry_attempt
+             invocation_source, trigger_detail, wake_payload,
+             continuation_attempt, failure_retry_attempt
       FROM traces
       WHERE status = 'queued'
         AND (scheduled_at IS NULL OR scheduled_at <= now())
@@ -87,6 +95,7 @@ async function claimTraces(limit: number): Promise<ClaimedTrace[]> {
         retryOfTraceId: r.retry_of_trace_id,
         invocationSource: r.invocation_source,
         triggerDetail: r.trigger_detail,
+        wakePayload: r.wake_payload,
         continuationAttempt: r.continuation_attempt,
         failureRetryAttempt: r.failure_retry_attempt ?? 0,
       }),
@@ -121,6 +130,7 @@ interface LoadedAgent {
   companyId: string;
   name: string;
   role: string;
+  deploymentIndex: number;
   adapterType: string;
   adapterConfig: unknown;
   externalAgentId: string | null;
@@ -133,6 +143,7 @@ async function loadAgent(deploymentId: string): Promise<LoadedAgent | null> {
       id: deployments.id,
       companyId: deployments.companyId,
       role: deployments.role,
+      deploymentIndex: deployments.deploymentIndex,
       name: agentIdentities.name,
       adapterType: agentRuntimeProfile.adapterType,
       adapterConfig: agentRuntimeProfile.adapterConfig,
@@ -151,6 +162,65 @@ async function loadAgent(deploymentId: string): Promise<LoadedAgent | null> {
     .where(eq(deployments.id, deploymentId))
     .limit(1);
   return row ?? null;
+}
+
+// Direct reports of a deployment — the routine-wake delegation roster.
+// `parent_deployment_index` points at the parent's `deployment_index`.
+const COVERAGE_LOOKBACK_DAYS = 14;
+const COVERAGE_LIMIT = 12;
+
+// Recent episodes of the company's own coverage, newest first. Surfaced
+// in a routine wake so an orchestrator can vary the next slate rather
+// than repeat a topic.
+async function loadRecentCoverage(
+  companyId: string,
+): Promise<{ date: string; category: string; title: string }[]> {
+  const since = new Date(
+    Date.now() - COVERAGE_LOOKBACK_DAYS * 24 * 60 * 60 * 1000,
+  );
+  const rows = await db
+    .select({
+      occurredAt: episodicMemory.occurredAt,
+      category: episodicMemory.category,
+      title: episodicMemory.title,
+    })
+    .from(episodicMemory)
+    .where(
+      and(
+        eq(episodicMemory.companyId, companyId),
+        gte(episodicMemory.occurredAt, since),
+      ),
+    )
+    .orderBy(desc(episodicMemory.occurredAt))
+    .limit(COVERAGE_LIMIT);
+  return rows.map((r) => ({
+    date: r.occurredAt.toISOString().slice(0, 10),
+    category: r.category,
+    title: r.title,
+  }));
+}
+
+async function loadSubordinates(
+  companyId: string,
+  parentDeploymentIndex: number,
+): Promise<{ id: string; name: string; role: string }[]> {
+  return db
+    .select({
+      id: deployments.id,
+      name: agentIdentities.name,
+      role: deployments.role,
+    })
+    .from(deployments)
+    .innerJoin(
+      agentIdentities,
+      eq(deployments.agentIdentityId, agentIdentities.id),
+    )
+    .where(
+      and(
+        eq(deployments.companyId, companyId),
+        eq(deployments.parentDeploymentIndex, parentDeploymentIndex),
+      ),
+    );
 }
 
 async function loadAssignedSkills(
@@ -443,17 +513,42 @@ async function executeClaim(trace: ClaimedTrace): Promise<void> {
   const payload = buildWakePayload(trace, taskId);
   let livenessHint: LivenessState | null = null;
 
+  // Routine wakes carry the standing mandate on the trace's wakePayload;
+  // surface it to the adapter so it reaches the agent's wake text.
+  const wp = trace.wakePayload ?? {};
+  const routineTitle =
+    typeof wp.routineTitle === "string" ? wp.routineTitle : undefined;
+  const routineMandate =
+    typeof wp.routineMandate === "string" ? wp.routineMandate : undefined;
+  // A routine-woken orchestrator gets its team roster inline so it has
+  // valid `targetAgentId` values for `[[OCCA:DELEGATE]]`.
+  const subordinates = routineTitle
+    ? await loadSubordinates(trace.companyId, agent.deploymentIndex)
+    : [];
+  // Recent coverage — lets a routine-woken orchestrator vary the slate.
+  const recentCoverage = routineTitle
+    ? await loadRecentCoverage(trace.companyId)
+    : [];
+
   const baseSessionParams = existingSession?.sessionParamsJson
     ? ({
         ...(existingSession.sessionParamsJson as Record<string, unknown>),
         agentName: agent.name,
         agentRole: agent.role,
         taskTitle: task?.title,
+        routineTitle,
+        routineMandate,
+        subordinates,
+        recentCoverage,
       } as Record<string, unknown>)
     : ({
         agentName: agent.name,
         agentRole: agent.role,
         taskTitle: task?.title,
+        routineTitle,
+        routineMandate,
+        subordinates,
+        recentCoverage,
         sessionKey: taskKey,
       } as Record<string, unknown>);
 
@@ -576,6 +671,27 @@ async function executeClaim(trace: ClaimedTrace): Promise<void> {
     });
   }
 
+  // Routine-wake delegation: a routine carries no task, so the server's
+  // task-bound DELEGATE handler never runs. Execute the orchestrator's
+  // [[OCCA:DELEGATE]] blocks here so the work lands as real OCCA tasks.
+  if (status === "succeeded" && routineTitle) {
+    const reply =
+      typeof resultJson?.text === "string" ? resultJson.text : "";
+    if (reply.trim()) {
+      await executeRoutineDelegations(reply, {
+        companyId: trace.companyId,
+        agentId: trace.agentId,
+        parentTaskId: trace.taskId ?? null,
+        subordinates,
+      }).catch((err) => {
+        console.error(
+          "[worker:dispatcher] routine delegation failed:",
+          err instanceof Error ? err.message : err,
+        );
+      });
+    }
+  }
+
   // Continuation: only on successful traces with a liveness hint that suggests
   // the agent didn't make progress.
   if (taskId && status === "succeeded" && liveness && liveness !== "normal") {
@@ -598,21 +714,49 @@ async function executeClaim(trace: ClaimedTrace): Promise<void> {
   // Retry: failed traces with a transient error code get re-queued with
   // backoff, up to MAX_RETRY_ATTEMPTS. Permanent errors surface to
   // notifications.
+  let retryEnqueued = false;
   if (status === "failed") {
     try {
-      await decideRetryOnFailure({
+      const decision = await decideRetryOnFailure({
         traceId: trace.id,
         taskId,
         agentId: trace.agentId,
         errorCode: error?.code ?? null,
         failureRetryAttempt: inheritedRetryAttempt,
       });
+      retryEnqueued = decision.enqueued;
     } catch (err) {
       console.error(
         "[worker:dispatcher] retry decision error:",
         err instanceof Error ? err.message : err,
       );
     }
+  }
+
+  // Terminal-failure task sync: when a trace ends in a non-success state
+  // and no retry was queued, archive the linked task with a failure block.
+  // Without this, the task stays at in_progress forever and the kanban
+  // accumulates dead cards (routine wrappers piling up after Phase-A
+  // timeouts were the trigger to add this path).
+  if (
+    taskId &&
+    (status === "failed" || status === "timed_out" || status === "cancelled") &&
+    !retryEnqueued
+  ) {
+    await syncTaskOnTraceFailed({
+      taskId,
+      traceId: trace.id,
+      agentId: trace.agentId,
+      outcome: status,
+      errorCode: error?.code ?? null,
+      errorMessage: error?.message ?? null,
+      finishedAt: new Date(),
+    }).catch((err) => {
+      console.error(
+        "[worker:dispatcher] task-sync on-failed failed:",
+        err instanceof Error ? err.message : err,
+      );
+    });
   }
 }
 

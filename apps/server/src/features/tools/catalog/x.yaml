@@ -1,0 +1,45 @@
+# X (Twitter)
+#
+# Currently backed by the in-process `x` handler (OAuth 1.0a signer for
+# api.twitter.com/2/tweets). When an `mcp-occa-x` standalone server
+# lands, flip `implementation` to `{ kind: mcp, transport: http, url: ... }`
+# without touching any other code path.
+
+type: x
+displayName: "X (Twitter)"
+description: "Post tweets from a configured X account. Uses OAuth 1.0a User Context, so posts are made as the X user who authorized the access token."
+
+implementation:
+  kind: embedded
+  handler: x
+
+credentialFields:
+  - name: apiKey
+    type: string
+    required: true
+    secret: false
+    description: "Consumer key (a.k.a. API Key) from the X developer app."
+  - name: apiSecret
+    type: string
+    required: true
+    secret: true
+    description: "Consumer secret. Shown once at app creation."
+  - name: accessToken
+    type: string
+    required: true
+    secret: false
+    description: "OAuth 1.0a Access Token for the bot's X account."
+  - name: accessTokenSecret
+    type: string
+    required: true
+    secret: true
+    description: "OAuth 1.0a Access Token Secret. Shown once at generation."
+
+metadataFields: []
+
+actions:
+  - name: tweet
+    description: "Post a single tweet (up to 280 characters)."
+
+hasDynamicActions: false
+hasTestConnection: true

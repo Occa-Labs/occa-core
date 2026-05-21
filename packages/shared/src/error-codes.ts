@@ -34,6 +34,7 @@ export const ERROR_CODES = {
   COMPANY_REQUIRED: "company_required",
   COMPANY_NOT_FOUND: "company_not_found",
   COMPANY_PAUSED: "company_paused",
+  COMPANY_ALREADY_EXISTS: "company_already_exists",
   NO_ROLES_SELECTED: "no_roles_selected",
   TOO_MANY_ROLES: "too_many_roles",
 
@@ -101,6 +102,16 @@ export const ERROR_CODES = {
   WORKSPACE_SEED_FAILED: "workspace_seed_failed",
   WORKSPACE_FILES_RPC_UNAVAILABLE: "workspace_files_rpc_unavailable",
 
+  // Tools primitive
+  TOOL_NOT_FOUND: "tool_not_found",
+  TOOL_TYPE_UNKNOWN: "tool_type_unknown",
+  TOOL_ACTION_NOT_FOUND: "tool_action_not_found",
+  TOOL_PAUSED: "tool_paused",
+  TOOL_DUPLICATE_LABEL: "tool_duplicate_label",
+  TOOL_INVOCATION_FAILED: "tool_invocation_failed",
+  UNKNOWN_TOOL_IDS: "unknown_tool_ids",
+  INVALID_CREDENTIALS: "invalid_credentials",
+
   // Adapter / OpenClaw gateway
   GATEWAY_UNREACHABLE: "gateway_unreachable",
   GATEWAY_UNAUTHORIZED: "gateway_unauthorized",
@@ -117,10 +128,6 @@ export const ERROR_CODES = {
   // Company Brain
   BRAIN_PATH_CONFLICT: "brain_path_conflict",
 
-  // SSH / dev
-  SSH_CONFIG_MISSING: "ssh_config_missing",
-  SSH_FAILED: "ssh_failed",
-
   // On-chain Registry
   ALREADY_REGISTERED: "already_registered",
   CHAIN_TX_FAILED: "chain_tx_failed",
@@ -129,6 +136,10 @@ export const ERROR_CODES = {
    *  still placeholders. Triggered by the kickoff guard so a user can't
    *  start hiring before onboarding's anchor flow has completed. */
   CHAIN_NOT_ANCHORED: "chain_not_anchored",
+  /** A disbursement run was requested with no payable pending invoices. */
+  NOTHING_TO_DISBURSE: "nothing_to_disburse",
+  /** Too many agents in one disbursement batch to fit a single Solana tx. */
+  DISBURSEMENT_BATCH_TOO_LARGE: "disbursement_batch_too_large",
 } as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];

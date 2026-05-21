@@ -100,6 +100,21 @@ export async function listDeploymentsAwaitingSkillInit(): Promise<
   return rows;
 }
 
+// ── Tools ────────────────────────────────────────────────────────────
+
+export async function setEnabledTools(args: {
+  deploymentId: string;
+  enabledTools: string[];
+}): Promise<void> {
+  await db
+    .update(agentRuntimeProfile)
+    .set({
+      enabledTools: args.enabledTools,
+      updatedAt: new Date(),
+    })
+    .where(eq(agentRuntimeProfile.deploymentId, args.deploymentId));
+}
+
 // ── Provisioning state + adapter wiring ──────────────────────────────
 
 // Persist OpenClaw provisioning result onto the runtime profile. Merges

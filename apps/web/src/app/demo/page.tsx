@@ -4,7 +4,7 @@ import dynamic from "next/dynamic";
 import { useCallback, useState } from "react";
 import { Spinner } from "@/components/ui/spinner";
 import { surface } from "@/components/ui/tokens";
-import { DEMO_AGENTS } from "@/features/demo/data";
+import { DEMO_AGENTS } from "@/archive/demo/data";
 import { INTRO_DIALOG } from "@/features/theater/constants";
 import { LandingFab } from "@/features/auth/components/landing-fab";
 

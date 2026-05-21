@@ -81,7 +81,10 @@ export async function registerTaskWorker(): Promise<void> {
   log.info({ queue: TASK_DISPATCH_QUEUE }, "task worker listening");
 }
 
-export async function enqueueTaskDispatch(taskId: string): Promise<void> {
+export async function enqueueTaskDispatch(
+  taskId: string,
+  opts?: { dedupe?: boolean },
+): Promise<void> {
   const boss = await getBoss();
   await boss.send(
     TASK_DISPATCH_QUEUE,
@@ -89,7 +92,16 @@ export async function enqueueTaskDispatch(taskId: string): Promise<void> {
     {
       // Dedup key — pg-boss won't queue a second job with the same key while
       // one is already active/queued. Belt-and-suspenders against double-click.
-      singletonKey: taskId,
+      //
+      // A re-dispatch (`dedupe: false` — a verification or review bounce)
+      // is enqueued while a `task.dispatch` job for the same task may
+      // still be active, so it cannot reuse the `taskId` key. It must NOT
+      // fall back to a null key either: on the `exclusive` queue a null
+      // singletonKey is one slot shared across ALL tasks, so two
+      // concurrent bounces of different tasks would collide and one would
+      // be silently dropped. A unique per-send key avoids both.
+      singletonKey:
+        opts?.dedupe === false ? `${taskId}:${Date.now()}` : taskId,
       retryLimit: 2,
       retryDelay: 30,
       retryBackoff: true,

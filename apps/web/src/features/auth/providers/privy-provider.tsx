@@ -18,12 +18,18 @@ const APP_ID = process.env.NEXT_PUBLIC_PRIVY_APP_ID ?? "";
 // still go through the server's operator wallet.
 const solanaRpcsPlugin = defaultSolanaRpcsPlugin();
 
-// shouldAutoConnect: false — Privy defaults to true, which iterates every
-// detected Solana adapter on page load and tries to silently re-attach.
-// "Legacy" adapters (MetaMask Snap, etc.) ignore the silent contract and
-// pop their unlock prompt anyway. Disabling auto-connect means a wallet
-// only opens when the user explicitly clicks Sign in.
-const solanaConnectors = toSolanaWalletConnectors({ shouldAutoConnect: false });
+// shouldAutoConnect: true — modern wallets (Phantom, Solflare) honor the
+// silent auto-connect contract: on an already-approved site they re-attach
+// on page load WITHOUT a popup, so the connection persists across reloads.
+// Without this, an external wallet drops on every re-evaluation and the
+// user must reconnect each time they hit a sign flow (set receiving
+// address, anchor, etc.) — the friction this re-enable fixes.
+//
+// Trade-off: "legacy" adapters (MetaMask Snap, etc.) ignore the silent
+// contract and may pop their unlock prompt on load. Acceptable — the OCCA
+// flow targets Phantom/Solflare, and the reconnect friction was the worse
+// of the two annoyances.
+const solanaConnectors = toSolanaWalletConnectors({ shouldAutoConnect: true });
 
 export function AppPrivyProvider({ children }: { children: ReactNode }) {
   if (!APP_ID) {
@@ -39,7 +45,13 @@ export function AppPrivyProvider({ children }: { children: ReactNode }) {
     <PrivyProvider
       appId={APP_ID}
       config={{
-        loginMethods: ["email", "wallet"],
+        // Wallet-only. The post-login $OCCA token gate (see
+        // shell/token-gate.tsx) checks the connected wallet's balance —
+        // email login would mint a fresh empty embedded wallet that can
+        // never clear the gate, so it's disabled. Users bring an
+        // external wallet (Phantom / Solflare) that actually holds
+        // $OCCA.
+        loginMethods: ["wallet"],
         appearance: {
           theme: "dark",
           accentColor: "#5fdcff",

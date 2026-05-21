@@ -5,7 +5,7 @@
 //   • AgentIdentity    (stable agent identity, non-transferable)
 //   • Deployment       (binds identity ↔ company)
 // 10 instructions covering create / update / status / retire / set
-// operating wallet. All state-changing ix are signed by the user
+// receiving address. All state-changing ix are signed by the user
 // wallet (`owner`); the operator wallet sponsors fees only.
 //
 // Future: Treasury, Trace Anchor, Marketplace, Reputation programs.

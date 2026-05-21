@@ -7,10 +7,15 @@ import {
   buildCreateCompanyInstruction,
   buildCreateDeploymentInstruction,
   buildRegisterAgentIdentityInstruction,
-  buildSetOperatingWalletInstruction,
+  buildSetReceivingAddressInstruction,
+  buildSetPolicyInstruction,
+  buildDisburseDiscretionaryInstruction,
   deriveAgentIdentityPda,
   deriveCompanyPda,
   deriveDeploymentPda,
+  deriveTreasuryPda,
+  derivePolicyPda,
+  SOL_PSEUDO_MINT,
 } from "occa-sdk";
 import { Keypair } from "@solana/web3.js";
 import {
@@ -38,6 +43,9 @@ import {
   reserveAgentIndex,
 } from "../repositories/chain-registry";
 import { findCompaniesForWallet } from "../services/chain-lookup";
+import { fetchTreasuryState } from "../services/treasury-lookup";
+import { buildDisbursementPlan } from "../../billing/services/disbursement";
+import { markInvoicesPaid } from "../../billing/repositories/invoices";
 
 const log = childLogger("routes:chain");
 
@@ -118,6 +126,30 @@ const prepareSetOperatingWalletBody = z
   })
   .strict();
 
+const prepareSetPolicyBody = z
+  .object({
+    // SOL discretionary budget per calendar month, in lamports.
+    discretionaryBudgetLamports: z.number().int().min(0),
+  })
+  .strict();
+
+const confirmSetPolicyBody = z
+  .object({
+    signedTransaction: z.string().min(1),
+    blockhash: z.string().min(32).max(64),
+    lastValidBlockHeight: z.number().int().nonnegative(),
+  })
+  .strict();
+
+const confirmDisbursementBody = z
+  .object({
+    signedTransaction: z.string().min(1),
+    blockhash: z.string().min(32).max(64),
+    lastValidBlockHeight: z.number().int().nonnegative(),
+    invoiceIds: z.array(z.string().uuid()).min(1),
+  })
+  .strict();
+
 const confirmSetOperatingWalletBody = z
   .object({
     signedTransaction: z.string().min(1),
@@ -128,6 +160,12 @@ const confirmSetOperatingWalletBody = z
   .strict();
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
+
+// One `disburse_discretionary` ix per payable agent. A Solana tx caps at
+// ~1232 bytes; each ix is ~280 bytes, so ~6 agents is the safe ceiling
+// for a single-tx batch. Beyond that the FE would need to split — out of
+// scope for Phase 1c-ii.
+const MAX_DISBURSEMENT_AGENTS = 6;
 
 function operatorOrFail(
   res: Response,
@@ -1353,10 +1391,10 @@ router.post(
     if (!operator) return;
 
     const userWalletPk = new PublicKey(req.user!.walletAddress);
-    const { instruction } = buildSetOperatingWalletInstruction({
+    const { instruction } = buildSetReceivingAddressInstruction({
       deploymentPda: new PublicKey(agent.deploymentPda),
       owner: userWalletPk,
-      newOperatingWallet,
+      newReceivingAddress: newOperatingWallet,
     });
 
     let prepared: Awaited<ReturnType<typeof prepareOwnerSignedTx>>;
@@ -1463,6 +1501,403 @@ router.post(
       operatingWallet: newOperatingWallet.toBase58(),
       signature,
     });
+  },
+);
+
+// ── Treasury ────────────────────────────────────────────────────────────────
+
+/**
+ * GET /api/chain/companies/:companyId/treasury
+ *
+ * Read the company's on-chain treasury state — TreasuryAccount balance +
+ * PolicyAccount budgets/fee. Pure chain read; no tx.
+ */
+router.get(
+  "/companies/:companyId/treasury",
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const userId = req.user!.userId;
+    const companyId = req.params.companyId;
+
+    const company = await findOwnedCompanyById({ userId, companyId });
+    if (!company) {
+      res
+        .status(StatusCodes.NOT_FOUND)
+        .json({ error: ERROR_CODES.COMPANY_NOT_FOUND });
+      return;
+    }
+    if (!company.companyPda) {
+      // Company not anchored on chain yet — no treasury exists.
+      res
+        .status(StatusCodes.PRECONDITION_FAILED)
+        .json({ error: ERROR_CODES.CHAIN_NOT_ANCHORED });
+      return;
+    }
+
+    let state: Awaited<ReturnType<typeof fetchTreasuryState>>;
+    try {
+      state = await fetchTreasuryState(new PublicKey(company.companyPda));
+    } catch (err) {
+      log.error({ err, companyId }, "treasury state read failed");
+      res
+        .status(StatusCodes.BAD_GATEWAY)
+        .json({ error: ERROR_CODES.UPSTREAM_FAILED });
+      return;
+    }
+
+    res.status(StatusCodes.OK).json({
+      treasuryPda: state.treasuryPda,
+      policyPda: state.policyPda,
+      balanceLamports: state.balanceLamports,
+      initialized: state.initialized,
+      // bigint → string — JSON can't carry bigint, FE parses back.
+      discretionaryBudgetLamports: state.discretionaryBudgetLamports.toString(),
+      discretionarySpentLamports: state.discretionarySpentLamports.toString(),
+      agentOperatingFeeBps: state.agentOperatingFeeBps,
+    });
+  },
+);
+
+/**
+ * POST /api/chain/companies/:companyId/treasury/policy/prepare
+ *
+ * Build a `set_policy` ix that writes the SOL discretionary budget. The
+ * company owner (controlling authority) signs in the browser.
+ */
+router.post(
+  "/companies/:companyId/treasury/policy/prepare",
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const userId = req.user!.userId;
+    const companyId = req.params.companyId;
+
+    const parsed = prepareSetPolicyBody.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res
+        .status(StatusCodes.BAD_REQUEST)
+        .json({ error: ERROR_CODES.INVALID_BODY });
+      return;
+    }
+
+    const company = await findOwnedCompanyById({ userId, companyId });
+    if (!company) {
+      res
+        .status(StatusCodes.NOT_FOUND)
+        .json({ error: ERROR_CODES.COMPANY_NOT_FOUND });
+      return;
+    }
+    if (!company.companyPda) {
+      res
+        .status(StatusCodes.PRECONDITION_FAILED)
+        .json({ error: ERROR_CODES.CHAIN_NOT_ANCHORED });
+      return;
+    }
+
+    const operator = operatorOrFail(res);
+    if (!operator) return;
+
+    const companyPda = new PublicKey(company.companyPda);
+    const { instruction } = buildSetPolicyInstruction({
+      companyPda,
+      treasuryPda: deriveTreasuryPda(companyPda).pda,
+      policyPda: derivePolicyPda(companyPda).pda,
+      controllingAuthority: new PublicKey(req.user!.walletAddress),
+      discretionaryBudgetPerMonth: [
+        {
+          mint: SOL_PSEUDO_MINT,
+          amount: BigInt(parsed.data.discretionaryBudgetLamports),
+        },
+      ],
+    });
+
+    let prepared: Awaited<ReturnType<typeof prepareOwnerSignedTx>>;
+    try {
+      prepared = await prepareOwnerSignedTx({
+        instructions: [instruction],
+        feePayer: operator,
+      });
+    } catch (err) {
+      log.error({ err, companyId }, "set_policy prepare failed");
+      res
+        .status(StatusCodes.BAD_GATEWAY)
+        .json({ error: ERROR_CODES.CHAIN_TX_FAILED });
+      return;
+    }
+
+    res.status(StatusCodes.OK).json({
+      transaction: prepared.transactionBase64,
+      blockhash: prepared.blockhash,
+      lastValidBlockHeight: prepared.lastValidBlockHeight,
+    });
+  },
+);
+
+/**
+ * POST /api/chain/companies/:companyId/treasury/policy/confirm
+ *
+ * Broadcast the owner-signed `set_policy` tx. No DB cache — treasury
+ * state is read live from chain on the next GET.
+ */
+router.post(
+  "/companies/:companyId/treasury/policy/confirm",
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const userId = req.user!.userId;
+    const companyId = req.params.companyId;
+
+    const parsed = confirmSetPolicyBody.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res
+        .status(StatusCodes.BAD_REQUEST)
+        .json({ error: ERROR_CODES.INVALID_BODY });
+      return;
+    }
+
+    const company = await findOwnedCompanyById({ userId, companyId });
+    if (!company) {
+      res
+        .status(StatusCodes.NOT_FOUND)
+        .json({ error: ERROR_CODES.COMPANY_NOT_FOUND });
+      return;
+    }
+
+    let signature: string;
+    try {
+      signature = await submitSignedTx({
+        signedTransactionBase64: parsed.data.signedTransaction,
+        blockhash: parsed.data.blockhash,
+        lastValidBlockHeight: parsed.data.lastValidBlockHeight,
+      });
+    } catch (err) {
+      log.error({ err, companyId }, "set_policy submit failed");
+      res
+        .status(StatusCodes.BAD_GATEWAY)
+        .json({ error: ERROR_CODES.CHAIN_TX_FAILED });
+      return;
+    }
+
+    log.info({ companyId, signature }, "treasury policy updated");
+    res.status(StatusCodes.OK).json({ signature });
+  },
+);
+
+// ── Disbursements (Phase 1c-ii) ─────────────────────────────────────────────
+
+/**
+ * GET /api/chain/companies/:companyId/disbursements/pending
+ *
+ * The pending-disbursement plan: pending invoices grouped per agent,
+ * plus treasury balance / budget headroom so the UI can warn before a
+ * run that would revert.
+ */
+router.get(
+  "/companies/:companyId/disbursements/pending",
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const userId = req.user!.userId;
+    const companyId = req.params.companyId;
+
+    const company = await findOwnedCompanyById({ userId, companyId });
+    if (!company) {
+      res
+        .status(StatusCodes.NOT_FOUND)
+        .json({ error: ERROR_CODES.COMPANY_NOT_FOUND });
+      return;
+    }
+    if (!company.companyPda) {
+      res
+        .status(StatusCodes.PRECONDITION_FAILED)
+        .json({ error: ERROR_CODES.CHAIN_NOT_ANCHORED });
+      return;
+    }
+
+    const plan = await buildDisbursementPlan(companyId);
+
+    let treasury: Awaited<ReturnType<typeof fetchTreasuryState>> | null = null;
+    try {
+      treasury = await fetchTreasuryState(new PublicKey(company.companyPda));
+    } catch (err) {
+      log.warn({ err, companyId }, "treasury read failed during plan fetch");
+    }
+
+    const feeBps = treasury?.agentOperatingFeeBps ?? 0;
+    const estimatedFee = Math.floor((plan.totalLamports * feeBps) / 10_000);
+
+    res.status(StatusCodes.OK).json({
+      payable: plan.payable.map((a) => ({
+        deploymentId: a.deploymentId,
+        agentName: a.agentName,
+        receivingAddress: a.receivingAddress,
+        invoiceCount: a.invoiceIds.length,
+        totalLamports: a.totalLamports,
+      })),
+      blocked: plan.blocked,
+      totalLamports: plan.totalLamports,
+      estimatedFeeLamports: estimatedFee,
+      feeBps,
+      treasuryBalanceLamports: treasury?.balanceLamports ?? 0,
+      budgetRemainingLamports: treasury
+        ? (
+            treasury.discretionaryBudgetLamports -
+            treasury.discretionarySpentLamports
+          ).toString()
+        : "0",
+    });
+  },
+);
+
+/**
+ * POST /api/chain/companies/:companyId/disbursements/prepare
+ *
+ * Build a batched tx — one `disburse_discretionary` ix per payable agent
+ * (paying the sum of their pending invoices). The company owner signs in
+ * the browser. Returns the flat invoice-id list so `confirm` knows which
+ * rows to settle.
+ */
+router.post(
+  "/companies/:companyId/disbursements/prepare",
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const userId = req.user!.userId;
+    const companyId = req.params.companyId;
+
+    const company = await findOwnedCompanyById({ userId, companyId });
+    if (!company) {
+      res
+        .status(StatusCodes.NOT_FOUND)
+        .json({ error: ERROR_CODES.COMPANY_NOT_FOUND });
+      return;
+    }
+    if (!company.companyPda) {
+      res
+        .status(StatusCodes.PRECONDITION_FAILED)
+        .json({ error: ERROR_CODES.CHAIN_NOT_ANCHORED });
+      return;
+    }
+
+    const plan = await buildDisbursementPlan(companyId);
+    if (plan.payable.length === 0) {
+      res
+        .status(StatusCodes.BAD_REQUEST)
+        .json({ error: ERROR_CODES.NOTHING_TO_DISBURSE });
+      return;
+    }
+    if (plan.payable.length > MAX_DISBURSEMENT_AGENTS) {
+      res
+        .status(StatusCodes.BAD_REQUEST)
+        .json({ error: ERROR_CODES.DISBURSEMENT_BATCH_TOO_LARGE });
+      return;
+    }
+
+    const operator = operatorOrFail(res);
+    if (!operator) return;
+
+    const companyPda = new PublicKey(company.companyPda);
+    const treasuryPda = deriveTreasuryPda(companyPda).pda;
+    const policyPda = derivePolicyPda(companyPda).pda;
+    const controllingAuthority = new PublicKey(req.user!.walletAddress);
+
+    let instructions;
+    try {
+      instructions = plan.payable.map(
+        (a) =>
+          buildDisburseDiscretionaryInstruction({
+            companyPda,
+            treasuryPda,
+            policyPda,
+            controllingAuthority,
+            deploymentPda: new PublicKey(a.deploymentPda),
+            destination: new PublicKey(a.receivingAddress),
+            amountLamports: BigInt(a.totalLamports),
+          }).instruction,
+      );
+    } catch (err) {
+      log.error({ err, companyId }, "disbursement ix build failed");
+      res
+        .status(StatusCodes.BAD_REQUEST)
+        .json({ error: ERROR_CODES.INVALID_BODY });
+      return;
+    }
+
+    let prepared: Awaited<ReturnType<typeof prepareOwnerSignedTx>>;
+    try {
+      prepared = await prepareOwnerSignedTx({
+        instructions,
+        feePayer: operator,
+      });
+    } catch (err) {
+      log.error({ err, companyId }, "disbursement prepare failed");
+      res
+        .status(StatusCodes.BAD_GATEWAY)
+        .json({ error: ERROR_CODES.CHAIN_TX_FAILED });
+      return;
+    }
+
+    res.status(StatusCodes.OK).json({
+      transaction: prepared.transactionBase64,
+      blockhash: prepared.blockhash,
+      lastValidBlockHeight: prepared.lastValidBlockHeight,
+      // Flat list of every invoice the signed tx settles.
+      invoiceIds: plan.payable.flatMap((a) => a.invoiceIds),
+    });
+  },
+);
+
+/**
+ * POST /api/chain/companies/:companyId/disbursements/confirm
+ *
+ * Broadcast the owner-signed batch, then settle the invoices it covered —
+ * flip `pending` → `paid` + stamp the tx signature.
+ */
+router.post(
+  "/companies/:companyId/disbursements/confirm",
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const userId = req.user!.userId;
+    const companyId = req.params.companyId;
+
+    const parsed = confirmDisbursementBody.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res
+        .status(StatusCodes.BAD_REQUEST)
+        .json({ error: ERROR_CODES.INVALID_BODY });
+      return;
+    }
+
+    const company = await findOwnedCompanyById({ userId, companyId });
+    if (!company) {
+      res
+        .status(StatusCodes.NOT_FOUND)
+        .json({ error: ERROR_CODES.COMPANY_NOT_FOUND });
+      return;
+    }
+
+    let signature: string;
+    try {
+      signature = await submitSignedTx({
+        signedTransactionBase64: parsed.data.signedTransaction,
+        blockhash: parsed.data.blockhash,
+        lastValidBlockHeight: parsed.data.lastValidBlockHeight,
+      });
+    } catch (err) {
+      log.error({ err, companyId }, "disbursement submit failed");
+      res
+        .status(StatusCodes.BAD_GATEWAY)
+        .json({ error: ERROR_CODES.CHAIN_TX_FAILED });
+      return;
+    }
+
+    // Tx confirmed on chain — settle the invoices it paid.
+    const paidCount = await markInvoicesPaid(
+      parsed.data.invoiceIds,
+      signature,
+    );
+    log.info(
+      { companyId, signature, paidCount },
+      "disbursement settled — invoices marked paid",
+    );
+
+    res.status(StatusCodes.OK).json({ signature, paidCount });
   },
 );
 

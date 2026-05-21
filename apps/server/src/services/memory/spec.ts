@@ -1,0 +1,204 @@
+// ContextSpec — canonical shape returned by `loadContext()`. Every prompt
+// surface (chat, task, heartbeat) consumes this single type and renders
+// surface-specific text. Decided 2026-05-10 as the memory pipeline
+// (replaces ad-hoc per-surface builders).
+//
+// The spec carries one field per memory TYPE, each loaded by a store in
+// `stores/`. Load CADENCE (always-on / session / on-demand) is decided
+// by the assembler in `load-context.ts`, not encoded here — type and
+// cadence are separate axes.
+//   • agent / company — identity. The agent's stable sense of self.
+//   • org             — company structure: team, gaps, subordinates.
+//   • knowledge       — semantic memory: distilled facts (Company Brain).
+//                       OPTIONAL; renderers gracefully omit when undefined.
+//   • history         — episodic memory: what the company has done.
+//                       OPTIONAL; renderers gracefully omit when undefined.
+//
+// Gateway filesystem (workspace markdown seeded at provision) is NOT
+// carried here — renderers emit pointers (e.g. "read ./SOUL.md") so the
+// agent fetches via its tools.
+//
+// Surface payload — caller-supplied per-call data the renderer needs
+// (the actual user message, the task row, etc.) but that doesn't fit
+// any of the agent-state memory types.
+
+import type { RoleTier } from "@occa/shared/role-catalog";
+
+export interface ContextAgent {
+  id: string; // deployment id
+  name: string;
+  role: string; // slug
+  roleLabel: string; // display
+  tier: RoleTier | "unknown";
+}
+
+export interface ContextCompanyProfile {
+  // Mirrors `company_profile` columns we want the agent to see at runtime.
+  // All optional — onboarding may have left fields blank.
+  tagline: string | null;
+  niche: string | null;
+  brandVoice: string | null;
+  contentPillars: string[];
+  forbiddenWords: string[];
+  coverageScope: string | null;
+  coverageExcluded: string | null;
+}
+
+export interface ContextCompany {
+  id: string;
+  name: string;
+  profile: ContextCompanyProfile;
+}
+
+export interface ContextTeammate {
+  id: string;
+  name: string;
+  role: string;
+  tier: RoleTier | "unknown";
+}
+
+export interface ContextOrg {
+  // Every active deployment in the company excluding the agent itself.
+  // Used by chat surface to format "your team" and let CEO route by name.
+  team: ContextTeammate[];
+  // Roles in the default org chart that aren't deployed yet. Used by
+  // chat surface to surface capability gaps to the owner.
+  gaps: { role: string; tier: RoleTier | "unknown" }[];
+  // Just the subset that reports to THIS agent (descendants in the
+  // hierarchy). Used by task surface for DELEGATE hints. Differs from
+  // `team` for non-CEO agents — a Head sees only their specialists,
+  // not the rest of the company.
+  subordinatesForSelf: ContextTeammate[];
+}
+
+// Semantic memory — optional. Populated when the company_brain table has
+// rows. Filesystem-pattern: each entry is a "file" with a path + body.
+// Renderers either embed full content (MVP) or emit a directory listing
+// + leave the agent to fetch on-demand via memory tool (Phase 2 once the
+// adapter contract exposes the tool API). Schema mirrors Anthropic's
+// Memory Tool design — production-validated by Netflix/Rakuten.
+//
+// Visibility filtering happens server-side at loadContext, so anything
+// reaching the renderer is already authorized for the calling agent.
+export interface ContextBrainFile {
+  path: string;
+  content: string;
+  sizeBytes: number;
+}
+export interface ContextKnowledge {
+  brain: ContextBrainFile[];
+}
+
+export interface ContextHistory {
+  recentCompletedTasks?: {
+    taskNumber: number;
+    title: string;
+    summary: string;
+  }[];
+  relevantDocuments?: { id: string; title: string; snippet: string }[];
+}
+
+// Assigned-skill view at run time. Full markdown is inlined so the
+// renderer can drop it into the prompt without a separate fetch — agents
+// previously skipped the GET-skills round-trip and hallucinated "no tool
+// available" refusals (2026-05-20 X-posting regress). Loaded by
+// `stores/skills.ts`; rendered as a fenced section by the task and chat
+// renderers.
+export interface ContextSkill {
+  key: string;
+  slug: string;
+  name: string;
+  description: string | null;
+  markdown: string;
+}
+
+// Per-run server callback credentials. Minted fresh in the dispatcher
+// before every wake and injected here so the renderer can emit the
+// canonical `OCCA runtime:` preamble (apiUrl + bearer apiKey + agentId +
+// traceId). Without these the agent has no way to call back into OCCA
+// (skill discovery, tool invocation, RequestInfo / EmitFollowUp).
+export interface ContextRuntimeEnv {
+  apiUrl: string;
+  apiKey: string;
+  agentId: string;
+  traceId: string;
+}
+
+// Surface payload — the per-call non-agent data the renderer needs.
+export type SurfacePayload =
+  | {
+      kind: "chat";
+      // True only on the first turn of a session. First turn gets full
+      // preamble; subsequent turns get a lighter team-refresh prompt.
+      isFirstTurn: boolean;
+      userMessage: string;
+    }
+  | {
+      // Phase C: directive surface between two agents. The callee is the
+      // ContextSpec.agent (recipient); the caller is one tier up and
+      // sent the directive. Renderer reuses the chat-mode framing
+      // (subordinates, HEAD-FIRST rule, DELEGATE/CREATE_TASK markers)
+      // but swaps "owner" with the caller and frames the directive as
+      // the inbound message.
+      kind: "agent_dm";
+      isFirstTurn: boolean;
+      directive: string;
+      callerName: string;
+      callerRole: string;
+    }
+  | {
+      kind: "task";
+      taskId: string;
+      taskNumber: number;
+      title: string;
+      priority: string;
+      taskType: string;
+      effortLevel: string;
+      // Tags from the task row — used by loadContext to fetch related
+      // prior documents (Tier 3b retrieval).
+      tags: string[];
+      bodyMarkdown: string;
+      acceptanceCriteria: string | null;
+      traceId: string;
+      gatewayUrl: string | null;
+      // True when this task has no parent. Combined with `isCeoAssignee`
+      // below to decide whether the REPORT marker instructions are
+      // included in the prompt — REPORT is CEO-only (handler enforces
+      // `non_ceo_cannot_report`), and showing it to a specialist whose
+      // root task originates from a chat-mode DELEGATE causes them to
+      // emit it; the marker then gets stripped from the saved reply
+      // and the content is lost. Only show REPORT when both `isRoot`
+      // and `isCeoAssignee` are true (CEO self-execute path).
+      isRoot: boolean;
+      // True iff the task's assignee role is CEO tier. Gates the
+      // REPORT block in the prompt.
+      isCeoAssignee: boolean;
+      completedChildren: {
+        taskNumber: number;
+        title: string;
+        agentName: string | null;
+        resultPreview: string | null;
+      }[];
+      // Task comments, oldest→newest (recent slice). Carries reviewer
+      // and system feedback — e.g. a verification-gate bounce — the
+      // agent must read and act on before re-attempting the task.
+      comments: { from: "system" | "teammate"; body: string }[];
+    };
+
+export interface ContextSpec {
+  agent: ContextAgent;
+  company: ContextCompany;
+  org: ContextOrg;
+  // Optional memory — undefined until company_brain / documents have rows.
+  knowledge?: ContextKnowledge;
+  history?: ContextHistory;
+  // Skills assigned to the calling deployment, loaded with full markdown
+  // so renderers can inline them. Empty array when none assigned.
+  skills: ContextSkill[];
+  // Optional. Present when the caller is a task/wake dispatcher minting
+  // a per-trace ephemeral key. Chat-mode loaders that don't have a
+  // trace context (e.g. CEO chat preview) leave this undefined and the
+  // renderer falls back to "see your wake preamble" pointer text.
+  runtimeEnv?: ContextRuntimeEnv;
+  surface: SurfacePayload;
+}

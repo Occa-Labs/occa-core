@@ -1,11 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import { ERROR_CODES } from "@occa/shared/error-codes";
 import { StatusCodes } from "http-status-codes";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import os from "node:os";
-import path from "node:path";
-import { and, eq, isNull, ne, sql } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import {
   deprovisionAgent,
   deserializeKeypair,
@@ -17,82 +13,17 @@ import {
   agentIdentities,
   agentRuntimeProfile,
   approvals,
-  authNonces,
   companies,
-  companySkills,
   deployments,
-  users,
 } from "@occa/shared/schema";
 import { requireAuth, requireDevWallet } from "../middleware/auth";
 
 const router: Router = Router();
-const execFileAsync = promisify(execFile);
 
 // Prefix on every OpenClaw agent id that OCCA provisions. Used to limit the
 // GC sweep below to our own entries — user-added agents like `main` / `test2`
 // are never touched.
 const OCCA_AGENT_PREFIX = "occa-";
-
-// POST /api/dev/reset
-// Dev-only: wipe all database rows except the requesting user. `companies`
-// cascades to every downstream table (agents, tasks, skills, runs, events,
-// wakeups, routines, sessions, runtime_state, api_keys, dismissals), so a
-// bulk DELETE + cascade handles the tree. Other users (and their data) are
-// also removed — this is intentionally aggressive; the dev tool's whole
-// purpose is a clean slate.
-//
-// Platform-builtin skills (company_skills WHERE company_id IS NULL) survive
-// the company cascade, so we wipe those explicitly. Without this, the
-// lazy-fetch state on next provision is half-stale: ROLE_DEFAULT_SKILLS
-// would skip the GitHub fetch (rows still cached) and reuse pre-reset
-// commit SHAs, which is exactly the inconsistency dev reset is meant to
-// flush.
-router.post(
-  "/reset",
-  requireAuth,
-  requireDevWallet,
-  async (req: Request, res: Response) => {
-    const userId = req.user!.userId;
-    const counts = await db.transaction(async (tx) => {
-      const companiesDeleted = await tx
-        .delete(companies)
-        .returning({ id: companies.id });
-      const skillsDeleted = await tx
-        .delete(companySkills)
-        .returning({ id: companySkills.id });
-      const usersDeleted = await tx
-        .delete(users)
-        .where(ne(users.id, userId))
-        .returning({ id: users.id });
-      const noncesDeleted = await tx
-        .delete(authNonces)
-        .returning({ id: authNonces.id });
-      // Clear the persisted OpenClaw device keypair from the surviving user.
-      // After reset the gateway no longer has the previously-paired agent,
-      // so reusing this keypair on next onboarding would fail probe. Force
-      // a fresh pairing flow on next provision.
-      const pendingCleared = await tx
-        .update(users)
-        .set({ pendingDeviceKeypair: null })
-        .where(
-          and(
-            eq(users.id, userId),
-            sql`${users.pendingDeviceKeypair} IS NOT NULL`,
-          ),
-        )
-        .returning({ id: users.id });
-      await tx.execute(sql`SELECT 1`);
-      return {
-        companies: companiesDeleted.length,
-        platformSkills: skillsDeleted.length,
-        otherUsers: usersDeleted.length,
-        nonces: noncesDeleted.length,
-        pendingDeviceKeypairCleared: pendingCleared.length,
-      };
-    });
-    res.json({ ok: true, deleted: counts });
-  },
-);
 
 // POST /api/dev/gc-orphan-openclaw-agents
 // Dev-only: delete OpenClaw agents prefixed `occa-` that no longer have a
@@ -229,193 +160,6 @@ router.post(
       removed,
       failures,
     });
-  },
-);
-
-// ── POST /api/dev/reset-gateway ───────────────────────────────────────────────
-// Dev-only: SSH into the OpenClaw gateway VPS and remove every provisioned
-// agent whose id starts with `occa-`. Two safety nets:
-//   1. The `^occa-` prefix filter never matches user-managed agents like
-//      `main` or `test2` (OCCA-provisioned ids are always `occa-<8hex>`).
-//   2. OpenClaw's CLI itself refuses to delete `main`, so even if the filter
-//      ever drifts, the protected agent survives.
-// `openclaw agents delete` moves workspace + sessions to Trash on the VPS
-// rather than hard-deleting, so a wrong call is recoverable on the host.
-//
-// Reads SSH config from env (OCCA_GATEWAY_SSH_HOST/USER/KEY). Returns a
-// structured summary parsed from stdout so the UI can show what changed.
-// `?dryRun=1` lists candidates without deleting.
-
-function expandHome(p: string): string {
-  if (p.startsWith("~/")) return path.join(os.homedir(), p.slice(2));
-  if (p === "~") return os.homedir();
-  return p;
-}
-
-// Defensive jq path covers both possible CLI JSON shapes (`[{id}]` vs
-// `{agents:[{id}]}`); first run on a real gateway will tell us which one
-// `openclaw agents list --json` actually emits.
-const REMOTE_JQ_IDS = `jq -r '(if type==\"array\" then . else .agents // [] end) | .[].id // empty'`;
-
-// `openclaw` is installed under root's nvm (the gateway runs `openclaw
-// gateway` as root). The SSH user is non-root (`ubuntu`) by default and
-// has no access to the binary, and `sudo` strips PATH so even an absolute
-// path fails on the `/usr/bin/env node` shebang. Wrapping the remote
-// command in `sudo -n bash -lc` with the nvm bin prepended to PATH makes
-// both `node` and `openclaw` resolvable. `OCCA_GATEWAY_OPENCLAW_PATH`
-// overrides the default if the install ever moves.
-const DEFAULT_OPENCLAW_BIN_PATH = "/root/.nvm/versions/node/v24.15.0/bin";
-
-function buildRemoteCmd(inner: string): string {
-  const binPath =
-    process.env.OCCA_GATEWAY_OPENCLAW_PATH ?? DEFAULT_OPENCLAW_BIN_PATH;
-  // `sudo -n` fails fast if passwordless sudo isn't configured for the
-  // user — better than hanging on a password prompt.
-  return `sudo -n bash -lc ${shellSingleQuote(
-    `export PATH=${binPath}:$PATH\n${inner}`,
-  )}`;
-}
-
-// Single-quote a string for safe use inside another bash single-quoted arg.
-// (closes the outer quote, escapes the embedded quote, reopens.)
-function shellSingleQuote(s: string): string {
-  return `'${s.replace(/'/g, `'\\''`)}'`;
-}
-
-// State on the gateway lives in two places that drift out of sync:
-//   1. The CLI registry (`openclaw agents list --json`) — what `openclaw
-//      agents add/delete` manages. OCCA-provisioned agents created via
-//      gateway config.patch DON'T register here, so the CLI lists none of
-//      ours even when their state exists on disk.
-//   2. The on-disk dirs `~/.openclaw/agents/<id>/` and
-//      `~/.openclaw/workspaces/<id>/` — what the OpenClaw dashboard reads
-//      and what gateway routing actually walks. These accumulate per-agent
-//      sessions, persona files, etc. and orphan readily.
-// Reset must sweep BOTH. Always remove `agents/occa-*` and `workspaces/occa-*`
-// dirs (the prefix filter protects `main`). CLI delete is best-effort on
-// top — useful only if CLI ever starts tracking our agents.
-const OPENCLAW_HOME = "/root/.openclaw";
-
-const DRY_RUN_INNER = [
-  `set -euo pipefail`,
-  // Collate ids from both CLI registry and on-disk dirs.
-  `cli_ids=$(openclaw agents list --json | ${REMOTE_JQ_IDS} | grep '^occa-' || true)`,
-  `dir_ids=$(ls ${OPENCLAW_HOME}/agents/ 2>/dev/null | grep '^occa-' || true)`,
-  `ws_ids=$(ls ${OPENCLAW_HOME}/workspaces/ 2>/dev/null | grep '^occa-' || true)`,
-  `printf "%s\\n%s\\n%s\\n" "$cli_ids" "$dir_ids" "$ws_ids" \\`,
-  `  | sort -u | grep '^occa-' \\`,
-  `  | sed 's/^/CANDIDATE: /' || true`,
-].join("\n");
-
-const RESET_INNER = [
-  `set -euo pipefail`,
-  `cli_ids=$(openclaw agents list --json | ${REMOTE_JQ_IDS} | grep '^occa-' || true)`,
-  `dir_ids=$(ls ${OPENCLAW_HOME}/agents/ 2>/dev/null | grep '^occa-' || true)`,
-  `ws_ids=$(ls ${OPENCLAW_HOME}/workspaces/ 2>/dev/null | grep '^occa-' || true)`,
-  `ids=$(printf "%s\\n%s\\n%s\\n" "$cli_ids" "$dir_ids" "$ws_ids" | sort -u | grep '^occa-' || true)`,
-  `if [ -z "$ids" ]; then`,
-  `  echo "EMPTY"`,
-  `  exit 0`,
-  `fi`,
-  `echo "$ids" | while read -r id; do`,
-  `  [ -z "$id" ] && continue`,
-  // Best-effort CLI delete (no-op for orphans that CLI doesn't know about).
-  `  openclaw agents delete "$id" --force >/dev/null 2>&1 || true`,
-  // Authoritative cleanup: rm both state dirs. `--` guards against any
-  // weird id starting with `-`. Safe under the `^occa-` filter.
-  `  if rm -rf -- "${OPENCLAW_HOME}/agents/$id" "${OPENCLAW_HOME}/workspaces/$id"; then`,
-  `    echo "DELETED: $id"`,
-  `  else`,
-  `    echo "FAILED: $id"`,
-  `  fi`,
-  `done`,
-].join("\n");
-
-const DRY_RUN_REMOTE_CMD = buildRemoteCmd(DRY_RUN_INNER);
-const RESET_REMOTE_CMD = buildRemoteCmd(RESET_INNER);
-
-router.post(
-  "/reset-gateway",
-  requireAuth,
-  requireDevWallet,
-  async (req: Request, res: Response) => {
-    const dryRun = req.query.dryRun === "true" || req.query.dryRun === "1";
-
-    const host = process.env.OCCA_GATEWAY_SSH_HOST;
-    const user = process.env.OCCA_GATEWAY_SSH_USER || "root";
-    const keyRaw = process.env.OCCA_GATEWAY_SSH_KEY;
-    if (!host || !keyRaw) {
-      res.status(StatusCodes.BAD_REQUEST).json({
-        error: ERROR_CODES.SSH_CONFIG_MISSING,
-        detail:
-          "OCCA_GATEWAY_SSH_HOST and OCCA_GATEWAY_SSH_KEY must be set in the server env",
-      });
-      return;
-    }
-    const keyPath = expandHome(keyRaw);
-    const remoteCmd = dryRun ? DRY_RUN_REMOTE_CMD : RESET_REMOTE_CMD;
-
-    try {
-      const { stdout, stderr } = await execFileAsync(
-        "ssh",
-        [
-          "-i",
-          keyPath,
-          "-o",
-          "BatchMode=yes",
-          "-o",
-          "StrictHostKeyChecking=accept-new",
-          "-o",
-          "ConnectTimeout=10",
-          `${user}@${host}`,
-          remoteCmd,
-        ],
-        { timeout: 120_000, maxBuffer: 4 * 1024 * 1024 },
-      );
-
-      const lines = stdout
-        .split("\n")
-        .map((l) => l.trim())
-        .filter(Boolean);
-
-      const stripPrefix = (prefix: string) => (line: string) =>
-        line.slice(prefix.length).trim();
-
-      const candidates = lines
-        .filter((l) => l.startsWith("CANDIDATE: "))
-        .map(stripPrefix("CANDIDATE: "));
-      const removed = lines
-        .filter((l) => l.startsWith("DELETED: "))
-        .map(stripPrefix("DELETED: "));
-      const failures = lines
-        .filter((l) => l.startsWith("FAILED: "))
-        .map(stripPrefix("FAILED: "));
-
-      res.json({
-        ok: failures.length === 0,
-        dryRun,
-        target: `${user}@${host}`,
-        candidates,
-        removed,
-        failures,
-        stdout,
-        stderr,
-      });
-    } catch (err) {
-      const e = err as {
-        stdout?: string;
-        stderr?: string;
-        code?: number | string;
-        message?: string;
-      };
-      res.status(StatusCodes.BAD_GATEWAY).json({
-        error: ERROR_CODES.SSH_FAILED,
-        detail: e.message ?? "ssh exited non-zero",
-        exitCode: e.code,
-        stdout: e.stdout,
-        stderr: e.stderr,
-      });
-    }
   },
 );
 

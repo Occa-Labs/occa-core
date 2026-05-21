@@ -58,6 +58,9 @@ export function DeployAgentModal({
   const [role, setRole] = useState("");
   const [gatewayUrl, setGatewayUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
+  // Optional flat per-task invoice rate, entered in SOL. Empty = no rate
+  // (operator can set it later from the Wallet tab).
+  const [taskRateSol, setTaskRateSol] = useState("");
   // Empty string = "auto-resolve from catalog". Non-empty = explicit
   // parent deployment id. Picker shown only when active candidates
   // exist (i.e. company has at least one non-CEO agent — first deploy
@@ -80,10 +83,19 @@ export function DeployAgentModal({
     role.trim().length > 0 &&
     /^[a-z0-9_-]+$/.test(role.trim()) &&
     role.trim().length <= 32;
+  // Rate is optional. When filled it must parse to a finite non-negative
+  // number; empty stays valid (no rate set).
+  const taskRateValid =
+    taskRateSol.trim() === "" ||
+    (Number.isFinite(Number(taskRateSol)) && Number(taskRateSol) >= 0);
   const canProbe =
     gatewayUrl.trim().length > 0 && apiKey.trim().length > 0 && step === "form";
   const canCreate =
-    name.trim().length > 0 && roleValid && probeResult?.ok && step === "form";
+    name.trim().length > 0 &&
+    roleValid &&
+    taskRateValid &&
+    probeResult?.ok &&
+    step === "form";
   const busy = step !== "form";
 
   useEffect(() => {
@@ -106,6 +118,7 @@ export function DeployAgentModal({
     setRole("");
     setGatewayUrl("");
     setApiKey("");
+    setTaskRateSol("");
     setParentAgentId("");
     setStep("form");
     setProbeResult(null);
@@ -184,6 +197,11 @@ export function DeployAgentModal({
             apiKey: apiKey.trim(),
           },
           parentAgentId: parentAgentId || null,
+          // SOL → lamports. Empty input = null (no rate set yet).
+          taskRateLamports:
+            taskRateSol.trim() === ""
+              ? null
+              : Math.round(Number(taskRateSol) * 1_000_000_000),
         },
         (evt) => {
           setStepStatuses((prev) => ({
@@ -207,6 +225,7 @@ export function DeployAgentModal({
     gatewayUrl,
     apiKey,
     parentAgentId,
+    taskRateSol,
     handleStreamError,
     onDeployed,
   ]);
@@ -347,6 +366,42 @@ export function DeployAgentModal({
                 </label>
               )}
           </div>
+        </section>
+
+        {/* Divider */}
+        <div style={{ height: "1px", background: "rgba(255,255,255,0.06)" }} />
+
+        {/* Billing */}
+        <section className="space-y-3">
+          <h3 className="text-[10px] uppercase tracking-widest text-white/30 font-semibold">
+            Billing
+          </h3>
+          <label className="block">
+            <span className="text-[11px] text-white/50 mb-1.5 block">
+              Task rate{" "}
+              <span className="text-white/30">
+                (optional — SOL invoiced per completed task)
+              </span>
+            </span>
+            <div className="relative">
+              <input
+                value={taskRateSol}
+                onChange={(e) =>
+                  setTaskRateSol(e.target.value.replace(/[^0-9.]/g, ""))
+                }
+                placeholder="0.05"
+                inputMode="decimal"
+                disabled={busy}
+                className="w-full rounded-xl bg-white/5 ring-1 ring-inset ring-white/10 focus:ring-white/22 focus:outline-none px-3.5 py-2.5 pr-14 text-[13px] text-white/85 placeholder:text-white/22 transition disabled:opacity-50 font-mono"
+              />
+              <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-[12px] text-white/35 font-medium">
+                SOL
+              </span>
+            </div>
+            <span className="text-[11px] text-white/30 mt-1.5 block">
+              Leave blank to set later from the agent&apos;s Wallet tab.
+            </span>
+          </label>
         </section>
 
         {/* Divider */}

@@ -133,6 +133,32 @@ export async function handleDelegateBlock(
     return { kind: "ignored", reason: "target_not_in_company" };
   }
 
+  // No-loop guard: refuse to re-delegate within the same parent task to
+  // a teammate who already shipped a child here. The synthesis-turn
+  // prompt warns against this, but agents sometimes treat continuation
+  // as a fresh wake and queue another task to the writer instead of
+  // moving on (Phase A → Phase B handoff). Catching it server-side
+  // closes the loop deterministically — a routine wrapper now executes
+  // at most one delegation per subordinate, forcing the orchestrator
+  // to either advance to a DIFFERENT teammate or park the cycle.
+  const existingChildren = await db
+    .select({ assignedDeploymentId: tasks.assignedDeploymentId })
+    .from(tasks)
+    .where(eq(tasks.parentTaskId, args.currentTaskId));
+  const alreadyAssigned = existingChildren.some(
+    (c) => c.assignedDeploymentId === dp.targetAgentId,
+  );
+  if (alreadyAssigned) {
+    log.warn(
+      {
+        parentTaskId: args.currentTaskId,
+        targetAgentId: dp.targetAgentId,
+      },
+      "DELEGATE block rejected: target already has a child under this parent",
+    );
+    return { kind: "ignored", reason: "target_already_delegated" };
+  }
+
   // Auto-approve: create the child task immediately and queue dispatch.
   // No approval row, no human-in-the-loop — within its subtree the
   // emitting agent is the authority. The parent task's dispatcher will

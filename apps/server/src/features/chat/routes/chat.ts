@@ -13,13 +13,17 @@ import type {
 } from "@occa/shared/types";
 import { childLogger } from "../../../lib/logger";
 import { requireAuth } from "../../../middleware/auth";
+import { getAdapter } from "../../../lib/adapter-registry";
+import { threadSessionKey } from "../../../lib/session-keys";
 import { userCompanyId } from "../../tasks/routes/helpers";
 import { findCeoForCompany } from "../../agents/repositories/deployments";
+import { findByDeploymentId as findRuntimeProfile } from "../../agents/repositories/agent-runtime-profile";
 import {
   clearThread,
   listMessages,
   type ChatMessageRow,
 } from "../repositories/chat-messages";
+import { resolveUserCeoThreadId } from "../repositories/chat-threads";
 import { sendChatMessageBody } from "../domain/schemas";
 import { sendUserTurn } from "../services/chat-handler";
 
@@ -61,9 +65,10 @@ router.get("/ceo", requireAuth, async (req: Request, res: Response) => {
 });
 
 // Wipe the current chat thread. Both the DB rows AND the gateway-side
-// conversation context are reset — the next user message uses a fresh
-// sessionKey suffix (derived from earliestMessageId(), which becomes
-// null after this delete) so the CEO has no memory of prior turns.
+// conversation memory are reset: the session key is now stable per
+// thread id (no boundary suffix), so a clear must explicitly delete the
+// gateway session — otherwise the CEO would keep its old memory and the
+// "fresh start" the user expects wouldn't happen.
 router.delete("/ceo", requireAuth, async (req: Request, res: Response) => {
   const companyId = await userCompanyId(req.user!.userId);
   if (!companyId) {
@@ -77,6 +82,42 @@ router.delete("/ceo", requireAuth, async (req: Request, res: Response) => {
     res.status(StatusCodes.NO_CONTENT).end();
     return;
   }
+
+  // Wipe the gateway session BEFORE the DB rows — best-effort. A failure
+  // here (gateway down) shouldn't block the user from clearing their
+  // local thread; worst case the CEO keeps stale memory until the next
+  // successful clear.
+  const profile = await findRuntimeProfile(ceo.id);
+  if (profile?.externalAgentId) {
+    try {
+      const threadId = await resolveUserCeoThreadId({
+        companyId,
+        ceoDeploymentId: ceo.id,
+      });
+      const adapter = getAdapter(profile.adapterType);
+      if (adapter) {
+        const result = await adapter.resetSession({
+          adapterConfig: (profile.adapterConfig ?? {}) as Record<
+            string,
+            unknown
+          >,
+          sessionKey: threadSessionKey(profile.externalAgentId, threadId),
+        });
+        if (!result.ok) {
+          req.log.warn(
+            { ceoId: ceo.id, error: result.error },
+            "resetSession failed on thread clear (non-fatal)",
+          );
+        }
+      }
+    } catch (err) {
+      req.log.warn(
+        { err, ceoId: ceo.id },
+        "resetSession threw on thread clear (non-fatal)",
+      );
+    }
+  }
+
   await clearThread({ companyId, deploymentId: ceo.id });
   res.status(StatusCodes.NO_CONTENT).end();
 });

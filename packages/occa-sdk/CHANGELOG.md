@@ -5,6 +5,57 @@ All notable changes to `occa-sdk` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-05-16
+
+Treasury program support. The SDK now covers the **Treasury program** in
+addition to Registry — set spending policy and disburse funds to agents
+on-chain. Also aligns `create_company` + the receiving-address setter
+with the latest deployed program account layouts.
+
+### ⚠️ Breaking Changes
+
+- **Renamed** `buildSetOperatingWalletInstruction` → `buildSetReceivingAddressInstruction`,
+  `SetOperatingWalletParams` → `SetReceivingAddressParams`, and the param
+  field `newOperatingWallet` → `newReceivingAddress`. The on-chain
+  instruction was renamed `set_operating_wallet` → `set_receiving_address`;
+  the old discriminator is rejected by the deployed program.
+- **`buildCreateCompanyInstruction`** now appends the `treasury`, `policy`,
+  and `treasury_program` accounts the redeployed `create_company` requires
+  (it CPIs into `treasury::init_treasury`). Its return value gains
+  `treasuryPda` and `policyPda`. Callers passing a hand-built account list
+  must adopt the builder.
+
+### Added
+
+#### Treasury program
+- `buildSetPolicyInstruction(...)` — set per-month routine / discretionary
+  budgets, accepted assets, and the Agent Operating Fee
+- `buildDisburseDiscretionaryInstruction(...)` — controlling-authority
+  payout to an agent's receiving address; 3% fee deducted on-chain
+- `deriveTreasuryPda(companyPda)`, `derivePolicyPda(companyPda)`,
+  `deriveProtocolFeePda()`
+- `TREASURY_INSTRUCTION_DISCRIMINATOR`, `TREASURY_ACCOUNT_DISCRIMINATOR`
+- `TREASURY_PROGRAM_ID` / `TREASURY_PROGRAM_ID_BASE58`
+- `SOL_PSEUDO_MINT` — the all-zero pubkey marker for native SOL
+- Seeds `TREASURY_SEED`, `POLICY_SEED`, `PROTOCOL_FEES_SEED`
+- `AssetBudget` type — `{ mint, amount }` per-asset budget entry
+
+### Migration guide (v0.2.x → v0.3.0)
+
+```ts
+// Before
+import { buildSetOperatingWalletInstruction } from "occa-sdk";
+buildSetOperatingWalletInstruction({ deploymentPda, owner, newOperatingWallet });
+
+// After
+import { buildSetReceivingAddressInstruction } from "occa-sdk";
+buildSetReceivingAddressInstruction({ deploymentPda, owner, newReceivingAddress });
+```
+
+`buildCreateCompanyInstruction` callers: no code change needed if you use
+the returned `instruction` directly — the extra accounts are added
+internally. Stop hand-assembling the account list.
+
 ## [0.2.1] - 2026-05-07
 
 Devnet program redeploy. No API changes — consumers only need to refresh the bundled IDL/program ID.
@@ -125,6 +176,7 @@ Initial release. Provided PDA helpers, instruction builders, and types for the O
 - Initial IDL bundle for Registry program v1
 - Devnet smoke script
 
+[0.3.0]: https://github.com/Occa-Labs/occa-core/compare/occa-sdk@0.2.1...occa-sdk@0.3.0
 [0.2.1]: https://github.com/Occa-Labs/occa-core/compare/occa-sdk@0.2.0...occa-sdk@0.2.1
 [0.2.0]: https://github.com/Occa-Labs/occa-core/compare/occa-sdk@0.1.0...occa-sdk@0.2.0
 [0.1.0]: https://github.com/Occa-Labs/occa-core/releases/tag/occa-sdk@0.1.0

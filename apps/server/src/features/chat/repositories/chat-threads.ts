@@ -103,6 +103,11 @@ export interface OpenAgentDmThreadArgs {
     priority?: string | null;
     tags?: string[] | null;
   };
+  // When false, the callee is NOT enqueued for a DM-mode turn. Used for
+  // leaf (specialist) delegations where the callee runs via the spawned
+  // task and only posts a synthesised status reply back to this thread
+  // on task completion. Default true preserves Head-target behavior.
+  autoDispatch?: boolean;
 }
 
 export async function openAgentDmThread(
@@ -146,13 +151,18 @@ export async function openAgentDmThread(
   }
   // Fire-and-forget: the worker will pick up the directive within the
   // queue's polling interval (~2s). We don't await the dispatch so the
-  // caller (chat-handler) can return its HTTP response promptly.
-  enqueueAgentDmDispatch(thread.id).catch((err) => {
-    log.error(
-      { err, threadId: thread.id },
-      "enqueueAgentDmDispatch failed after openAgentDmThread",
-    );
-  });
+  // caller (chat-handler) can return its HTTP response promptly. Leaf
+  // delegations pass autoDispatch=false because the specialist runs via
+  // task, not DM — the dm thread is observability-only until cascade
+  // synthesizes the task result back into it.
+  if (args.autoDispatch !== false) {
+    enqueueAgentDmDispatch(thread.id).catch((err) => {
+      log.error(
+        { err, threadId: thread.id },
+        "enqueueAgentDmDispatch failed after openAgentDmThread",
+      );
+    });
+  }
   return { threadId: thread.id, messageId: msg.id };
 }
 

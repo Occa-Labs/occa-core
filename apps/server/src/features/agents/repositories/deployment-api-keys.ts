@@ -24,6 +24,7 @@ export async function findByHash(hash: string): Promise<
       companyId: string;
       keyHash: string;
       revokedAt: Date | null;
+      expiresAt: Date | null;
     }
   | undefined
 > {
@@ -34,6 +35,7 @@ export async function findByHash(hash: string): Promise<
       companyId: deploymentApiKeys.companyId,
       keyHash: deploymentApiKeys.keyHash,
       revokedAt: deploymentApiKeys.revokedAt,
+      expiresAt: deploymentApiKeys.expiresAt,
     })
     .from(deploymentApiKeys)
     .where(eq(deploymentApiKeys.keyHash, hash))

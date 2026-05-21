@@ -15,32 +15,35 @@ export interface AlertProps extends HTMLAttributes<HTMLDivElement> {
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
+// Per OCCA design guideline: title + body stay white across variants.
+// Only background tint AND icon color carry variant signal — icon stays
+// colored to keep the alert immediately scan-recognizable, but body
+// copy avoids low-contrast variant-tinted text.
+const TITLE_COLOR = "text-white";
+const BODY_COLOR = "text-white/70";
+
 const config: Record<
   AlertVariant,
-  { bg: string; titleColor: string; bodyColor: string; defaultIcon: ReactNode }
+  { bg: string; iconColor: string; defaultIcon: ReactNode }
 > = {
   error: {
-    bg: "rgba(239,68,68,0.12)",
-    titleColor: "text-red-300",
-    bodyColor: "text-red-200/70",
+    bg: "rgba(239,68,68,0.18)",
+    iconColor: "text-red-300",
     defaultIcon: <AlertCircle className="size-3.5 shrink-0 mt-0.5" />,
   },
   warning: {
-    bg: "rgba(245,158,11,0.12)",
-    titleColor: "text-amber-300",
-    bodyColor: "text-amber-200/70",
+    bg: "rgba(245,158,11,0.18)",
+    iconColor: "text-amber-300",
     defaultIcon: <AlertTriangle className="size-3.5 shrink-0 mt-0.5" />,
   },
   success: {
-    bg: "rgba(16,185,129,0.12)",
-    titleColor: "text-emerald-300",
-    bodyColor: "text-emerald-200/70",
+    bg: "rgba(16,185,129,0.18)",
+    iconColor: "text-emerald-300",
     defaultIcon: <CheckCircle2 className="size-3.5 shrink-0 mt-0.5" />,
   },
   info: {
-    bg: "rgba(56,189,248,0.10)",
-    titleColor: "text-sky-300",
-    bodyColor: "text-sky-200/70",
+    bg: "rgba(56,189,248,0.16)",
+    iconColor: "text-sky-300",
     defaultIcon: <Info className="size-3.5 shrink-0 mt-0.5" />,
   },
 };
@@ -68,15 +71,15 @@ export function Alert({
       }}
       {...props}
     >
-      {resolvedIcon && (
-        <span className={c.titleColor}>{resolvedIcon}</span>
-      )}
+      {resolvedIcon && <span className={c.iconColor}>{resolvedIcon}</span>}
       <div className="flex-1 min-w-0">
         {title && (
-          <p className={`font-semibold leading-snug ${c.titleColor}`}>{title}</p>
+          <p className={`font-semibold leading-snug ${TITLE_COLOR}`}>{title}</p>
         )}
         {children && (
-          <div className={`leading-relaxed ${title ? "mt-0.5" : ""} ${c.bodyColor}`}>
+          <div
+            className={`leading-relaxed ${title ? "mt-0.5" : ""} ${BODY_COLOR}`}
+          >
             {children}
           </div>
         )}

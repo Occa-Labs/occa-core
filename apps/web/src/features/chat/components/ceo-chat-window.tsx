@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Send } from "lucide-react";
 import { Alert } from "@/components/ui/alert";
+import { BubbleMarkdown } from "@/components/ui/bubble-markdown";
 import type { ChatMessageDTO, SendChatMessageResponse } from "@occa/shared/types";
 import {
   useCeoChatMessages,
@@ -81,7 +82,7 @@ export function CeoChatWindow({
     : null;
 
   return (
-    <div className="flex flex-col h-105">
+    <div className="flex flex-col h-full min-h-0">
       <div
         ref={scrollRef}
         className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-2"
@@ -179,13 +180,13 @@ function ChatBubble({
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
       <div
-        className={`max-w-[80%] rounded-2xl px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap ${
+        className={`wrap-break-word max-w-[80%] rounded-2xl px-3.5 py-2 text-sm leading-relaxed ${
           isUser
-            ? "bg-white/12 text-white/90"
-            : "glass-light text-white/85"
+            ? "rounded-br-md bg-sky-500/20 text-sky-50"
+            : "rounded-bl-md bg-white/8 text-white/90"
         } ${muted ? "opacity-60" : ""}`}
       >
-        {message.content}
+        <BubbleMarkdown content={message.content} />
         {message.createdTaskId && !isUser && (
           <div className="mt-1.5 text-[10px] text-emerald-300/80">
             Task created

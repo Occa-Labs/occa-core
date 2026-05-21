@@ -27,6 +27,7 @@ import { childLogger } from "../../../lib/logger";
 import { db } from "../../../infra/database/client";
 import { getAdapter } from "../../../lib/adapter-registry";
 import { AGENT_WAIT_TIMEOUT_MS } from "../../../lib/timing";
+import { threadSessionKey } from "../../../lib/session-keys";
 import { findByDeploymentId as findRuntimeProfile } from "../../agents/repositories/agent-runtime-profile";
 import { createTaskRecord } from "../../../infra/database/task-creation";
 import { enqueueTaskDispatch } from "../../../infra/queue/task-worker";
@@ -37,7 +38,7 @@ import {
   loadContext,
   renderChatPrompt,
   ContextNotFoundError,
-} from "../../../services/context";
+} from "../../../services/memory";
 
 const log = childLogger("services:agent-dm-handler");
 
@@ -224,7 +225,10 @@ export async function processAgentDmTurn(
   const traceId = traceRow.id;
 
   const cfg = (profile.adapterConfig ?? {}) as Record<string, unknown>;
-  const sessionKey = `agent:${profile.externalAgentId}:dm:${threadId}`;
+  // One gateway session per thread — shared with synthesis (see
+  // `lib/session-keys`). The old `:dm:` key diverged from synthesis's
+  // `:thread:` key, splitting the conversation memory.
+  const sessionKey = threadSessionKey(profile.externalAgentId, threadId);
   const result = await adapter.sendPrompt({
     adapterConfig: cfg,
     externalAgentId: profile.externalAgentId,
@@ -313,6 +317,25 @@ export async function processAgentDmTurn(
           "agent_dm DELEGATE → child agent_dm thread opened",
         );
       } else {
+        // Leaf target: open a head↔specialist dm thread for observability
+        // (autoDispatch=false — the specialist runs via task) then spawn
+        // the task with originatingThreadId pointing at the new dm thread
+        // so cascade bubbles the synthesised result there first, then
+        // recurses up via parentThreadId.
+        const opened = await openAgentDmThread({
+          companyId: callee.companyId,
+          callerDeploymentId: callee.id,
+          calleeDeploymentId: target.id,
+          parentThreadId: threadId,
+          directive: {
+            title: dp.title,
+            body: dp.description,
+            acceptanceCriteria: dp.acceptanceCriteria,
+            priority: dp.priority,
+            tags: dp.tags,
+          },
+          autoDispatch: false,
+        });
         const taskRow = await createTaskRecord({
           companyId: callee.companyId,
           title: dp.title,
@@ -328,7 +351,7 @@ export async function processAgentDmTurn(
           createdByUserId: null,
           createdByDeploymentId: callee.id,
           acceptanceCriteria: dp.acceptanceCriteria ?? null,
-          originatingThreadId: threadId,
+          originatingThreadId: opened.threadId,
         });
         createdTaskId = taskRow.id;
         enqueueTaskDispatch(taskRow.id).catch((err) =>

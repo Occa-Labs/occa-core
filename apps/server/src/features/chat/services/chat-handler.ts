@@ -30,6 +30,7 @@ import { childLogger } from "../../../lib/logger";
 import { db } from "../../../infra/database/client";
 import { getAdapter } from "../../../lib/adapter-registry";
 import { AGENT_WAIT_TIMEOUT_MS } from "../../../lib/timing";
+import { threadSessionKey } from "../../../lib/session-keys";
 import { createTaskRecord } from "../../../infra/database/task-creation";
 import { enqueueTaskDispatch } from "../../../infra/queue/task-worker";
 import { findCeoForCompany } from "../../agents/repositories/deployments";
@@ -47,7 +48,7 @@ import {
   loadContext,
   renderChatPrompt,
   ContextNotFoundError,
-} from "../../../services/context";
+} from "../../../services/memory";
 
 const log = childLogger("services:chat-handler");
 
@@ -157,29 +158,6 @@ function readDelegateBody(
   return { targetAgentId, title, description, acceptanceCriteria, tags, priority };
 }
 
-// Per-user-CEO sessionKey with a session-boundary suffix. The suffix is
-// the id of the EARLIEST chat message in this thread — stable across
-// turns within a session (always the first message of the conversation),
-// changes only when the user clears the thread (which deletes all rows,
-// so the next first message has a fresh id). The gateway sees a brand-
-// new conversation after a clear, so the CEO has no memory of prior
-// turns.
-function ceoChatSessionKey(
-  externalAgentId: string,
-  userId: string,
-  boundary: string | null,
-): string {
-  // Fallback "init" suffix is only used on the very first turn of a
-  // brand-new (or just-cleared) thread — by the time the user sends a
-  // second message, the boundary id exists. The first turn's gateway
-  // session is therefore opened under "init" but the same thread will
-  // converge to the boundary id by turn 2. Acceptable because the
-  // gateway's per-sessionKey context isn't load-bearing yet (we're
-  // still establishing identity via the wake prompt).
-  const suffix = boundary ? boundary.slice(0, 8) : "init";
-  return `agent:${externalAgentId}:chat:ceo-${userId}:${suffix}`;
-}
-
 export async function sendUserTurn(
   args: SendUserTurnArgs,
 ): Promise<ChatHandlerResult> {
@@ -278,21 +256,11 @@ export async function sendUserTurn(
     "chat wake-prompt built",
   );
 
-  // Boundary is the earliest message id in the thread (the just-inserted
-  // user msg on a fresh thread, or the original first message on later
-  // turns). Stable across turns within a session; changes only after a
-  // clear (when the thread is wiped and the next user msg becomes the
-  // new earliest). This drives the gateway sessionKey suffix so the CEO
-  // either keeps context (same boundary) or starts fresh (new boundary).
-  const boundary = await earliestMessageId({
-    companyId: args.companyId,
-    deploymentId: ceo.id,
-  });
-  const sessionKey = ceoChatSessionKey(
-    profile.externalAgentId,
-    args.userId,
-    boundary,
-  );
+  // One gateway session per thread — shared with synthesis so the CEO's
+  // interactive session and any background synthesis reports land in the
+  // SAME conversation memory. Reset happens via `deleteAgentSession` on
+  // thread clear, not via a key suffix. See `lib/session-keys`.
+  const sessionKey = threadSessionKey(profile.externalAgentId, threadId);
   const result = await adapter.sendPrompt({
     adapterConfig: cfg,
     externalAgentId: profile.externalAgentId,
@@ -411,9 +379,27 @@ export async function sendUserTurn(
         // No `createdTask` to surface in the API response — Phase C
         // hides the routing layer from the board.
       } else {
-        // Leaf target (specialist or direct_report): create the task
-        // and stamp `originatingThreadId` so cascade can bubble the
-        // synthesised result back to this user_ceo thread on completion.
+        // Leaf target (specialist or direct_report): open a caller↔callee
+        // dm thread (observability-only, autoDispatch=false) so the
+        // delegation is visible in the Chats window, then create the
+        // task and point `originatingThreadId` at the new dm thread.
+        // Cascade synthesizes the task result into the dm thread (Ren's
+        // "done" reply) then recurses up via parentThreadId to the
+        // user_ceo thread for the founder-facing response.
+        const opened = await openAgentDmThread({
+          companyId: args.companyId,
+          callerDeploymentId: ceo.id,
+          calleeDeploymentId: target.id,
+          parentThreadId: threadId,
+          directive: {
+            title: dp.title,
+            body: dp.description,
+            acceptanceCriteria: dp.acceptanceCriteria ?? null,
+            priority: dp.priority ?? null,
+            tags: dp.tags ?? null,
+          },
+          autoDispatch: false,
+        });
         const taskRow = await createTaskRecord({
           companyId: args.companyId,
           title: dp.title,
@@ -430,7 +416,7 @@ export async function sendUserTurn(
           createdByDeploymentId: null,
           acceptanceCriteria: dp.acceptanceCriteria ?? null,
           originatingUserId: args.userId,
-          originatingThreadId: threadId,
+          originatingThreadId: opened.threadId,
         });
         createdTask = {
           id: taskRow.id,

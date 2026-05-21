@@ -137,6 +137,9 @@ function eventLabel(
       if (actionType === "WorkflowExecuted") {
         return workflowExecutedLabel(p);
       }
+      if (actionType === "ReviewVerdict") {
+        return reviewVerdictLabel(event, agentName);
+      }
       const reason = typeof p.reason === "string" ? p.reason : null;
       const title = typeof p.title === "string" ? p.title : null;
       return {
@@ -174,6 +177,28 @@ function eventLabel(
 
 function truncate(s: string, n: number): string {
   return s.length <= n ? s : s.slice(0, n - 1).trimEnd() + "…";
+}
+
+// ReviewVerdict is an agent_action_emitted row written by the
+// auto-reviewer when a Head gives an editorial verdict on a delegated
+// deliverable. The actor is the reviewing Head; surface its name + the
+// decision + the feedback so the timeline shows WHO reviewed and WHAT
+// they decided, not a bare "Emitted ReviewVerdict".
+function reviewVerdictLabel(
+  event: TaskEventDTO,
+  agentName: (id: string | null | undefined) => string,
+): { label: string; detail?: string } {
+  const p = event.payload;
+  const decision = typeof p.decision === "string" ? p.decision : "verdict";
+  const feedback = typeof p.feedback === "string" ? p.feedback : null;
+  const auto = p.auto === true;
+  const label = auto
+    ? `Editorial review auto-resolved — ${decision}`
+    : `Editorial review by ${agentName(event.actorId)} — ${decision}`;
+  return {
+    label,
+    detail: feedback ? truncate(feedback, 160) : undefined,
+  };
 }
 
 // WorkflowExecuted is a synthetic agent_action_emitted row written by

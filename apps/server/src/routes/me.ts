@@ -6,16 +6,26 @@ import { db } from "../infra/database/client";
 import {
   agentRuntimeProfile,
   companySkills,
+  companyTools,
   deployments,
   users,
 } from "@occa/shared/schema";
 import {
   type AgentRole,
+  type AgentToolDTO,
+  type ListAgentToolsResponse,
   type MeResponse,
   type SkillDTO,
   type SkillFileEntry,
   type SkillSourceType,
 } from "@occa/shared/types";
+import { listCatalog } from "../features/tools/services/catalog-loader";
+import {
+  findById as findDocumentById,
+  listByAnyTag as listDocumentsByAnyTag,
+  listRecent as listRecentDocuments,
+  type DocumentRow,
+} from "../features/documents/repositories/documents";
 import { requireAuth } from "../middleware/auth";
 import { requireAgentToken } from "../middleware/agent-auth";
 import {
@@ -161,6 +171,167 @@ router.get(
       .filter((r): r is (typeof rows)[number] => r != null)
       .map(toSkillDTO);
     res.json({ skills: ordered });
+  },
+);
+
+// GET /api/me/agent/tools — list active tools the calling agent is
+// allowed to use. Filter chain (mirrors skills semantics):
+//   1. tool.status == 'active' (operator gate; paused/failed hidden)
+//   2. tool.id is in the agent's enabled_tools (per-agent toggle)
+//   3. tool.allowed_roles empty OR includes the agent's deployment role
+// Re-fetched on each wake so flag changes propagate without redeploy.
+router.get(
+  "/agent/tools",
+  requireAgentToken,
+  async (req: Request, res: Response) => {
+    const { companyId, agentId: deploymentId } = req.agent!;
+
+    const [deploymentRow] = await db
+      .select({
+        role: deployments.role,
+        enabledTools: agentRuntimeProfile.enabledTools,
+      })
+      .from(deployments)
+      .innerJoin(
+        agentRuntimeProfile,
+        eq(agentRuntimeProfile.deploymentId, deployments.id),
+      )
+      .where(eq(deployments.id, deploymentId))
+      .limit(1);
+    if (!deploymentRow) {
+      res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.NOT_FOUND });
+      return;
+    }
+    const enabledSet = new Set(deploymentRow.enabledTools);
+
+    const rows = await db
+      .select({
+        id: companyTools.id,
+        type: companyTools.type,
+        label: companyTools.label,
+        status: companyTools.status,
+        allowedRoles: companyTools.allowedRoles,
+      })
+      .from(companyTools)
+      .where(eq(companyTools.companyId, companyId));
+
+    const catalog = await listCatalog();
+    const catalogByType = new Map(catalog.map((e) => [e.type, e]));
+
+    const tools: AgentToolDTO[] = rows
+      .filter((r) => r.status === "active")
+      .filter((r) => enabledSet.has(r.id))
+      .filter((r) => {
+        const allowed = r.allowedRoles ?? [];
+        return allowed.length === 0 || allowed.includes(deploymentRow.role);
+      })
+      .map((r) => {
+        const entry = catalogByType.get(r.type);
+        return {
+          id: r.id,
+          type: r.type,
+          label: r.label,
+          displayName: entry?.displayName ?? r.type,
+          status: r.status as AgentToolDTO["status"],
+          // Static actions only for v1. MCP-backed tools with dynamic
+          // actions would need a live tools/list call; deferring that
+          // optimization until a real MCP entry lands.
+          actions: entry?.actions ?? [],
+        };
+      });
+
+    const body: ListAgentToolsResponse = { tools };
+    res.json(body);
+  },
+);
+
+// Agent-facing documents API. Mirrors the user-facing endpoint at
+// /api/documents but authenticates via the per-trace API key and scopes
+// reads to the calling agent's company. Documents are the company's
+// shared episodic memory — every agent can fetch any company doc
+// (no per-agent ACL today; if that's ever needed it lives here).
+//
+// Snippets are intentionally not truncated server-side; the agent
+// asks for one doc at a time and gets the full content.
+
+interface AgentDocumentDTO {
+  id: string;
+  taskId: string | null;
+  deploymentId: string | null;
+  title: string;
+  format: string;
+  tags: string[];
+  createdAt: string;
+}
+
+interface AgentDocumentFullDTO extends AgentDocumentDTO {
+  content: string;
+}
+
+function toAgentDocumentListItem(row: DocumentRow): AgentDocumentDTO {
+  return {
+    id: row.id,
+    taskId: row.taskId,
+    deploymentId: row.deploymentId,
+    title: row.title,
+    format: row.format,
+    tags: row.tags,
+    createdAt: row.createdAt.toISOString(),
+  };
+}
+
+function toAgentDocumentFull(row: DocumentRow): AgentDocumentFullDTO {
+  return { ...toAgentDocumentListItem(row), content: row.content };
+}
+
+const AGENT_DOCS_DEFAULT_LIMIT = 25;
+const AGENT_DOCS_MAX_LIMIT = 100;
+
+// GET /api/me/agent/documents?tags=foo,bar&limit=25
+// List documents in the agent's company, recency-ordered. ?tags filters
+// to docs whose tags overlap any of the comma-separated values.
+router.get(
+  "/agent/documents",
+  requireAgentToken,
+  async (req: Request, res: Response) => {
+    const { companyId } = req.agent!;
+
+    const limitRaw = Number(req.query.limit ?? AGENT_DOCS_DEFAULT_LIMIT);
+    const limit =
+      Number.isFinite(limitRaw) && limitRaw > 0
+        ? Math.min(Math.floor(limitRaw), AGENT_DOCS_MAX_LIMIT)
+        : AGENT_DOCS_DEFAULT_LIMIT;
+
+    const tagsParam =
+      typeof req.query.tags === "string" ? req.query.tags : "";
+    const tags = tagsParam
+      .split(",")
+      .map((t) => t.trim())
+      .filter((t) => t.length > 0);
+
+    const rows =
+      tags.length > 0
+        ? await listDocumentsByAnyTag({ companyId, tags, limit })
+        : await listRecentDocuments({ companyId, limit });
+
+    res.json({ documents: rows.map(toAgentDocumentListItem) });
+  },
+);
+
+// GET /api/me/agent/documents/:id
+// Full document content. Returns 404 if the doc belongs to another
+// company (or doesn't exist).
+router.get(
+  "/agent/documents/:id",
+  requireAgentToken,
+  async (req: Request, res: Response) => {
+    const { companyId } = req.agent!;
+    const row = await findDocumentById({ companyId, id: req.params.id });
+    if (!row) {
+      res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.NOT_FOUND });
+      return;
+    }
+    res.json({ document: toAgentDocumentFull(row) });
   },
 );
 

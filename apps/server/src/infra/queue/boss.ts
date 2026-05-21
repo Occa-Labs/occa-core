@@ -10,6 +10,9 @@ export const WORKFLOW_EVALUATE_QUEUE = "workflow.evaluate";
 // same thread. The worker resolves "what's pending" by reading the
 // thread's chat_messages.
 export const AGENT_DM_DISPATCH_QUEUE = "agent_dm.dispatch";
+// Auto-reviewer: a delegated task that lands in `review` enqueues one
+// job keyed by taskId so the Head reviews it once per landing.
+export const REVIEW_DISPATCH_QUEUE = "review.dispatch";
 
 export interface TaskDispatchJobData {
   taskId: string;
@@ -21,6 +24,10 @@ export interface WorkflowEvaluateJobData {
 
 export interface AgentDmDispatchJobData {
   threadId: string;
+}
+
+export interface ReviewDispatchJobData {
+  taskId: string;
 }
 
 let instance: PgBoss | null = null;
@@ -60,6 +67,9 @@ export async function getBoss(): Promise<PgBoss> {
     // Phase C: agent_dm thread dispatch. Exclusive per-thread so a
     // burst of directives on the same DM thread serialises.
     await boss.createQueue(AGENT_DM_DISPATCH_QUEUE, { policy: "exclusive" });
+    // Auto-reviewer dispatch. Exclusive per-task so one task can't have
+    // two Head reviews running at once.
+    await boss.createQueue(REVIEW_DISPATCH_QUEUE, { policy: "exclusive" });
 
     instance = boss;
     return boss;

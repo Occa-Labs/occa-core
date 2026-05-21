@@ -34,6 +34,7 @@ import { db } from "../../infra/database/client";
 import { getAdapter } from "../../lib/adapter-registry";
 import { childLogger } from "../../lib/logger";
 import { AGENT_WAIT_TIMEOUT_MS } from "../../lib/timing";
+import { threadSessionKey } from "../../lib/session-keys";
 import { findByDeploymentId as findRuntimeProfile } from "../../features/agents/repositories/agent-runtime-profile";
 import { insertMessage } from "../../features/chat/repositories/chat-messages";
 
@@ -416,9 +417,11 @@ export async function synthesizeForThread(
     .returning({ id: traces.id });
   const traceId = traceRow.id;
 
-  // Use the thread id as the gateway sessionKey discriminator so the
-  // speaker keeps continuity with the prior turns in this thread.
-  const sessionKey = `agent:${speaker.externalAgentId}:thread:${thread.id}`;
+  // Same gateway session as the thread's interactive turns (chat-handler
+  // / agent-dm-handler) — so the report this synthesis posts lands in the
+  // conversation memory the agent reads on the next user reply. See
+  // `lib/session-keys`.
+  const sessionKey = threadSessionKey(speaker.externalAgentId, thread.id);
   const result = await adapter.sendPrompt({
     adapterConfig: speaker.adapterConfig,
     externalAgentId: speaker.externalAgentId,

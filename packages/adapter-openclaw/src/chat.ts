@@ -112,7 +112,19 @@ export async function sendAgentPrompt(
   const waitTimeoutMs = opts?.waitTimeoutMs ?? WAIT_TIMEOUT_MS;
 
   const assistantChunks: string[] = [];
+  // Coalesced run-end `text` frames — atomic, splice-proof. The gateway
+  // emits one per run just before `lifecycle phase=end`. The per-token
+  // `delta` stream shares the WS connection and can interleave foreign
+  // content under a matching runId, so the coalesced frame is preferred.
+  const coalescedTexts: string[] = [];
   let lifecycleError: string | null = null;
+
+  // The gateway WS is a firehose — frames for every concurrent run on
+  // this connection arrive here. Only frames whose runId we own may
+  // touch the accumulators. Seeded with idempotencyKey (the gateway may
+  // echo it as runId); the accepted payload's runId is added once known.
+  const idempotencyKey = uuid();
+  const trackedRunIds = new Set<string>([idempotencyKey]);
 
   let client: Awaited<ReturnType<typeof connectWithAutoPair>>["client"] | null = null;
 
@@ -126,13 +138,18 @@ export async function sendAgentPrompt(
           if (evt.event !== "agent") return;
           const frame = asRecord(evt.payload);
           if (!frame) return;
+          const runId = asString(frame.runId);
+          if (!runId || !trackedRunIds.has(runId)) return;
           const stream = asString(frame.stream);
           const data = asRecord(frame.data) ?? {};
           if (stream === "assistant") {
             const delta = asString(data.delta);
             const text = asString(data.text);
+            // `delta` = one streamed token (interleave-prone). `text` =
+            // the coalesced final answer (atomic). Keep them apart so
+            // the reply can prefer the coalesced frame.
             if (delta) assistantChunks.push(delta);
-            else if (text) assistantChunks.push(text);
+            else if (text) coalescedTexts.push(text);
           } else if (stream === "error") {
             lifecycleError =
               asString(data.error) ?? asString(data.message) ?? lifecycleError;
@@ -158,8 +175,6 @@ export async function sendAgentPrompt(
     );
     client = connected.client;
 
-    const idempotencyKey = uuid();
-
     const accepted = (await client.sendRpc(
       "agent",
       {
@@ -174,6 +189,7 @@ export async function sendAgentPrompt(
     let finalPayload: Record<string, unknown> | null = accepted;
     const acceptedStatus = normalizeStatus(accepted?.status);
     const runId = asString(accepted?.runId) ?? idempotencyKey;
+    trackedRunIds.add(runId);
 
     if (acceptedStatus === "error") {
       const reason =
@@ -207,7 +223,14 @@ export async function sendAgentPrompt(
       }
     }
 
+    // Reply source priority: coalesced run-end frame (atomic) → joined
+    // delta chunks (interleave-prone fallback) → accept/wait payload.
+    const replyFromCoalesced =
+      coalescedTexts.length > 0
+        ? coalescedTexts[coalescedTexts.length - 1].trim()
+        : "";
     const reply =
+      replyFromCoalesced ||
       assistantChunks.join("").trim() ||
       (extractResultText(finalPayload) ?? extractResultText(accepted) ?? "");
 
@@ -312,6 +335,9 @@ export async function checkAgentRun(
 ): Promise<CheckAgentRunResult> {
   const pollTimeoutMs = input.pollTimeoutMs ?? 10_000;
   const assistantChunks: string[] = [];
+  // Coalesced run-end `text` frames — atomic, preferred over joined
+  // per-token `delta`s (which share the WS firehose and can interleave).
+  const coalescedTexts: string[] = [];
 
   let client: Awaited<ReturnType<typeof connectWithAutoPair>>["client"] | null = null;
   try {
@@ -324,10 +350,14 @@ export async function checkAgentRun(
           if (evt.event !== "agent") return;
           const frame = asRecord(evt.payload);
           if (!frame) return;
+          // Drop frames from other concurrent runs on this connection.
+          if (asString(frame.runId) !== input.runId) return;
           const data = asRecord(frame.data) ?? {};
           if (asString(frame.stream) === "assistant") {
-            const delta = asString(data.delta) ?? asString(data.text);
+            const delta = asString(data.delta);
+            const text = asString(data.text);
             if (delta) assistantChunks.push(delta);
+            else if (text) coalescedTexts.push(text);
           }
         },
       },
@@ -355,6 +385,9 @@ export async function checkAgentRun(
     }
 
     const reply =
+      (coalescedTexts.length > 0
+        ? coalescedTexts[coalescedTexts.length - 1].trim()
+        : "") ||
       assistantChunks.join("").trim() ||
       (extractResultText(waitPayload) ?? "");
     return { done: true, reply };

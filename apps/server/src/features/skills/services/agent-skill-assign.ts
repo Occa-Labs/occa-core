@@ -22,6 +22,8 @@ import {
 import {
   findBuiltinByKey,
   insertSkill,
+  updateSkillById,
+  type CompanySkillRow,
 } from "../repositories/company-skills";
 import {
   getDesiredSkills,
@@ -43,6 +45,11 @@ const log = childLogger("agent-skill-assign");
 // commit SHA after fetch, so a `master`-input → `<sha>`-stored mismatch
 // would otherwise make the row look "missing" on every boot. The key is
 // stable across refs.
+//
+// Boot-time behaviour: if the builtin already exists, skip GitHub. To
+// pull a new revision of an OCCA-shipped default after editing its
+// SKILL.md upstream, operators hit POST /api/skills/refresh-defaults
+// — see refreshBuiltinSkill below.
 //
 // Throws on GitHub fetch failure — caller is expected to soft-skip.
 export async function ensureCompanySkill(
@@ -78,6 +85,84 @@ export async function ensureCompanySkill(
     throw new Error(`ensure_skill_failed: ${source}`);
   }
   return { key: after.key };
+}
+
+// On-demand refresh path. Forces a GitHub refetch and updates the
+// row in place if the resolved commit SHA differs from the stored
+// sourceRef. Returns whether anything actually changed so the caller
+// can surface "already up to date" vs "updated to <sha>" in the UI.
+//
+// Driven by POST /api/skills/:id/refresh (per-skill button) and
+// POST /api/skills/refresh-defaults (batch over OCCA_DEFAULT_SKILLS).
+// Boot stays cheap because builtins short-circuit in ensureCompanySkill.
+export async function refreshSkillRow(args: {
+  skill: CompanySkillRow;
+}): Promise<{ updated: boolean; sourceRef: string }> {
+  // Refresh always resolves the repo's default-branch HEAD. Passing the
+  // stored sourceLocator alone would round-trip the previously-pinned
+  // commit SHA (we rewrite the URL at first-fetch to embed it) and the
+  // diff against args.skill.sourceRef would never report a change.
+  const fetched = await fetchGithubSkill(args.skill.sourceLocator, {
+    forceDefaultBranch: true,
+  });
+  if (args.skill.sourceRef === fetched.sourceRef) {
+    return { updated: false, sourceRef: args.skill.sourceRef };
+  }
+  await updateSkillById({
+    skillId: args.skill.id,
+    patch: {
+      slug: fetched.slug,
+      name: fetched.name,
+      description: fetched.description,
+      markdown: fetched.markdown,
+      sourceLocator: fetched.sourceLocator,
+      sourceRef: fetched.sourceRef,
+      sourceOwner: fetched.sourceOwner,
+      sourceRepo: fetched.sourceRepo,
+      sourcePath: fetched.sourcePath,
+      fileInventory: fetched.fileInventory,
+      metadata: {
+        ...fetched.metadata,
+        ...(args.skill.companyId === null ? { builtin: true } : {}),
+      },
+    },
+  });
+  return { updated: true, sourceRef: fetched.sourceRef };
+}
+
+// Convenience for batch refresh over OCCA_DEFAULT_SKILLS. Re-fetches
+// each by source, ensures the row exists (insert) or updates in place
+// (refreshSkillRow). Returns per-source status for the UI summary.
+export async function refreshBuiltinSkill(source: string): Promise<{
+  key: string;
+  updated: boolean;
+}> {
+  const fetched = await fetchGithubSkill(source);
+  const existing = await findBuiltinByKey(fetched.key);
+
+  if (!existing) {
+    await insertSkill({
+      companyId: null,
+      key: fetched.key,
+      slug: fetched.slug,
+      name: fetched.name,
+      description: fetched.description,
+      markdown: fetched.markdown,
+      sourceType: "github",
+      sourceLocator: fetched.sourceLocator,
+      sourceRef: fetched.sourceRef,
+      sourceOwner: fetched.sourceOwner,
+      sourceRepo: fetched.sourceRepo,
+      sourcePath: fetched.sourcePath,
+      fileInventory: fetched.fileInventory,
+      allowedRoles: [],
+      metadata: { ...fetched.metadata, builtin: true },
+    });
+    return { key: fetched.key, updated: true };
+  }
+
+  const result = await refreshSkillRow({ skill: existing });
+  return { key: existing.key, updated: result.updated };
 }
 
 // Called once at deployment birth. Resolves skill sources for the role,

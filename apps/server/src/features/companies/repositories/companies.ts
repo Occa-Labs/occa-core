@@ -106,6 +106,26 @@ export async function findActiveOwnerCompanyWithProfile(
   return { company, profile: profile ?? null };
 }
 
+// Insert a new 'user'-kind company owned by the given user. The schema's
+// partial unique index on (owner_user_id) WHERE kind='user' AND deleted_at
+// IS NULL enforces the MVP one-wallet-one-company invariant — racing
+// inserts will surface as a unique-violation that the route maps to a
+// `COMPANY_ALREADY_EXISTS` error.
+export async function insertOwnerCompany(args: {
+  userId: string;
+  name: string;
+}): Promise<CompanyRow> {
+  const [row] = await db
+    .insert(companies)
+    .values({
+      ownerUserId: args.userId,
+      name: args.name,
+      kind: "user",
+    })
+    .returning();
+  return row;
+}
+
 // Patch core lifecycle fields (name, paused state, kickoff state). Caller
 // supplies a partial; we always bump updated_at. Returns the fresh row.
 export async function updateCore(args: {

@@ -39,7 +39,7 @@ function DockButton({ item }: { item: DockItem }) {
   return (
     <div className="relative" onMouseEnter={onEnter} onMouseLeave={onLeave}>
       {item.active && !item.disabled && (
-        <span className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 rounded-full bg-white/80" />
+        <span className="absolute bottom-0 left-1/2 -translate-x-1/2 h-0.5 w-5 rounded-full bg-white/80" />
       )}
 
       <button
@@ -68,8 +68,8 @@ function DockButton({ item }: { item: DockItem }) {
       </button>
 
       <div
-        className={`absolute left-full top-1/2 -translate-y-1/2 ml-2.5 pointer-events-none transition-all duration-150 ${
-          showTooltip ? "opacity-100 translate-x-0" : "opacity-0 -translate-x-1"
+        className={`absolute bottom-full left-1/2 -translate-x-1/2 mb-2.5 pointer-events-none transition-all duration-150 ${
+          showTooltip ? "opacity-100 translate-y-0" : "opacity-0 translate-y-1"
         }`}
       >
         <span
@@ -89,7 +89,7 @@ function DockButton({ item }: { item: DockItem }) {
 export function Dock({ items }: DockProps) {
   return (
     <div
-      className="fixed left-3 top-1/2 -translate-y-1/2 z-50 rounded-2xl p-1.5 flex flex-col gap-1"
+      className="fixed bottom-3 left-1/2 -translate-x-1/2 z-50 rounded-2xl p-1.5 flex flex-row gap-1"
       style={{ ...surface.base }}
     >
       {items.map((item) => (

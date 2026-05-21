@@ -20,6 +20,15 @@ export const LIMITS = {
   DESCRIPTION: 4_000, // task description, comment body
   DESCRIPTION_LONG: 4_096, // routine description
   CHAT_MESSAGE: 8_000, // agent chat message
+  WORKSPACE_FILE_CONTENT: 100_000, // editable workspace file (AGENTS.md, SOUL.md, etc.)
+
+  // ─── Tools primitive ───────────────────────────────────────────────────
+  TOOL_LABEL: 80, // operator-facing nickname for a tool instance
+  TOOL_TYPE: 64, // handler type slug ("x", "notion", "shopify", "mcp")
+  TOOL_ACTION_NAME: 64, // action name within a handler ("tweet", "create_page")
+  TOOL_CALL_INPUT: 16_384, // serialized invocation body upper bound
+  TOOL_CALL_RESULT_SUMMARY: 4_096, // serialized result summary for tool_call_logs
+  TOOL_ERROR_MESSAGE: 2_000, // captured error message stored on logs / row
 
   // ─── Array / count limits ──────────────────────────────────────────────
   TRIGGERS_MAX: 8, // routines: max trigger array

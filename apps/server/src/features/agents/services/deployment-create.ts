@@ -73,6 +73,9 @@ export interface CreateDeploymentInternalInput {
   // Optionally reuse an existing identity (e.g. redeploying the same
   // agent into a new company). When omitted we mint a fresh identity.
   agentIdentityId?: string | null;
+  // Optional flat per-task invoice rate (lamports) set at deploy time.
+  // Omitted / null = no rate; operator can set it later from Wallet tab.
+  taskRateLamports?: number | null;
 }
 
 export type CreateDeploymentInternalResult =
@@ -253,6 +256,7 @@ export async function createDeploymentInternal(
           adapterConfig: insertAdapterConfig,
           provisioningState: "pending",
           workstationId,
+          taskRateLamports: input.taskRateLamports ?? null,
         })
         .returning();
 

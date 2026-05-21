@@ -11,6 +11,8 @@ import type {
   DecideApprovalResponse,
   ListActivityResponse,
   ListAgentFilesResponse,
+  UpdateAgentFileRequest,
+  UpdateAgentFileResponse,
   ListAgentSkillSyncsResponse,
   ListApprovalsResponse,
   ListChatMessagesResponse,
@@ -38,12 +40,17 @@ import type {
   SendChatMessageRequest,
   SendChatMessageResponse,
   TraceResponse,
+  SkillDTO,
   SkillResponse,
   SyncAgentSkillsRequest,
+  SyncAgentToolsRequest,
   TaskResponse,
   UpdateAgentRequest,
   UpdateCompanyRequest,
   UpdateRoutineRequest,
+  UpdateTriggerRequest,
+  CreateTriggerRequest,
+  RoutineTriggerDTO,
   UpdateSkillRequest,
   UpdateTaskRequest,
 } from "@occa/shared/types";
@@ -348,10 +355,106 @@ export const chainApi = {
       `/api/chain/agents/${agentId}/operating-wallet/confirm`,
       { method: "POST", body: JSON.stringify(body) },
     ),
+  getTreasury: (companyId: string) =>
+    request<TreasuryStateResponse>(
+      `/api/chain/companies/${companyId}/treasury`,
+    ),
+  prepareSetPolicy: (companyId: string, body: PrepareSetPolicyRequest) =>
+    request<PreparedTx>(
+      `/api/chain/companies/${companyId}/treasury/policy/prepare`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  confirmSetPolicy: (companyId: string, body: ConfirmSetPolicyRequest) =>
+    request<{ signature: string }>(
+      `/api/chain/companies/${companyId}/treasury/policy/confirm`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  getPendingDisbursements: (companyId: string) =>
+    request<PendingDisbursementsResponse>(
+      `/api/chain/companies/${companyId}/disbursements/pending`,
+    ),
+  prepareDisbursement: (companyId: string) =>
+    request<PrepareDisbursementResponse>(
+      `/api/chain/companies/${companyId}/disbursements/prepare`,
+      { method: "POST", body: JSON.stringify({}) },
+    ),
+  confirmDisbursement: (companyId: string, body: ConfirmDisbursementRequest) =>
+    request<{ signature: string; paidCount: number }>(
+      `/api/chain/companies/${companyId}/disbursements/confirm`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
 };
+
+export interface DisbursementPayableAgent {
+  deploymentId: string;
+  agentName: string;
+  receivingAddress: string;
+  invoiceCount: number;
+  totalLamports: number;
+}
+
+export interface DisbursementBlockedAgent {
+  deploymentId: string;
+  agentName: string;
+  invoiceCount: number;
+  totalLamports: number;
+}
+
+export interface PendingDisbursementsResponse {
+  payable: DisbursementPayableAgent[];
+  blocked: DisbursementBlockedAgent[];
+  totalLamports: number;
+  estimatedFeeLamports: number;
+  feeBps: number;
+  treasuryBalanceLamports: number;
+  /** Lamports as a string — JSON can't carry bigint. */
+  budgetRemainingLamports: string;
+}
+
+export interface PrepareDisbursementResponse extends PreparedTx {
+  /** Every invoice the prepared tx settles — passed back on confirm. */
+  invoiceIds: string[];
+}
+
+export interface ConfirmDisbursementRequest {
+  signedTransaction: string;
+  blockhash: string;
+  lastValidBlockHeight: number;
+  invoiceIds: string[];
+}
+
+export interface TreasuryStateResponse {
+  treasuryPda: string;
+  policyPda: string;
+  balanceLamports: number;
+  initialized: boolean;
+  /** Lamports as a string — JSON can't carry bigint. */
+  discretionaryBudgetLamports: string;
+  discretionarySpentLamports: string;
+  agentOperatingFeeBps: number;
+}
+
+export interface PrepareSetPolicyRequest {
+  discretionaryBudgetLamports: number;
+}
+
+export interface ConfirmSetPolicyRequest {
+  signedTransaction: string;
+  blockhash: string;
+  lastValidBlockHeight: number;
+}
+
+export interface CreateCompanyRequest {
+  name: string;
+}
 
 export const companiesApi = {
   get: (id: string) => request<CompanyResponse>(`/api/companies/${id}`),
+  create: (input: CreateCompanyRequest) =>
+    request<CompanyResponse>("/api/companies", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
   update: (id: string, input: UpdateCompanyRequest) =>
     request<CompanyResponse>(`/api/companies/${id}`, {
       method: "PATCH",
@@ -496,6 +599,11 @@ export const skillsApi = {
     }),
   remove: (id: string) =>
     request<{ ok: boolean }>(`/api/skills/${id}`, { method: "DELETE" }),
+  refresh: (id: string) =>
+    request<{ updated: boolean; sourceRef: string; skill: SkillDTO }>(
+      `/api/skills/${id}/refresh`,
+      { method: "POST" },
+    ),
   fileUrl: (id: string, path: string) =>
     `${API_BASE}/api/skills/${id}/files/${path}`,
 };
@@ -524,8 +632,21 @@ export const agentsApi = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+  syncTools: (id: string, input: SyncAgentToolsRequest) =>
+    request<AgentResponse>(`/api/agents/${id}/tools/sync`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
   files: (id: string) =>
     request<ListAgentFilesResponse>(`/api/agents/${id}/files`),
+  updateFile: (id: string, filename: string, input: UpdateAgentFileRequest) =>
+    request<UpdateAgentFileResponse>(
+      `/api/agents/${id}/files/${encodeURIComponent(filename)}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify(input),
+      },
+    ),
   createStream: async (
     input: CreateAgentRequest,
     onEvent: (evt: {
@@ -879,23 +1000,23 @@ export const routinesApi = {
     }),
   remove: (id: string) =>
     request<{ ok: boolean }>(`/api/routines/${id}`, { method: "DELETE" }),
+  run: (id: string) =>
+    request<{ ok: boolean }>(`/api/routines/${id}/run`, { method: "POST" }),
+  patchTrigger: (
+    routineId: string,
+    triggerId: string,
+    input: UpdateTriggerRequest,
+  ) =>
+    request<{ trigger: RoutineTriggerDTO }>(
+      `/api/routines/${routineId}/triggers/${triggerId}`,
+      { method: "PATCH", body: JSON.stringify(input) },
+    ),
+  createTrigger: (routineId: string, input: CreateTriggerRequest) =>
+    request<{ trigger: RoutineTriggerDTO }>(
+      `/api/routines/${routineId}/triggers`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
 };
-
-export interface DevResetResponse {
-  ok: boolean;
-  deleted: { companies: number; otherUsers: number; nonces: number };
-}
-
-export interface DevResetGatewayResponse {
-  ok: boolean;
-  dryRun: boolean;
-  target: string;
-  candidates: string[];
-  removed: string[];
-  failures: string[];
-  stdout: string;
-  stderr: string;
-}
 
 export interface DevSeedApprovalResponse {
   ok: boolean;
@@ -903,172 +1024,12 @@ export interface DevSeedApprovalResponse {
 }
 
 export const devApi = {
-  reset: () => request<DevResetResponse>("/api/dev/reset", { method: "POST" }),
-  resetGateway: (opts?: { dryRun?: boolean }) =>
-    request<DevResetGatewayResponse>(
-      `/api/dev/reset-gateway${opts?.dryRun ? "?dryRun=1" : ""}`,
-      { method: "POST" },
-    ),
   seedApproval: () =>
     request<DevSeedApprovalResponse>("/api/dev/seed-approval", {
       method: "POST",
     }),
 };
 
-export type KickoffRoleCategory =
-  | "c_suite"
-  | "leadership"
-  | "engineering"
-  | "product_design"
-  | "marketing_growth"
-  | "editorial_content"
-  | "operations_admin"
-  | "sales_success"
-  | "data_research"
-  | "web3";
-
-export interface KickoffRoleEntry {
-  key: string;
-  label: string;
-  description: string;
-  category: KickoffRoleCategory;
-  defaultName: string;
-}
-
-export interface KickoffRolesResponse {
-  roles: KickoffRoleEntry[];
-  maxDeployments: number;
-}
-
-export interface KickoffStartRequest {
-  description?: string | null;
-  niche?: string | null;
-  audience?: string | null;
-  brandVoice?: string | null;
-  contentPillars?: string[];
-  preset?: "bootstrap" | "standard" | "full";
-  roles?: string[];
-}
-
-export interface KickoffStartResponse {
-  ok: true;
-  deployedAgentIds: string[];
-}
-
-export interface KickoffAgentStatus {
-  id: string;
-  name: string;
-  role: string;
-  provisioningState: "pending" | "provisioning" | "ready" | "failed";
-  provisioningError: string | null;
-  externalAgentId: string | null;
-}
-
-export interface KickoffStatusFrame {
-  kickoffState: "not_started" | "provisioning" | "completed";
-  agents: KickoffAgentStatus[];
-}
-
-async function streamSSE(
-  path: string,
-  init: RequestInit,
-  onEvent: (eventName: string, data: unknown) => void,
-  signal?: AbortSignal,
-): Promise<void> {
-  const token = getStoredToken();
-  const headers = new Headers(init.headers);
-  headers.set("Accept", "text/event-stream");
-  if (init.body) headers.set("Content-Type", "application/json");
-  if (token) headers.set("Authorization", `Bearer ${token}`);
-
-  let res: Response;
-  try {
-    res = await fetch(`${API_BASE}${path}`, { ...init, headers, signal });
-  } catch (err) {
-    // Aborted fetches (strict-mode double-effect, unmount) are normal — no
-    // need to log as an error. Real failures still surface.
-    const aborted =
-      signal?.aborted ||
-      (err as { name?: string } | null)?.name === "AbortError";
-    if (!aborted) {
-      console.error(`[streamSSE] fetch failed path=${path}`, err);
-    }
-    throw err;
-  }
-  if (!res.ok) {
-    let body: unknown = null;
-    try {
-      body = await res.json();
-    } catch {
-      /* ignore */
-    }
-    console.error(`[streamSSE] non-ok response`, { status: res.status, body });
-    throw new ApiError(res.status, body);
-  }
-  const reader = res.body!.getReader();
-  const decoder = new TextDecoder();
-  let buf = "";
-  let currentEvent = "";
-  let currentData = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) return;
-    buf += decoder.decode(value, { stream: true });
-    const lines = buf.split("\n");
-    buf = lines.pop()!;
-    for (const line of lines) {
-      if (line === "") {
-        if (currentData !== "") {
-          try {
-            const payload = JSON.parse(currentData);
-            onEvent(currentEvent || "message", payload);
-          } catch {
-            /* malformed JSON, skip */
-          }
-        }
-        currentEvent = "";
-        currentData = "";
-      } else if (line.startsWith("event:")) {
-        currentEvent = line.slice(6).trim();
-      } else if (line.startsWith("data:")) {
-        currentData += line.slice(5).trim();
-      }
-    }
-  }
-}
-
-export const kickoffApi = {
-  listRoles: () =>
-    request<KickoffRolesResponse>("/api/companies/kickoff/roles"),
-  start: (companyId: string, input: KickoffStartRequest) =>
-    request<KickoffStartResponse>(`/api/companies/${companyId}/kickoff/start`, {
-      method: "POST",
-      body: JSON.stringify(input),
-    }),
-  reset: (companyId: string) =>
-    request<{ ok: true }>(`/api/companies/${companyId}/kickoff/reset`, {
-      method: "POST",
-    }),
-  streamStatus: (
-    companyId: string,
-    onFrame: (frame: KickoffStatusFrame) => void,
-    onDone: (finalState: KickoffStatusFrame["kickoffState"]) => void,
-    signal?: AbortSignal,
-  ) =>
-    streamSSE(
-      `/api/companies/${companyId}/kickoff/status`,
-      { method: "GET" },
-      (event, data) => {
-        if (event === "status") onFrame(data as KickoffStatusFrame);
-        else if (event === "done")
-          onDone(
-            (data as { kickoffState: KickoffStatusFrame["kickoffState"] })
-              .kickoffState,
-          );
-      },
-      signal,
-    ),
-};
 
 export interface ApprovalEditablePayload {
   title?: string;
@@ -1095,4 +1056,56 @@ export const approvalsApi = {
       method: "PATCH",
       body: JSON.stringify({ payload }),
     }),
+};
+
+export const toolsApi = {
+  // Operator-facing
+  catalog: () =>
+    request<import("@occa/shared/types").ToolCatalogResponse>(
+      "/api/tool-catalog",
+    ),
+  list: (companyId: string) =>
+    request<import("@occa/shared/types").ListCompanyToolsResponse>(
+      `/api/companies/${companyId}/tools`,
+    ),
+  install: (
+    companyId: string,
+    input: import("@occa/shared/types").InstallCompanyToolRequest,
+  ) =>
+    request<import("@occa/shared/types").CompanyToolResponse>(
+      `/api/companies/${companyId}/tools`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
+  patch: (
+    companyId: string,
+    toolId: string,
+    input: import("@occa/shared/types").UpdateCompanyToolRequest,
+  ) =>
+    request<import("@occa/shared/types").CompanyToolResponse>(
+      `/api/companies/${companyId}/tools/${toolId}`,
+      { method: "PATCH", body: JSON.stringify(input) },
+    ),
+  remove: (companyId: string, toolId: string) =>
+    request<{ ok: boolean }>(
+      `/api/companies/${companyId}/tools/${toolId}`,
+      { method: "DELETE" },
+    ),
+  test: (companyId: string, toolId: string) =>
+    request<import("@occa/shared/types").TestCompanyToolResponse>(
+      `/api/companies/${companyId}/tools/${toolId}/test`,
+      { method: "POST" },
+    ),
+  logs: (
+    companyId: string,
+    toolId: string,
+    opts?: { limit?: number; before?: string },
+  ) => {
+    const qs = new URLSearchParams();
+    if (opts?.limit !== undefined) qs.set("limit", String(opts.limit));
+    if (opts?.before) qs.set("before", opts.before);
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return request<import("@occa/shared/types").ListToolCallLogsResponse>(
+      `/api/companies/${companyId}/tools/${toolId}/logs${suffix}`,
+    );
+  },
 };

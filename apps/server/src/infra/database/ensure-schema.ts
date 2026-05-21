@@ -20,16 +20,16 @@ export async function ensureSchema(): Promise<void> {
   // apps/server/ (4) → apps/ (5) → occa/ (5) → occa/drizzle/.
   const migrationsFolder = path.resolve(__dirname, "../../../../../drizzle");
 
-  // Self-heal pass FIRST. If a previous run somehow left the journal table
-  // out of sync with the migrations folder (e.g. journal `when` timestamps
-  // backdated below already-recorded `created_at`, drizzle-kit silent
-  // no-op, partially-applied chain via psql), stamp the missing rows so
-  // drizzle's migrator sees an accurate picture before deciding what to
-  // re-run. Only stamps when the underlying schema actually has the
-  // expected tables — i.e. a sentinel-guarded heuristic identical to the
-  // post-DUPLICATE_TABLE catch path, but proactive.
+  // Self-heal pass FIRST. A journal can fall out of sync with
+  // `__drizzle_migrations` mid-chain (a row applied via psql, a
+  // drizzle-kit silent no-op). Back-fill those gaps so the migrator sees
+  // an accurate picture before deciding what to re-run — but ONLY up to
+  // the latest migration already recorded as applied. A migration newer
+  // than that has genuinely not run yet; stamping it here would make
+  // `migrate()` skip it and leave its tables uncreated. The tail is
+  // always left for `migrate()` to apply.
   if (await hasAppSentinel()) {
-    await syncMigrationJournal(migrationsFolder);
+    await syncMigrationJournal(migrationsFolder, await latestAppliedWhen());
   }
 
   try {
@@ -49,7 +49,11 @@ export async function ensureSchema(): Promise<void> {
         throw err;
       }
       log.info("Tables already exist, syncing migration journal...");
-      await syncMigrationJournal(migrationsFolder);
+      // Recovery path: `migrate()` hit a table that already exists, so the
+      // schema is genuinely ahead of the journal — stamp everything. No
+      // boundary here, otherwise the duplicate migration is never recorded
+      // and every boot retries it.
+      await syncMigrationJournal(migrationsFolder, Number.POSITIVE_INFINITY);
     } else {
       log.error({ err }, "Migration failed");
       throw err;
@@ -74,6 +78,28 @@ async function hasAppSentinel(): Promise<boolean> {
 }
 
 /**
+ * The `when` of the most recently applied migration, read from
+ * `__drizzle_migrations.created_at` (drizzle-orm's migrator stores the
+ * journal `when` value there). Returns -1 when nothing has been applied
+ * yet or the journal table does not exist — i.e. a fresh database, where
+ * the self-heal pass must stamp nothing and let `migrate()` apply all.
+ */
+async function latestAppliedWhen(): Promise<number> {
+  const client = await pool.connect();
+  try {
+    const { rows } = await client.query<{ max: string | null }>(
+      `SELECT max(created_at)::text AS max
+         FROM "drizzle"."__drizzle_migrations"`,
+    );
+    return rows[0]?.max != null ? Number(rows[0].max) : -1;
+  } catch {
+    return -1;
+  } finally {
+    client.release();
+  }
+}
+
+/**
  * Idempotent stamp of `drizzle.__drizzle_migrations` against the SQL files
  * on disk. Two correctness invariants:
  *
@@ -90,7 +116,10 @@ async function hasAppSentinel(): Promise<boolean> {
  * latest `created_at` in the table (it interprets the entries as already
  * applied). The recovery path applies the SQL via psql and stamps here.
  */
-async function syncMigrationJournal(migrationsFolder: string): Promise<void> {
+async function syncMigrationJournal(
+  migrationsFolder: string,
+  maxWhen: number,
+): Promise<void> {
   const journalPath = path.resolve(migrationsFolder, "meta/_journal.json");
   if (!fs.existsSync(journalPath)) {
     log.info("No migration journal found, skipping sync.");
@@ -113,6 +142,9 @@ async function syncMigrationJournal(migrationsFolder: string): Promise<void> {
 
     let stamped = 0;
     for (const entry of journal.entries) {
+      // Never stamp past the last genuinely-applied migration — the tail
+      // must be run by `migrate()`, not marked done here.
+      if (entry.when > maxWhen) continue;
       const sqlPath = path.resolve(migrationsFolder, `${entry.tag}.sql`);
       if (!fs.existsSync(sqlPath)) {
         log.warn({ tag: entry.tag }, "journal entry has no SQL file, skipping");

@@ -1,15 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { useCallback, useMemo, useState } from "react";
 import {
   AlertCircle,
   BookOpen,
-  ChevronDown,
+  CheckCircle2,
   FileText,
   Link2,
   Loader2,
   Plus,
+  RefreshCw,
   ShieldCheck,
   Trash2,
   Users,
@@ -17,24 +17,27 @@ import {
 } from "lucide-react";
 import { AppWindow } from "@/components/ui/app-window";
 import { Modal } from "@/components/ui/modal";
+import { RoleMultiSelect } from "@/components/ui/role-multi-select";
 import { useSkills } from "@/features/skills/api/use-skills";
 import { ApiError } from "@/lib/api";
 import {
-  ROLE_SLUG_MAX,
-  ROLE_SLUG_PATTERN,
   type AgentRole,
   type SkillDTO,
   type SkillFileEntry,
 } from "@occa/shared/types";
-import { AGENT_ROLES } from "@occa/shared/role-catalog";
 
 interface SkillLibraryProps {
   onClose?: () => void;
   onReloadMe?: () => Promise<void> | void;
+  // Roles to merge into the role picker beyond the static AGENT_ROLES
+  // catalog. Typically distinct roles already in use by company
+  // deployments. Without this, custom roles like `social_media_editor`
+  // never surface as suggestions.
+  extraRoles?: string[];
 }
 
-export function SkillLibrary({ onClose, onReloadMe }: SkillLibraryProps) {
-  const { skills, loading, error, importSkill, updateRoles, remove } =
+export function SkillLibrary({ onClose, onReloadMe, extraRoles }: SkillLibraryProps) {
+  const { skills, loading, error, importSkill, updateRoles, remove, refresh } =
     useSkills(true);
   const [selected, setSelected] = useState<SkillDTO | null>(null);
   const [pendingDelete, setPendingDelete] = useState<SkillDTO | null>(null);
@@ -89,6 +92,7 @@ export function SkillLibrary({ onClose, onReloadMe }: SkillLibraryProps) {
 
       {importOpen && (
         <ImportSkillModal
+          extraRoles={extraRoles}
           onCancel={() => setImportOpen(false)}
           onSubmit={async (input) => {
             await importSkill(input);
@@ -101,10 +105,16 @@ export function SkillLibrary({ onClose, onReloadMe }: SkillLibraryProps) {
       {selected && (
         <SkillDetailModal
           skill={selected}
+          extraRoles={extraRoles}
           onClose={() => setSelected(null)}
           onUpdateRoles={async (roles) => {
             const updated = await updateRoles(selected.id, roles);
             setSelected(updated);
+          }}
+          onRefresh={async () => {
+            const res = await refresh(selected.id);
+            setSelected(res.skill);
+            return res;
           }}
           onDelete={() => {
             setPendingDelete(selected);
@@ -162,12 +172,14 @@ function EmptyState({ onImport }: { onImport: () => void }) {
 function ImportSkillModal({
   onCancel,
   onSubmit,
+  extraRoles,
 }: {
   onCancel: () => void;
   onSubmit: (input: {
     source: string;
     allowedRoles: AgentRole[];
   }) => Promise<void>;
+  extraRoles?: string[];
 }) {
   const [source, setSource] = useState("");
   const [roles, setRoles] = useState<AgentRole[]>([]);
@@ -249,6 +261,7 @@ function ImportSkillModal({
               value={roles}
               onChange={setRoles}
               disabled={busy}
+              extraRoles={extraRoles}
             />
             <p className="text-[11px] text-white/40">
               Pick from presets or type a custom role (e.g.,{" "}
@@ -289,231 +302,6 @@ function ImportSkillModal({
   );
 }
 
-function normalizeRoleSlug(input: string): string {
-  return input.trim().toLowerCase();
-}
-
-function isValidRoleSlug(input: string): boolean {
-  if (input.length === 0 || input.length > ROLE_SLUG_MAX) return false;
-  return ROLE_SLUG_PATTERN.test(input);
-}
-
-function RoleMultiSelect({
-  value,
-  onChange,
-  disabled,
-}: {
-  value: AgentRole[];
-  onChange: (next: AgentRole[]) => void;
-  disabled?: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState("");
-  const [coords, setCoords] = useState<{
-    left: number;
-    top: number;
-    width: number;
-  } | null>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const dropdownRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onMouseDown = (e: MouseEvent) => {
-      const target = e.target as Node;
-      if (
-        containerRef.current &&
-        !containerRef.current.contains(target) &&
-        dropdownRef.current &&
-        !dropdownRef.current.contains(target)
-      ) {
-        setOpen(false);
-        setQuery("");
-      }
-    };
-    window.addEventListener("mousedown", onMouseDown);
-    return () => window.removeEventListener("mousedown", onMouseDown);
-  }, [open]);
-
-  useEffect(() => {
-    if (open) inputRef.current?.focus();
-  }, [open]);
-
-  useEffect(() => {
-    if (!open) {
-      setCoords(null);
-      return;
-    }
-    const update = () => {
-      const rect = containerRef.current?.getBoundingClientRect();
-      if (!rect) return;
-      setCoords({ left: rect.left, top: rect.bottom + 4, width: rect.width });
-    };
-    update();
-    window.addEventListener("resize", update);
-    window.addEventListener("scroll", update, true);
-    return () => {
-      window.removeEventListener("resize", update);
-      window.removeEventListener("scroll", update, true);
-    };
-  }, [open]);
-
-  const normalized = normalizeRoleSlug(query);
-
-  const add = useCallback(
-    (role: string) => {
-      const slug = normalizeRoleSlug(role);
-      if (!isValidRoleSlug(slug)) return;
-      if (value.includes(slug)) return;
-      onChange([...value, slug]);
-      setQuery("");
-    },
-    [onChange, value],
-  );
-
-  const remove = useCallback(
-    (role: string) => onChange(value.filter((r) => r !== role)),
-    [onChange, value],
-  );
-
-  const suggestions = useMemo(() => {
-    const pool = AGENT_ROLES.filter(
-      (r) =>
-        !value.includes(r) && (normalized === "" || r.includes(normalized)),
-    );
-    return pool;
-  }, [normalized, value]);
-
-  const canCreate =
-    normalized.length > 0 &&
-    isValidRoleSlug(normalized) &&
-    !value.includes(normalized) &&
-    !AGENT_ROLES.includes(normalized as (typeof AGENT_ROLES)[number]);
-
-  const onInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      if (suggestions.length > 0) add(suggestions[0]);
-      else if (canCreate) add(normalized);
-    } else if (e.key === "Backspace" && query === "" && value.length > 0) {
-      remove(value[value.length - 1]);
-    } else if (e.key === "Escape") {
-      setOpen(false);
-      setQuery("");
-    }
-  };
-
-  return (
-    <div ref={containerRef} className="relative">
-      <div
-        onClick={() => {
-          if (disabled) return;
-          setOpen(true);
-          inputRef.current?.focus();
-        }}
-        className={`flex flex-wrap items-center gap-1.5 glass-light rounded-lg px-2 py-1.5 min-h-9.5 ${
-          disabled ? "opacity-50" : "cursor-text"
-        }`}
-      >
-        {value.map((r) => (
-          <span
-            key={r}
-            className="flex items-center gap-1 bg-white/12 rounded px-2 py-0.5 text-[11px] uppercase tracking-wide text-white/90"
-          >
-            {r}
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                remove(r);
-              }}
-              disabled={disabled}
-              className="size-3 rounded-sm hover:bg-white/20 flex items-center justify-center -mr-0.5"
-              aria-label={`Remove ${r}`}
-            >
-              <X className="size-2.5" />
-            </button>
-          </span>
-        ))}
-        {open && !disabled ? (
-          <input
-            ref={inputRef}
-            type="text"
-            value={query}
-            onChange={(e) => setQuery(e.target.value.slice(0, ROLE_SLUG_MAX))}
-            onKeyDown={onInputKeyDown}
-            placeholder={
-              value.length === 0 ? "Pick or type a role…" : "Add more…"
-            }
-            className="flex-1 min-w-20 bg-transparent text-xs text-white/90 placeholder:text-white/30 focus:outline-none"
-          />
-        ) : value.length === 0 ? (
-          <span className="text-xs text-white/35 px-1 select-none">
-            All roles — click to restrict
-          </span>
-        ) : null}
-        {!open && !disabled && (
-          <ChevronDown className="size-3.5 text-white/30 ml-auto" />
-        )}
-      </div>
-
-      {open &&
-        !disabled &&
-        coords &&
-        createPortal(
-          <div
-            ref={dropdownRef}
-            className="rounded-lg py-1 max-h-56 overflow-y-auto"
-            style={{
-              position: "fixed",
-              left: coords.left,
-              top: coords.top,
-              width: coords.width,
-              zIndex: 300,
-              background: "rgba(18, 18, 22, 0.96)",
-              backdropFilter: "blur(24px)",
-              WebkitBackdropFilter: "blur(24px)",
-              border: "1px solid rgba(255, 255, 255, 0.10)",
-            }}
-          >
-            {suggestions.length === 0 && !canCreate && (
-              <div className="px-3 py-2 text-[11px] text-white/40">
-                {normalized === ""
-                  ? "All presets already selected."
-                  : "Invalid role — use lowercase letters, digits, _ or -."}
-              </div>
-            )}
-            {suggestions.map((r) => (
-              <button
-                key={r}
-                type="button"
-                onClick={() => add(r)}
-                className="w-full text-left px-3 py-1.5 text-xs text-white/85 hover:bg-white/8 flex items-center gap-2"
-              >
-                <span className="uppercase tracking-wide font-medium">{r}</span>
-                <span className="text-[10px] text-white/30">preset</span>
-              </button>
-            ))}
-            {canCreate && (
-              <button
-                type="button"
-                onClick={() => add(normalized)}
-                className="w-full text-left px-3 py-1.5 text-xs text-white/85 hover:bg-white/8 flex items-center gap-2 border-t border-white/6"
-              >
-                <Plus className="size-3 text-white/50" />
-                Create{" "}
-                <span className="uppercase tracking-wide font-medium">
-                  {normalized}
-                </span>
-              </button>
-            )}
-          </div>,
-          document.body,
-        )}
-    </div>
-  );
-}
 
 function humanizeImportError(code: string): string {
   switch (code) {
@@ -555,9 +343,16 @@ function SkillCard({
     >
       <div className="flex items-start justify-between gap-3 mb-2">
         <div className="min-w-0 flex-1">
-          <h3 className="text-sm font-semibold text-white/90 truncate">
-            {skill.name}
-          </h3>
+          <div className="flex items-center gap-1.5 min-w-0">
+            <h3 className="text-sm font-semibold text-white/90 truncate">
+              {skill.name}
+            </h3>
+            {skill.companyId === null && (
+              <span className="text-[9px] uppercase tracking-wider font-medium px-1.5 py-0.5 rounded bg-emerald-500/12 text-emerald-300/90 border border-emerald-400/15 shrink-0">
+                OCCA
+              </span>
+            )}
+          </div>
           <p className="text-xs text-white/40 truncate font-mono mt-0.5">
             {skill.key}
           </p>
@@ -632,15 +427,44 @@ export function SkillDetailModal({
   onClose,
   onUpdateRoles,
   onDelete,
+  onRefresh,
+  extraRoles,
 }: {
   skill: SkillDTO;
   onClose: () => void;
   onUpdateRoles?: (roles: AgentRole[]) => Promise<void>;
   onDelete?: () => void;
+  onRefresh?: () => Promise<{ updated: boolean; skill: SkillDTO }>;
+  extraRoles?: string[];
 }) {
   const [editingRoles, setEditingRoles] = useState(false);
+  const [refreshState, setRefreshState] = useState<
+    | { kind: "idle" }
+    | { kind: "checking" }
+    | { kind: "result"; updated: boolean; sourceRef: string }
+    | { kind: "error"; message: string }
+  >({ kind: "idle" });
   const grouped = useMemo(() => groupByKind(skill.fileInventory), [skill]);
   const repoUrl = `https://github.com/${skill.sourceOwner}/${skill.sourceRepo}/tree/${skill.sourceRef}/${skill.sourcePath}`;
+
+  const handleRefresh = useCallback(async () => {
+    if (!onRefresh) return;
+    setRefreshState({ kind: "checking" });
+    try {
+      const res = await onRefresh();
+      setRefreshState({
+        kind: "result",
+        updated: res.updated,
+        sourceRef: res.skill.sourceRef,
+      });
+    } catch (e) {
+      const message =
+        e instanceof ApiError
+          ? ((e.body as { error?: string } | null)?.error ?? `http_${e.status}`)
+          : "network_error";
+      setRefreshState({ kind: "error", message });
+    }
+  }, [onRefresh]);
 
   return (
     <>
@@ -697,17 +521,55 @@ export function SkillDetailModal({
             </div>
 
             <div className="px-5 py-4 border-b border-white/6">
-              <h4 className="text-[11px] uppercase tracking-wide text-white/40 mb-2">
-                Source
-              </h4>
-              <a
-                href={repoUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="text-xs text-blue-300/90 hover:text-blue-200 font-mono break-all"
-              >
-                {repoUrl}
-              </a>
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <h4 className="text-[11px] uppercase tracking-wide text-white/40 mb-2">
+                    Source
+                  </h4>
+                  <a
+                    href={repoUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-xs text-blue-300/90 hover:text-blue-200 font-mono break-all"
+                  >
+                    {repoUrl}
+                  </a>
+                </div>
+                {onRefresh && (
+                  <button
+                    onClick={handleRefresh}
+                    disabled={refreshState.kind === "checking"}
+                    className="px-2.5 py-1 rounded-md bg-white/8 hover:bg-white/12 text-[11px] text-white/80 shrink-0 flex items-center gap-1.5 disabled:opacity-50"
+                  >
+                    {refreshState.kind === "checking" ? (
+                      <Loader2 className="size-3 animate-spin" />
+                    ) : (
+                      <RefreshCw className="size-3" />
+                    )}
+                    Check for update
+                  </button>
+                )}
+              </div>
+              {refreshState.kind === "result" && (
+                <div
+                  className={`mt-3 flex items-center gap-2 text-[11px] ${
+                    refreshState.updated
+                      ? "text-emerald-300/90"
+                      : "text-white/55"
+                  }`}
+                >
+                  <CheckCircle2 className="size-3" />
+                  {refreshState.updated
+                    ? `Updated to ${refreshState.sourceRef.slice(0, 7)}.`
+                    : "Already up to date."}
+                </div>
+              )}
+              {refreshState.kind === "error" && (
+                <div className="mt-3 flex items-center gap-2 text-[11px] text-red-300/90">
+                  <AlertCircle className="size-3" />
+                  Refresh failed: {refreshState.message}
+                </div>
+              )}
             </div>
 
             <div className="px-5 py-4 border-b border-white/6">
@@ -782,6 +644,7 @@ export function SkillDetailModal({
       {editingRoles && onUpdateRoles && (
         <EditRolesModal
           skill={skill}
+          extraRoles={extraRoles}
           onCancel={() => setEditingRoles(false)}
           onSave={async (roles) => {
             await onUpdateRoles(roles);
@@ -812,10 +675,12 @@ function EditRolesModal({
   skill,
   onCancel,
   onSave,
+  extraRoles,
 }: {
   skill: SkillDTO;
   onCancel: () => void;
   onSave: (roles: AgentRole[]) => Promise<void>;
+  extraRoles?: string[];
 }) {
   const [roles, setRoles] = useState<AgentRole[]>(() => [
     ...skill.allowedRoles,
@@ -865,7 +730,12 @@ function EditRolesModal({
             <span className="font-mono text-white/70">{skill.key}</span> to
             specific agent roles. Leave empty to allow every role.
           </p>
-          <RoleMultiSelect value={roles} onChange={setRoles} disabled={busy} />
+          <RoleMultiSelect
+            value={roles}
+            onChange={setRoles}
+            disabled={busy}
+            extraRoles={extraRoles}
+          />
           {err && (
             <div className="flex items-center gap-2 text-xs text-red-300/80">
               <AlertCircle className="size-3.5" /> {err}

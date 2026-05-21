@@ -3,8 +3,8 @@
 //
 // This file owns the lifecycle. Side-effects per phase live in the
 // services/repositories it composes:
-//   - services/context/render-task.ts builds the wake message via the
-//     Context Pipeline (loadContext + renderTaskPrompt).
+//   - services/memory/render/task.ts builds the wake message via the
+//     memory pipeline (loadContext + renderTaskPrompt).
 //   - services/delegation/markers/parser.ts handles DELEGATE/BLOCK/REPORT
 //   - cascade.ts wakes parents on done
 //   - events.ts persists task_event rows
@@ -32,6 +32,7 @@ import {
 import type { ContentBlock, TaskStatus } from "@occa/shared/types";
 import { db } from "../../../infra/database/client";
 import {
+  AGENT_KEY_TRACE_TTL_MS,
   AGENT_WAIT_TIMEOUT_MS,
   TRACE_EVENT_FLUSH_MS,
 } from "../../../lib/timing";
@@ -52,12 +53,23 @@ import {
   loadContext,
   loadTaskSurfacePayload,
   renderTaskPrompt,
-} from "../../../services/context";
+} from "../../../services/memory";
+import {
+  generateDeploymentKey,
+  revokeDeploymentKey,
+} from "../../agents/services/deployment-api-keys";
 import { shouldBypassReport } from "../../../services/delegation/policy";
 import { getTier } from "@occa/shared/role-catalog";
 import { cascadeOnTaskDone } from "./cascade";
-import { autoSaveTaskAsDocument } from "../../../services/auto-save-document";
+import { finalizeTaskDone } from "./finalize";
+import {
+  roleRequiresVerification,
+  verifyTaskDeliverable,
+  type GateVerdict,
+} from "../../../services/verify-task-deliverable";
+import { bounceTaskToAgent } from "./comments";
 import { appendTaskEventBestEffort } from "./events";
+import { enqueueReviewDispatch } from "../../../infra/queue/review-worker";
 
 const log = childLogger("services:tasks:dispatcher");
 
@@ -137,9 +149,37 @@ export async function dispatchTask(
     traceId,
     gatewayUrl,
   });
+  // Mint a per-trace ephemeral key BEFORE rendering. The renderer drops
+  // it into the OCCA-runtime preamble so the agent can call back into
+  // /api/me/agent/* (skill discovery, tool invocation, RequestInfo, etc.)
+  // without an out-of-band credential exchange. Two layers of bounding:
+  //   1) `expiresAt` enforced by verifyDeploymentKey — replayed scrape
+  //      past this window fails even if revoke never ran.
+  //   2) Trace finally-block revokes the key — closes the window down
+  //      to the actual wall-clock length of the run.
+  const expiresAt = new Date(Date.now() + AGENT_KEY_TRACE_TTL_MS);
+  const { rawKey: apiKey, row: apiKeyRow } = await generateDeploymentKey({
+    deploymentId: agentRow.id,
+    companyId: taskRow.companyId,
+    name: `trace:${traceId}`,
+    expiresAt,
+  });
+  const apiUrl = process.env.OCCA_SERVER_URL ?? "http://localhost:3002";
+
+  // Wrapper around the rest of dispatchTask so the trace key is revoked
+  // even when the adapter throws or an early return short-circuits the
+  // success path. Combined with `expiresAt`, the leaked-key window is
+  // bounded to the trace's actual runtime (or 30 min, whichever first).
+  try {
   const spec = await loadContext({
     deploymentId: agentRow.id,
     surface,
+    runtimeEnv: {
+      apiUrl,
+      apiKey,
+      agentId: agentRow.externalAgentId ?? agentRow.id,
+      traceId,
+    },
   });
   const message = renderTaskPrompt(spec);
   const sessionKey = `agent:${agentRow.externalAgentId}:task:${traceId}`;
@@ -379,7 +419,30 @@ export async function dispatchTask(
     isCeoAssignee &&
     computedStatus === "done" &&
     !wasReported;
-  const nextStatus = missingRootReport ? "review" : computedStatus;
+
+  // Verification gate: a news writer's deliverable must clear the claims
+  // verifier before it settles. Runs for both `done`- and `review`-bound
+  // deliverables — an agent that self-routes to review via [[OCCA:REVIEW]]
+  // must not bypass the gate. A failure forces `review`; the gate then
+  // either bounces the task back to the agent for another attempt, or —
+  // once the retry budget is spent — parks it for a human.
+  const cleanReply = stripOccaMarkers(result.reply);
+  let gateVerdict: GateVerdict | null = null;
+  if (
+    (computedStatus === "done" || computedStatus === "review") &&
+    roleRequiresVerification(agentRow.role)
+  ) {
+    gateVerdict = await verifyTaskDeliverable({
+      companyId: taskRow.companyId,
+      taskId: taskRow.id,
+      traceId,
+      cleanReply,
+    });
+  }
+  const verificationFailed = gateVerdict != null && !gateVerdict.pass;
+
+  const nextStatus =
+    missingRootReport || verificationFailed ? "review" : computedStatus;
   log.info(
     {
       taskId: taskRow.id,
@@ -392,6 +455,7 @@ export async function dispatchTask(
       computedStatus,
       nextStatus,
       missingRootReport,
+      verificationFailed,
     },
     "dispatch outcome summary",
   );
@@ -422,7 +486,7 @@ export async function dispatchTask(
     agentRow,
     traceId,
     finishedAt,
-    cleanReply: stripOccaMarkers(result.reply),
+    cleanReply,
     nextStatus,
     blockedBy,
     blockedReason,
@@ -436,28 +500,84 @@ export async function dispatchTask(
     createdAt: finishedAt.toISOString(),
   });
 
-  if (nextStatus === "done") {
-    const cleanReply = stripOccaMarkers(result.reply);
-    void autoSaveTaskAsDocument({
+  // Verification bounce: re-open the task and re-dispatch it to its
+  // agent with the failure detail. Runs after closeSucceededTrace so the
+  // trace is fully closed before the task transitions back to `todo`.
+  if (gateVerdict?.action === "bounce") {
+    await bounceTaskToAgent({
       taskId: taskRow.id,
-      deploymentId: agentRow.id,
-      cleanReply,
+      companyId: taskRow.companyId,
+      assignedDeploymentId: agentRow.id,
+      body: gateVerdict.failureSummary ?? "Verification failed.",
     }).catch((err) => {
+      // A failed bounce leaves the task in `review` (the state
+      // closeSucceededTrace already set) — a safe park, not a crash.
       log.error(
         { err, taskId: taskRow.id },
-        "autoSaveTaskAsDocument failed (non-fatal)",
+        "verification bounce failed; task left in review",
       );
     });
   }
-  // Cascade fires on both `done` and `review`: a subordinate that
-  // emitted [[OCCA:REVIEW]] is signalling "please look before I close",
-  // which for a chat-origin task means the user should be notified via
-  // CEO synthesis (framed as "wants review", not "shipped"). Without
-  // this, REVIEW tasks would stall in limbo with no user-facing DM.
-  // Auto-save stays done-only — review means not-yet-final.
-  if (nextStatus === "done" || nextStatus === "review") {
+
+  // Whether this `review` landing is a delegated deliverable awaiting an
+  // editorial verdict from the Head that delegated it. Excluded: a
+  // gate-parked task (`verificationFailed` — a failed automated
+  // verification is a genuine "needs a human" signal, not an editorial
+  // call), a Head parked waiting on its own delegated children
+  // (`delegationsSpawned`), user-created root tasks (no
+  // `createdByDeploymentId`), and the degenerate self-review case.
+  const awaitsHeadReview =
+    nextStatus === "review" &&
+    needsReview &&
+    !verificationFailed &&
+    delegationsSpawned === 0 &&
+    taskRow.createdByDeploymentId !== null &&
+    taskRow.createdByDeploymentId !== agentRow.id;
+
+  if (nextStatus === "done") {
+    // Full task-completion pipeline — auto-save, billing, webhook
+    // publish, coverage episode, and the parent/dependent cascade.
+    void finalizeTaskDone({
+      taskId: taskRow.id,
+      deliverable: cleanReply,
+      traceId,
+      occurredAt: finishedAt,
+    }).catch((err) => {
+      log.error(
+        { err, taskId: taskRow.id },
+        "finalizeTaskDone failed (non-fatal)",
+      );
+    });
+  } else if (nextStatus === "review" && gateVerdict?.action !== "bounce") {
+    // A review task can't unblock dependents, but it must still bubble:
+    // a subordinate that emitted [[OCCA:REVIEW]] is signalling "please
+    // look before I close", and for a chat-origin task the cascade
+    // posts a CEO synthesis ("wants review"). A bounced task is being
+    // re-dispatched, not handed up — it is excluded above.
     void cascadeOnTaskDone({ taskId: taskRow.id }).catch((err) => {
       log.error({ err, taskId: taskRow.id }, "cascadeOnTaskDone failed");
+    });
+    // Auto-reviewer: a delegated deliverable that self-routed to
+    // `review` has a Head waiting to give it an editorial verdict.
+    // Hand it off so the autonomous loop does not stall here.
+    if (awaitsHeadReview) {
+      void enqueueReviewDispatch(taskRow.id).catch((err) => {
+        log.error(
+          { err, taskId: taskRow.id },
+          "enqueueReviewDispatch failed",
+        );
+      });
+    }
+  }
+  } finally {
+    await revokeDeploymentKey({
+      keyId: apiKeyRow.id,
+      deploymentId: agentRow.id,
+    }).catch((err) => {
+      log.warn(
+        { err, keyId: apiKeyRow.id, traceId },
+        "failed to revoke trace api key",
+      );
     });
   }
 }
@@ -663,9 +783,22 @@ async function closeFailedTrace(args: CloseFailedArgs): Promise<void> {
       updatedAt: finishedAt,
     })
     .where(eq(traces.id, traceId));
+  // Archive the task on terminal failure instead of bouncing it back to
+  // `todo`. The previous behavior left dead cards on the board forever:
+  // there is no auto-retry pipeline for trace failures, and routine
+  // wrappers that timed out during Phase-A research would accumulate
+  // every cycle. Archiving keeps the failure searchable while clearing
+  // the kanban; user can unarchive if they want to rerun. Mirrors the
+  // worker-side syncTaskOnTraceFailed path so both dispatchers behave
+  // the same on failure.
   await db
     .update(tasks)
-    .set({ status: "todo", linkedTraceId: null, updatedAt: finishedAt })
+    .set({
+      archivedAt: finishedAt,
+      archiveReason: "trace_failed",
+      linkedTraceId: null,
+      updatedAt: finishedAt,
+    })
     .where(eq(tasks.id, taskRow.id));
 
   void appendTaskEventBestEffort({
@@ -680,10 +813,15 @@ async function closeFailedTrace(args: CloseFailedArgs): Promise<void> {
   void appendTaskEventBestEffort({
     companyId: taskRow.companyId,
     taskId: taskRow.id,
-    eventType: "task_status_changed",
+    eventType: "task_archived",
     actorType: "system",
     actorId: "system",
-    payload: { from: "in_progress", to: "todo", reason: "trace_failed" },
+    payload: {
+      reason: "trace_failed",
+      traceId,
+      errorCode,
+      errorMessage: error,
+    },
     traceId,
   });
 }

@@ -152,7 +152,7 @@ export const ROLE_CATALOG: readonly RoleDefinition[] = [
     tier: "head",
     manages: ["market_researcher", "onchain_analyst", "data_analyst", "tokenomics_designer"],
   },
-  { key: "head_editorial", label: "Head of Editorial", description: "Content slate, voice, publishing cadence", category: "leadership", defaultName: "Theo Marsh", seatingZoneOverride: "editorial_content", tier: "head", manages: [] },
+  { key: "head_editorial", label: "Head of Editorial", description: "Content slate, voice, publishing cadence", category: "leadership", defaultName: "Theo Marsh", seatingZoneOverride: "editorial_content", tier: "head", manages: ["news_writer"] },
   {
     key: "head_community",
     label: "Head of Community",
@@ -189,6 +189,7 @@ export const ROLE_CATALOG: readonly RoleDefinition[] = [
   // ── Editorial / Content ────────────────────────────────────────────────
   { key: "managing_editor", label: "Managing Editor", description: "Editorial calendar, copy review, fact checks", category: "editorial_content", defaultName: "Lior Stern", tier: "specialist", manages: [] },
   { key: "senior_writer", label: "Senior Writer", description: "Long-form, opinion, deep dives", category: "editorial_content", defaultName: "Faye Eriksson", tier: "specialist", manages: [] },
+  { key: "news_writer", label: "News Writer", description: "Fast, factual news writing on a daily cadence", category: "editorial_content", defaultName: "Juno Vale", tier: "specialist", manages: [] },
   { key: "copywriter", label: "Copywriter", description: "Short-form copy, landing pages, emails", category: "editorial_content", defaultName: "Owen Hatcher", tier: "specialist", manages: [] },
 
   // ── Operations / Admin ────────────────────────────────────────────────

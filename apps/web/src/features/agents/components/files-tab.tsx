@@ -1,19 +1,59 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { AlertCircle, Check, Copy, FileText, Loader2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  AlertCircle,
+  AlertTriangle,
+  Check,
+  Copy,
+  FileText,
+  Loader2,
+  Pencil,
+} from "lucide-react";
 import { useAgentFiles } from "@/features/agents/api/use-agent-files";
 
+// Files the runtime writes to autonomously. Edits here are valid but the
+// next agent wake may overwrite them.
+const AGENT_WRITTEN_FILES = new Set(["HEARTBEAT.md", "MEMORY.md"]);
+
 export function FilesTab({ agentId }: { agentId: string }) {
-  const { files, loading, error } = useAgentFiles(agentId, true);
+  const { files, loading, error, updateFile } = useAgentFiles(agentId, true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
-  const selected = files.find((f) => f.id === selectedId) ?? files[0] ?? null;
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [syncWarning, setSyncWarning] = useState<{
+    code: string;
+    detail?: string;
+  } | null>(null);
 
+  const selected = files.find((f) => f.id === selectedId) ?? files[0] ?? null;
+  const selectedFilename = selected?.filename ?? null;
+
+  const dirty = useMemo(
+    () => editing && selected !== null && draft !== selected.content,
+    [editing, draft, selected],
+  );
+
+  // Reset transient state when switching agents.
   useEffect(() => {
     setSelectedId(null);
+    setEditing(false);
+    setDraft("");
+    setSaveError(null);
+    setSyncWarning(null);
   }, [agentId]);
+
+  // Reset edit state when switching files.
+  useEffect(() => {
+    setEditing(false);
+    setDraft("");
+    setSaveError(null);
+    setSyncWarning(null);
+  }, [selectedFilename]);
 
   const handleCopy = useCallback(async () => {
     if (!selected) return;
@@ -25,6 +65,39 @@ export function FilesTab({ agentId }: { agentId: string }) {
       // clipboard unavailable
     }
   }, [selected]);
+
+  const handleEdit = useCallback(() => {
+    if (!selected) return;
+    setDraft(selected.content);
+    setEditing(true);
+    setSaveError(null);
+    setSyncWarning(null);
+  }, [selected]);
+
+  const handleCancel = useCallback(() => {
+    setEditing(false);
+    setDraft("");
+    setSaveError(null);
+  }, []);
+
+  const handleSave = useCallback(async () => {
+    if (!selected) return;
+    setSaving(true);
+    setSaveError(null);
+    setSyncWarning(null);
+    try {
+      const res = await updateFile(selected.filename, draft);
+      setEditing(false);
+      setDraft("");
+      if (res.syncWarning) setSyncWarning(res.syncWarning);
+    } catch (err) {
+      setSaveError(
+        err instanceof Error ? err.message : "Failed to save file",
+      );
+    } finally {
+      setSaving(false);
+    }
+  }, [selected, draft, updateFile]);
 
   if (loading) {
     return (
@@ -50,6 +123,10 @@ export function FilesTab({ agentId }: { agentId: string }) {
     );
   }
 
+  const isAgentWritten = selected
+    ? AGENT_WRITTEN_FILES.has(selected.filename)
+    : false;
+
   return (
     <div className="flex h-full overflow-hidden">
       {/* File list sidebar */}
@@ -60,7 +137,7 @@ export function FilesTab({ agentId }: { agentId: string }) {
             <button
               key={f.id}
               onClick={() => setSelectedId(f.id)}
-              className={`w-full flex items-center gap-2 px-3 py-2 text-left transition-colors relative ${
+              className={`w-full flex items-center gap-2 px-3 py-2 text-left transition-colors relative cursor-pointer ${
                 active ? "bg-white/8" : "hover:bg-white/4"
               }`}
             >
@@ -91,28 +168,104 @@ export function FilesTab({ agentId }: { agentId: string }) {
               {selected.source}
             </span>
             <span className="text-[10px] text-white/25">
-              {selected.content.split("\n").length}L
+              {(editing ? draft : selected.content).split("\n").length}L
             </span>
-            <button
-              type="button"
-              onClick={handleCopy}
-              className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded text-white/40 hover:text-white/75 hover:bg-white/5 transition-colors"
-            >
-              {copied ? (
-                <>
-                  <Check className="size-3" /> Copied
-                </>
-              ) : (
-                <>
-                  <Copy className="size-3" /> Copy
-                </>
-              )}
-            </button>
+            {editing ? (
+              <>
+                <button
+                  type="button"
+                  onClick={handleCancel}
+                  disabled={saving}
+                  className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded text-white/40 hover:text-white/75 hover:bg-white/5 transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSave}
+                  disabled={saving || !dirty}
+                  className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded text-white/80 bg-white/10 hover:bg-white/15 transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {saving ? (
+                    <>
+                      <Loader2 className="size-3 animate-spin" /> Saving
+                    </>
+                  ) : (
+                    <>
+                      <Check className="size-3" /> Save
+                    </>
+                  )}
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={handleCopy}
+                  className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded text-white/40 hover:text-white/75 hover:bg-white/5 transition-colors cursor-pointer"
+                >
+                  {copied ? (
+                    <>
+                      <Check className="size-3" /> Copied
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="size-3" /> Copy
+                    </>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleEdit}
+                  className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded text-white/40 hover:text-white/75 hover:bg-white/5 transition-colors cursor-pointer"
+                >
+                  <Pencil className="size-3" /> Edit
+                </button>
+              </>
+            )}
           </div>
+
+          {editing && isAgentWritten ? (
+            <div className="shrink-0 flex items-start gap-2 px-4 py-2 border-b border-amber-300/15 bg-amber-300/5 text-[11px] text-amber-200/80">
+              <AlertTriangle className="size-3.5 shrink-0 mt-px" />
+              <span>
+                The agent writes to {selected.filename} at runtime. Your edits
+                may be overwritten on the next wake.
+              </span>
+            </div>
+          ) : null}
+
+          {syncWarning ? (
+            <div className="shrink-0 flex items-start gap-2 px-4 py-2 border-b border-amber-300/15 bg-amber-300/5 text-[11px] text-amber-200/80">
+              <AlertTriangle className="size-3.5 shrink-0 mt-px" />
+              <span>
+                Saved locally, but the gateway push failed ({syncWarning.code}
+                {syncWarning.detail ? `: ${syncWarning.detail}` : ""}). The
+                agent will still see the old file until sync succeeds.
+              </span>
+            </div>
+          ) : null}
+
+          {saveError ? (
+            <div className="shrink-0 flex items-start gap-2 px-4 py-2 border-b border-red-300/15 bg-red-300/5 text-[11px] text-red-200/80">
+              <AlertCircle className="size-3.5 shrink-0 mt-px" />
+              <span>{saveError}</span>
+            </div>
+          ) : null}
+
           <div className="flex-1 min-h-0 overflow-y-auto p-4">
-            <pre className="text-[12px] font-mono text-white/75 whitespace-pre-wrap wrap-break-word leading-relaxed">
-              {selected.content}
-            </pre>
+            {editing ? (
+              <textarea
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                spellCheck={false}
+                className="w-full h-full bg-transparent text-[12px] font-mono text-white/85 leading-relaxed outline-none resize-none whitespace-pre"
+              />
+            ) : (
+              <pre className="text-[12px] font-mono text-white/75 whitespace-pre-wrap wrap-break-word leading-relaxed">
+                {selected.content}
+              </pre>
+            )}
           </div>
         </div>
       ) : null}

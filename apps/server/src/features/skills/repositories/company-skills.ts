@@ -133,14 +133,25 @@ export async function listLibraryForCompany(args: {
 
   let visibilityFilter;
   if (args.roleScopedKeys !== undefined) {
-    // Per-agent: empty list → no rows. inArray on `[]` would generate
-    // `IN ()` which is invalid SQL, so short-circuit with a sentinel.
-    visibilityFilter =
+    // Per-agent view. A skill is visible to a role two ways:
+    //   1. its key is in the static catalog allow-list (`roleScopedKeys`)
+    //      — OCCA defaults + ROLE_DEFAULT_SKILLS.
+    //   2. it's an imported skill whose `allowed_roles` column explicitly
+    //      lists this role — the static catalog can't know user imports.
+    // inArray on `[]` emits invalid `IN ()`, so guard with a sentinel.
+    const staticMatch =
       args.roleScopedKeys.length > 0
         ? inArray(companySkills.key, args.roleScopedKeys)
         : sql`false`;
+    const roleAllowed = args.role
+      ? sql`${args.role} = ANY(${companySkills.allowedRoles})`
+      : sql`false`;
+    visibilityFilter = or(staticMatch, roleAllowed);
   } else {
-    // Company library view: defaults + skills any deployment uses.
+    // Company library view: every custom import (company-scoped) is always
+    // visible — user deliberately imported it, expects to see it. Builtin
+    // OCCA defaults (companyId IS NULL) still gated to platform defaults or
+    // currently-used keys so the listing doesn't leak unrelated builtins.
     const usedKeys = db
       .select({
         key: sql<string>`DISTINCT unnest(${agentRuntimeProfile.desiredSkills})`,
@@ -154,7 +165,12 @@ export async function listLibraryForCompany(args: {
             args.occaDefaultSources as string[],
           )
         : sql`false`;
-    visibilityFilter = or(defaultMatch, inArray(companySkills.key, usedKeys));
+    const builtinShown = and(
+      isNull(companySkills.companyId),
+      or(defaultMatch, inArray(companySkills.key, usedKeys)),
+    );
+    const customImport = eq(companySkills.companyId, args.companyId);
+    visibilityFilter = or(builtinShown, customImport);
   }
 
   return db

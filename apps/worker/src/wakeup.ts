@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { deployments, traces } from "@occa/shared/schema";
 import type { WakeActor, WakeSource } from "@occa/shared/types";
 import { db } from "./db";
@@ -51,7 +51,14 @@ export async function wakeup(input: WakeupInput): Promise<WakeupResult> {
       if (dup) return { traceId: dup.id, coalesced: true };
     }
 
-    // Coalesce into the existing active trace if one is running.
+    // Coalesce into an existing active trace ONLY when it covers the
+    // same work unit — same taskId, or both task-less. A wake for a
+    // different task must get its own trace; otherwise a second task
+    // dispatched to a busy agent (e.g. two delegated stories to one
+    // writer) would be silently swallowed.
+    const sameWorkUnit = input.taskId
+      ? eq(traces.taskId, input.taskId)
+      : isNull(traces.taskId);
     const [activeTrace] = await tx
       .select({ id: traces.id })
       .from(traces)
@@ -59,6 +66,7 @@ export async function wakeup(input: WakeupInput): Promise<WakeupResult> {
         and(
           eq(traces.deploymentId, input.agentId),
           inArray(traces.status, ["queued", "running"]),
+          sameWorkUnit,
         ),
       )
       .orderBy(desc(traces.createdAt))

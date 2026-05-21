@@ -1,10 +1,13 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { CronExpressionParser } from "cron-parser";
 import {
+  companies,
   routineRuns,
   routineTriggers,
   routines,
+  tasks,
 } from "@occa/shared/schema";
+import type { ContentBlock } from "@occa/shared/types";
 import { db } from "./db";
 import { wakeup } from "./wakeup";
 
@@ -129,14 +132,56 @@ async function fireTrigger(trigger: DueTrigger): Promise<void> {
   const idempotencyKey = `routine:${routine.id}:${trigger.triggerId}:${Math.floor(firedAt.getTime() / 1000)}`;
 
   try {
+    // Create a wrapper task for this routine run so children spawned via
+    // DELEGATE inherit parent_task_id, which lets cascade.ts wake the
+    // routine assignee back when each child finishes. Without this, a
+    // multi-step mandate (delegate writer → review → delegate tweeter)
+    // dies at step 1 because the orchestrator is never re-woken.
+    const wrapperTask = await db.transaction(async (tx) => {
+      await tx
+        .select({ id: companies.id })
+        .from(companies)
+        .where(eq(companies.id, routine.companyId))
+        .for("update");
+      const numbered = await tx.execute<{ max: number | null }>(sql`
+        SELECT COALESCE(MAX(task_number), 0) AS max
+        FROM tasks WHERE company_id = ${routine.companyId}
+      `);
+      const taskNumber = (numbered.rows[0]?.max ?? 0) + 1;
+      const blocks: ContentBlock[] = routine.description
+        ? [{ type: "paragraph", text: routine.description }]
+        : [];
+      const [row] = await tx
+        .insert(tasks)
+        .values({
+          companyId: routine.companyId,
+          taskNumber,
+          title: routine.title,
+          blocks,
+          status: "in_progress",
+          assignedDeploymentId: routine.assigneeDeploymentId,
+          parentTaskId: null,
+          taskType: "other",
+          tags: ["routine"],
+        })
+        .returning({ id: tasks.id });
+      return row;
+    });
+
     const wake = await wakeup({
       agentId: routine.assigneeDeploymentId,
       source: "timer",
       triggerDetail: `routine:${routine.id}`,
       reason: `Routine: ${routine.title}`,
+      taskId: wrapperTask.id,
+      // The routine's title + description (the standing mandate) ride
+      // along on the trace so the dispatcher can put them in the woken
+      // agent's prompt — a bare "woken by timer" carries no instruction.
       wakePayload: {
         routineId: routine.id,
         triggerId: trigger.triggerId,
+        routineTitle: routine.title,
+        routineMandate: routine.description,
       },
       idempotencyKey,
       actor: { type: "system", id: null },

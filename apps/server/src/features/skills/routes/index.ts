@@ -21,6 +21,11 @@ import {
   ROLE_DEFAULT_SKILLS,
 } from "../domain/catalog";
 import {
+  refreshBuiltinSkill,
+  refreshSkillRow,
+} from "../services/agent-skill-assign";
+import { childLogger } from "../../../lib/logger";
+import {
   importSkillBody,
   listSkillsQuery,
   patchSkillBody,
@@ -115,9 +120,10 @@ function resolveAllowedKeysForRole(role: AgentRole): string[] {
 // GET /api/skills?role=<role>
 // Without `role`: company library view — every skill that's either an
 //   OCCA platform default or in active use by ≥1 agent in this company.
-// With `role`: per-agent view — only OCCA defaults + ROLE_DEFAULT_SKILLS
-//   for that role. Skills from other roles are hidden so the toggle
-//   panel doesn't lie about what the agent can usefully turn on.
+// With `role`: per-agent view — OCCA defaults + ROLE_DEFAULT_SKILLS for
+//   that role, plus any imported skill whose `allowed_roles` lists this
+//   role. Skills not allowed for the role are hidden so the toggle panel
+//   doesn't lie about what the agent can usefully turn on.
 router.get("/", requireAuth, async (req: Request, res: Response) => {
   const companyId = await userCompanyId(req.user!.userId);
   if (!companyId) {
@@ -339,6 +345,83 @@ router.get(
     res.setHeader("Cache-Control", "public, max-age=3600");
     const buffer = Buffer.from(await upstream.arrayBuffer());
     res.send(buffer);
+  },
+);
+
+// POST /api/skills/:id/refresh — refetch ONE skill row from its
+// sourceLocator and update in place when the commit SHA changed.
+// Surfaced as the "Check for update" button in SkillDetailModal.
+// Works for both builtin (companyId IS NULL) and custom imports; the
+// helper preserves the `builtin: true` metadata for null-companyId rows
+// so the listing classification stays correct.
+const refreshOneLog = childLogger("skills:refresh-one");
+router.post(
+  "/:id/refresh",
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const row = await loadOwnedSkill(req.user!.userId, req.params.id);
+    if (!row) {
+      res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.SKILL_NOT_FOUND });
+      return;
+    }
+    try {
+      const result = await refreshSkillRow({ skill: row });
+      const fresh = await loadOwnedSkill(req.user!.userId, row.id);
+      res.json({
+        updated: result.updated,
+        sourceRef: result.sourceRef,
+        skill: fresh ? toDTO(fresh) : toDTO(row),
+      });
+    } catch (err) {
+      if (err instanceof GithubSkillError) {
+        const status =
+          err.code === "github_not_found"
+            ? 404
+            : err.code === "github_rate_limited"
+              ? 429
+              : 502;
+        res.status(status).json({ error: err.code, message: err.message });
+        return;
+      }
+      refreshOneLog.warn({ err, skillId: row.id }, "refresh failed");
+      throw err;
+    }
+  },
+);
+
+// POST /api/skills/refresh-defaults — refetch every entry in
+// OCCA_DEFAULT_SKILLS from GitHub and update the builtin row in place
+// when the commit SHA changed. Boot stays cheap because builtins
+// short-circuit on existence; this is the explicit "I pushed an edit
+// upstream, pull it now" trigger. Auth-gated to any logged-in user
+// (same as the rest of /api/skills); rate-limited by GitHub itself.
+const refreshLog = childLogger("skills:refresh-defaults");
+router.post(
+  "/refresh-defaults",
+  requireAuth,
+  async (_req: Request, res: Response) => {
+    const updated: string[] = [];
+    const unchanged: string[] = [];
+    const failed: { source: string; error: string }[] = [];
+
+    for (const source of OCCA_DEFAULT_SKILLS) {
+      try {
+        const result = await refreshBuiltinSkill(source);
+        if (result.updated) updated.push(result.key);
+        else unchanged.push(result.key);
+      } catch (err) {
+        const message =
+          err instanceof GithubSkillError
+            ? `${err.code}: ${err.message}`
+            : err instanceof Error
+              ? err.message
+              : "unknown_error";
+        refreshLog.warn({ source, err: message }, "refresh failed");
+        failed.push({ source, error: message });
+      }
+    }
+
+    res.json({ updated, unchanged, failed });
   },
 );
 

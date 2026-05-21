@@ -18,6 +18,12 @@ export const nullableText = (max: number) =>
 export const optionalArray = (max: number) =>
   z.array(z.string().trim().min(1).max(max)).optional();
 
+// Onboarding step 1 — single-field company creation. The rest of the
+// profile (tagline, niche, etc.) is captured later via PATCH /api/companies.
+export const createCompanyBody = z.object({
+  name: z.string().trim().min(1).max(LIMITS.NAME),
+});
+
 export const updateCompanyBody = z.object({
   name: z.string().trim().min(1).max(LIMITS.NAME).optional(),
   tagline: nullableText(160),

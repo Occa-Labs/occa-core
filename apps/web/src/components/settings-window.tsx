@@ -8,8 +8,6 @@ import {
   Copy,
   LogOut,
   PlayCircle,
-  RotateCcw,
-  Server,
   Wallet,
 } from "lucide-react";
 import { ROOM_TOUR_WAYPOINTS } from "@/features/theater/constants";
@@ -24,7 +22,6 @@ import { IS_DEV_MODE } from "@/lib/env-flags";
 
 interface SettingsWindowProps {
   onClose?: () => void;
-  onReset?: () => Promise<void> | void;
   /** Triggers the "Room Tour" cinematic — Jia walks the recorded path
    *  and returns to her spawn. Disabled when there are no waypoints. */
   onStartTour?: () => void;
@@ -32,28 +29,6 @@ interface SettingsWindowProps {
    *  user can't restart mid-walk. */
   tourActive?: boolean;
 }
-
-type ResetState =
-  | { kind: "idle" }
-  | { kind: "confirming" }
-  | { kind: "running" }
-  | {
-      kind: "done";
-      deleted: { companies: number; otherUsers: number; nonces: number };
-    }
-  | { kind: "error"; message: string };
-
-type GatewayResetState =
-  | { kind: "idle" }
-  | { kind: "confirming" }
-  | { kind: "running" }
-  | {
-      kind: "done";
-      target: string;
-      removed: string[];
-      failures: string[];
-    }
-  | { kind: "error"; message: string };
 
 type SeedApprovalState =
   | { kind: "idle" }
@@ -63,16 +38,11 @@ type SeedApprovalState =
 
 export function SettingsWindow({
   onClose,
-  onReset,
   onStartTour,
   tourActive = false,
 }: SettingsWindowProps) {
   const { user, signOut } = useAuth();
   const [copied, setCopied] = useState(false);
-  const [reset, setReset] = useState<ResetState>({ kind: "idle" });
-  const [gatewayReset, setGatewayReset] = useState<GatewayResetState>({
-    kind: "idle",
-  });
   const [seedApproval, setSeedApproval] = useState<SeedApprovalState>({
     kind: "idle",
   });
@@ -88,24 +58,6 @@ export function SettingsWindow({
       setTimeout(() => setCopied(false), 1200);
     } catch {
       /* ignore */
-    }
-  };
-
-  const runReset = async () => {
-    setReset({ kind: "running" });
-    try {
-      const res = await devApi.reset();
-      setReset({ kind: "done", deleted: res.deleted });
-      await onReset?.();
-      setTimeout(() => window.location.reload(), 1500);
-    } catch (err) {
-      const message =
-        err instanceof ApiError
-          ? `api_${err.status}`
-          : err instanceof Error
-            ? err.message
-            : "reset_failed";
-      setReset({ kind: "error", message });
     }
   };
 
@@ -127,30 +79,6 @@ export function SettingsWindow({
             ? err.message
             : "seed_failed";
       setSeedApproval({ kind: "error", message });
-    }
-  };
-
-  const runGatewayReset = async () => {
-    setGatewayReset({ kind: "running" });
-    try {
-      const res = await devApi.resetGateway();
-      setGatewayReset({
-        kind: "done",
-        target: res.target,
-        removed: res.removed,
-        failures: res.failures,
-      });
-    } catch (err) {
-      const message =
-        err instanceof ApiError
-          ? `api_${err.status}` +
-            (typeof err.body === "object" && err.body && "error" in err.body
-              ? `: ${(err.body as { error: string }).error}`
-              : "")
-          : err instanceof Error
-            ? err.message
-            : "gateway_reset_failed";
-      setGatewayReset({ kind: "error", message });
     }
   };
 
@@ -270,183 +198,6 @@ export function SettingsWindow({
             </div>
 
             <Card variant="recessed" padding="none">
-              <div className="px-4 py-4 flex items-start gap-3">
-                <RotateCcw className="size-4 text-amber-300/60 shrink-0 mt-0.5" />
-                <div className="flex-1 min-w-0 space-y-3">
-                  <div>
-                    <p className="text-[13px] font-medium text-white/80">
-                      Reset database
-                    </p>
-                    <p className="mt-1 text-[11px] text-white/45 leading-relaxed">
-                      Wipes companies, agents, tasks, traces, routines, and
-                      other users (cascade-deletes their downstream rows). Your
-                      wallet, user account, and the built-in skill catalog are
-                      preserved so you can re-onboard.
-                    </p>
-                  </div>
-
-                  {reset.kind === "idle" && (
-                    <Button
-                      variant="danger"
-                      size="sm"
-                      onClick={() => setReset({ kind: "confirming" })}
-                    >
-                      <RotateCcw className="size-3" />
-                      Reset database
-                    </Button>
-                  )}
-
-                  {reset.kind === "confirming" && (
-                    <div className="flex items-center gap-2">
-                      <Button
-                        variant="danger"
-                        size="sm"
-                        onClick={() => void runReset()}
-                      >
-                        <AlertTriangle className="size-3" />
-                        Confirm — wipe everything
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => setReset({ kind: "idle" })}
-                      >
-                        Cancel
-                      </Button>
-                    </div>
-                  )}
-
-                  {reset.kind === "running" && (
-                    <p className="text-[11px] text-white/45">
-                      Wiping database…
-                    </p>
-                  )}
-
-                  {reset.kind === "done" && (
-                    <Alert variant="success">
-                      Done. Removed {reset.deleted.companies} compan
-                      {reset.deleted.companies === 1 ? "y" : "ies"},{" "}
-                      {reset.deleted.otherUsers} other user
-                      {reset.deleted.otherUsers === 1 ? "" : "s"}, and{" "}
-                      {reset.deleted.nonces} auth nonce
-                      {reset.deleted.nonces === 1 ? "" : "s"}.
-                    </Alert>
-                  )}
-
-                  {reset.kind === "error" && (
-                    <Alert variant="error">
-                      Reset failed: {reset.message}{" "}
-                      <button
-                        onClick={() => setReset({ kind: "confirming" })}
-                        className="underline hover:text-white/90 transition-colors"
-                      >
-                        Retry
-                      </button>
-                    </Alert>
-                  )}
-                </div>
-              </div>
-
-              <CardDivider />
-
-              <div className="px-4 py-4 flex items-start gap-3">
-                <Server className="size-4 text-amber-300/60 shrink-0 mt-0.5" />
-                <div className="flex-1 min-w-0 space-y-3">
-                  <div>
-                    <p className="text-[13px] font-medium text-white/80">
-                      Reset gateway
-                    </p>
-                    <p className="mt-1 text-[11px] text-white/45 leading-relaxed">
-                      SSH into the OpenClaw gateway VPS and remove every agent
-                      whose id starts with{" "}
-                      <span className="font-mono">occa-</span>. The{" "}
-                      <span className="font-mono">main</span> agent is protected
-                      by OpenClaw and cannot be deleted. Removed agents go to
-                      the VPS Trash, not hard-deleted.
-                    </p>
-                  </div>
-
-                  {gatewayReset.kind === "idle" && (
-                    <Button
-                      variant="danger"
-                      size="sm"
-                      onClick={() => setGatewayReset({ kind: "confirming" })}
-                    >
-                      <Server className="size-3" />
-                      Reset gateway
-                    </Button>
-                  )}
-
-                  {gatewayReset.kind === "confirming" && (
-                    <div className="flex items-center gap-2">
-                      <Button
-                        variant="danger"
-                        size="sm"
-                        onClick={() => void runGatewayReset()}
-                      >
-                        <AlertTriangle className="size-3" />
-                        Confirm — wipe occa-* agents
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => setGatewayReset({ kind: "idle" })}
-                      >
-                        Cancel
-                      </Button>
-                    </div>
-                  )}
-
-                  {gatewayReset.kind === "running" && (
-                    <p className="text-[11px] text-white/45">
-                      Connecting to gateway and deleting agents…
-                    </p>
-                  )}
-
-                  {gatewayReset.kind === "done" && (
-                    <Alert
-                      variant={
-                        gatewayReset.failures.length === 0 ? "success" : "error"
-                      }
-                    >
-                      <div className="space-y-1">
-                        <div>
-                          {gatewayReset.removed.length === 0
-                            ? "No occa-* agents on gateway."
-                            : `Removed ${gatewayReset.removed.length} agent${gatewayReset.removed.length === 1 ? "" : "s"} from ${gatewayReset.target}.`}
-                          {gatewayReset.failures.length > 0 &&
-                            ` ${gatewayReset.failures.length} failed.`}
-                        </div>
-                        {gatewayReset.removed.length > 0 && (
-                          <div className="font-mono text-[10px] text-white/55">
-                            {gatewayReset.removed.join(", ")}
-                          </div>
-                        )}
-                        {gatewayReset.failures.length > 0 && (
-                          <div className="font-mono text-[10px] text-rose-300/80">
-                            failed: {gatewayReset.failures.join(", ")}
-                          </div>
-                        )}
-                      </div>
-                    </Alert>
-                  )}
-
-                  {gatewayReset.kind === "error" && (
-                    <Alert variant="error">
-                      Gateway reset failed: {gatewayReset.message}{" "}
-                      <button
-                        onClick={() => setGatewayReset({ kind: "confirming" })}
-                        className="underline hover:text-white/90 transition-colors"
-                      >
-                        Retry
-                      </button>
-                    </Alert>
-                  )}
-                </div>
-              </div>
-
-              <CardDivider />
-
               <div className="px-4 py-4 flex items-start gap-3">
                 <Bell className="size-4 text-amber-300/60 shrink-0 mt-0.5" />
                 <div className="flex-1 min-w-0 space-y-3">

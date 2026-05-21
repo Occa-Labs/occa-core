@@ -18,7 +18,7 @@ import {
   type VirtualElement,
 } from "@floating-ui/dom";
 import { X } from "lucide-react";
-import { border, specularStyle } from "@/components/ui/tokens";
+import { border, specularStyle, surface } from "@/components/ui/tokens";
 
 const GAP = 8;
 const VIEWPORT_PADDING = 12;
@@ -258,10 +258,7 @@ export function FloatingPanel({
             ? undefined
             : maxHeight ?? `calc(100vh - ${VIEWPORT_PADDING * 2}px)`,
         zIndex,
-        background: "rgba(22, 22, 28, 0.92)",
-        backdropFilter: "blur(48px) saturate(1.7)",
-        WebkitBackdropFilter: "blur(48px) saturate(1.7)",
-        border: border.std,
+        ...surface.elevated,
         borderRadius: 16,
         boxShadow:
           "0 8px 40px rgba(0,0,0,0.45), 0 1px 0 rgba(255,255,255,0.06) inset",

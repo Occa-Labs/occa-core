@@ -19,8 +19,11 @@ import { ZONE_DESKS, type SeatingZone } from "@occa/shared/seating";
 import { Modal } from "@/components/ui/modal";
 import { MODEL_POOL } from "@/features/theater/constants";
 import { useBatchAnchorAgents } from "@/features/chain/hooks/use-batch-anchor-agents";
+import { useAnchorIdentity } from "@/features/chain/hooks/use-anchor-identity";
 import { useAnchorWallet } from "@/features/chain/hooks/use-anchor-wallet";
 import { prettifyAnchorError } from "@/features/chain/lib/anchor-errors";
+import { Alert } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 import { formatWhen } from "./_shared";
 
 export function OverviewTab({
@@ -68,19 +71,51 @@ export function OverviewTab({
     agent.provisioningState === "failed" ||
     agent.provisioningState === "pending";
 
-  // On-chain anchor panel surfaces only for non-CEO agents that are
-  // gateway-ready but haven't been registered on Solana yet. CEO has its
-  // own anchor flow during onboarding (3-phase chain) so we never offer
-  // it here. `agentChainTxSignature` is the reliable "actually broadcast"
-  // signal — `agentPda` is pre-written by the prepare route and would
-  // false-positive on un-anchored rows.
+  // On-chain anchor panel surfaces for any gateway-ready agent that hasn't
+  // been registered on Solana yet. CEO uses the 3-phase flow (company →
+  // identity → deployment, 3 wallet signatures) because anchoring CEO
+  // implicitly anchors the company itself. Non-CEO uses the combined
+  // identity+deployment flow (1 wallet signature) which assumes the
+  // company is already anchored. `agentChainTxSignature` is the reliable
+  // "actually broadcast" signal — `agentPda` is pre-written by the prepare
+  // route and would false-positive on un-anchored rows.
   const needsAnchor =
-    agent.role !== CEO_ROLE &&
     agent.provisioningState === "ready" &&
     agent.agentChainTxSignature === null;
+  const isCeo = agent.role === CEO_ROLE;
 
   return (
     <div className="p-5 space-y-1">
+      {/* Blocker panels (reprovision / anchor) render at the top so users
+       *  see them on first scroll position — these gate downstream features
+       *  (Wallet tab disabled until anchor confirms; gateway calls fail
+       *  while reprovision is needed). Placing them under the metadata
+       *  rows hid them on small viewports. */}
+      {needsReprovision && (
+        <div className="pb-4">
+          <ReprovisionPanel agent={agent} onReloadMe={onReloadMe} />
+        </div>
+      )}
+      {!needsReprovision && needsAnchor && (
+        <div className="pb-4">
+          {/* key={agent.id} resets the anchor hook's state when the user
+           *  switches between agents — otherwise the previous agent's
+           *  prepRef / stage would leak across selections. */}
+          {isCeo ? (
+            <AnchorCeoPanel
+              key={agent.id}
+              agent={agent}
+              onReloadMe={onReloadMe}
+            />
+          ) : (
+            <AnchorAgentPanel
+              key={agent.id}
+              agent={agent}
+              onReloadMe={onReloadMe}
+            />
+          )}
+        </div>
+      )}
       {rows.map((r) => (
         <div
           key={r.label}
@@ -92,10 +127,7 @@ export function OverviewTab({
           </div>
         </div>
       ))}
-      <SeatRow
-        agent={agent}
-        onChangeClick={() => setSeatModalOpen(true)}
-      />
+      <SeatRow agent={agent} onChangeClick={() => setSeatModalOpen(true)} />
       <CharacterRow agent={agent} onReloadMe={onReloadMe} />
       <SeatPickerModal
         open={seatModalOpen}
@@ -104,23 +136,6 @@ export function OverviewTab({
         onClose={() => setSeatModalOpen(false)}
         onReloadMe={onReloadMe}
       />
-      {needsReprovision && (
-        <div className="pt-4">
-          <ReprovisionPanel agent={agent} onReloadMe={onReloadMe} />
-        </div>
-      )}
-      {!needsReprovision && needsAnchor && (
-        <div className="pt-4">
-          {/* key={agent.id} resets the anchor hook's state when the user
-           *  switches between agents — otherwise the previous agent's
-           *  prepRef / stage would leak across selections. */}
-          <AnchorAgentPanel
-            key={agent.id}
-            agent={agent}
-            onReloadMe={onReloadMe}
-          />
-        </div>
-      )}
     </div>
   );
 }
@@ -231,7 +246,9 @@ function CharacterRow({
             </option>
           ))}
         </select>
-        {submitting && <Loader2 className="size-3 animate-spin text-white/50" />}
+        {submitting && (
+          <Loader2 className="size-3 animate-spin text-white/50" />
+        )}
         {error && (
           <span className="text-[10px] text-red-300/80 truncate" title={error}>
             {error}
@@ -295,7 +312,9 @@ function SeatPickerModal({
             ? "That desk is already taken — pick another."
             : code === ERROR_CODES.WORKSTATION_NOT_FOUND
               ? "Unknown desk."
-              : (err instanceof Error ? err.message : "Move failed."),
+              : err instanceof Error
+                ? err.message
+                : "Move failed.",
         );
         setSubmitting(null);
       }
@@ -342,9 +361,7 @@ function ZoneSection({
 }) {
   const desks = ZONE_DESKS[zone];
   const isReserved =
-    zone === "exec" ||
-    zone === "reserved_meeting" ||
-    zone === "reserved_lobby";
+    zone === "exec" || zone === "reserved_meeting" || zone === "reserved_lobby";
   return (
     <section className="space-y-1.5">
       <header className="flex items-baseline gap-2 px-1 pt-1">
@@ -377,7 +394,7 @@ function ZoneSection({
                 isCurrent
                   ? "bg-emerald-500/15 ring-emerald-500/35 text-emerald-200"
                   : disabled
-                    ? "bg-white/[0.02] ring-white/5 text-white/30 cursor-not-allowed"
+                    ? "bg-white/2 ring-white/5 text-white/30 cursor-not-allowed"
                     : "bg-white/5 ring-white/10 text-white/80 hover:bg-white/10 hover:text-white"
               }`}
             >
@@ -388,7 +405,7 @@ function ZoneSection({
                 ) : isCurrent ? (
                   "current"
                 ) : isTaken ? (
-                  <span className="text-white/40 truncate max-w-[80px]">
+                  <span className="text-white/40 truncate max-w-20">
                     {occupant!.name}
                   </span>
                 ) : (
@@ -474,9 +491,7 @@ function ReprovisionPanel({
     } catch (err) {
       const message =
         err instanceof ApiError
-          ? typeof err.body === "object" &&
-            err.body &&
-            "error" in err.body
+          ? typeof err.body === "object" && err.body && "error" in err.body
             ? String((err.body as Record<string, unknown>).error)
             : `api_${err.status}`
           : err instanceof Error
@@ -493,11 +508,13 @@ function ReprovisionPanel({
   // amber — distinct from the green "everything's fine" state of healthy
   // agents above the banner.
   const containerClass = isSuccess
-    ? "border-emerald-500/30 bg-emerald-500/[0.05]"
-    : "border-amber-500/25 bg-amber-500/[0.04]";
+    ? "border-emerald-500/30 bg-emerald-500/5"
+    : "border-amber-500/25 bg-amber-500/4";
 
   return (
-    <div className={`rounded-lg border p-3 transition-colors ${containerClass}`}>
+    <div
+      className={`rounded-lg border p-3 transition-colors ${containerClass}`}
+    >
       <div className="flex items-start gap-3">
         {isSuccess ? (
           <CheckCircle2 className="size-4 text-emerald-300 shrink-0 mt-0.5" />
@@ -556,9 +573,7 @@ function ReprovisionStatusBody({
     | { kind: "error"; message: string };
 }) {
   if (state.kind === "running") {
-    return (
-      <div className="mt-1 text-[11px] text-white/65">{state.step}</div>
-    );
+    return <div className="mt-1 text-[11px] text-white/65">{state.step}</div>;
   }
   if (state.kind === "success") {
     return (
@@ -574,7 +589,7 @@ function ReprovisionStatusBody({
           Retry didn&apos;t go through. The original setup error is below — try
           again, or reset the kickoff if the gateway is still rate-limited.
         </div>
-        <div className="mt-1.5 text-[11px] text-red-300/85 font-mono break-words">
+        <div className="mt-1.5 text-[11px] text-red-300/85 font-mono wrap-break-word">
           {state.message}
         </div>
       </>
@@ -589,7 +604,7 @@ function ReprovisionStatusBody({
           : "This agent never finished setup on the gateway. Retry to provision it."}
       </div>
       {agent.provisioningError && (
-        <div className="mt-1.5 text-[11px] text-red-300/70 font-mono break-words">
+        <div className="mt-1.5 text-[11px] text-red-300/70 font-mono wrap-break-word">
           {agent.provisioningError}
         </div>
       )}
@@ -616,13 +631,8 @@ function AnchorAgentPanel({
   agent: AgentDTO;
   onReloadMe: () => Promise<void> | void;
 }) {
-  const {
-    stage,
-    error,
-    prepare,
-    signAndRegister,
-    reset,
-  } = useBatchAnchorAgents();
+  const { stage, error, prepare, signAndRegister, reset } =
+    useBatchAnchorAgents();
   const walletStatus = useAnchorWallet();
 
   const handleAnchor = useCallback(() => {
@@ -679,9 +689,9 @@ function AnchorAgentPanel({
             Anchor agent on Solana
           </div>
           <div className="text-[11px] text-white/55 mt-0.5">
-            One signature derives an on-chain keypair and registers this
-            agent in a single combined transaction. Your private key
-            never leaves your wallet.
+            One signature derives an on-chain keypair and registers this agent
+            in a single combined transaction. Your private key never leaves your
+            wallet.
           </div>
         </div>
       </div>
@@ -751,6 +761,221 @@ function AnchorAgentPanel({
         )}
       </div>
     </div>
+  );
+}
+
+// CEO anchor — 3-phase chain (company → identity → deployment), 3 wallet
+// signatures total. Anchoring CEO implicitly creates the CompanyAccount
+// PDA on chain (Phase A), then registers the portable AgentIdentity PDA
+// (Phase B), then binds it to the company via Deployment PDA (Phase C).
+//
+// Wallet popups must originate from a user gesture per phase — Privy's
+// embedded wallet silently no-ops if `signTransaction` is invoked from
+// an effect chain. So each phase advances on a button click.
+//
+// Surfaces here (vs onboarding) because the live onboarding flow no
+// longer anchors CEO automatically. Without this panel a freshly
+// onboarded CEO has no path to chain registration — and `set_receiving_address`
+// (Wallet tab) would stay disabled forever.
+function AnchorCeoPanel({
+  agent,
+  onReloadMe,
+}: {
+  agent: AgentDTO;
+  onReloadMe: () => Promise<void> | void;
+}) {
+  const anchor = useAnchorIdentity();
+  const walletStatus = useAnchorWallet();
+
+  // Per-phase progression — each click reads the latest stage and
+  // advances exactly one step. `useAnchorIdentity` enforces idempotency
+  // server-side (already-registered short-circuits to the next phase).
+  const onSignClick = useCallback(async () => {
+    if (walletStatus.kind !== "ready") return;
+    const stage = anchor.stage;
+
+    if (stage === "idle" || stage === "registering-company") {
+      await anchor.registerCompany({
+        companyId: agent.companyId,
+        wallet: walletStatus.wallet,
+      });
+      return;
+    }
+    if (
+      stage === "ready-to-sign-identity" ||
+      stage === "registering-identity"
+    ) {
+      await anchor.registerIdentity({
+        identityId: agent.identityId,
+        wallet: walletStatus.wallet,
+      });
+      return;
+    }
+    if (
+      stage === "ready-to-sign" ||
+      stage === "awaiting-signature" ||
+      stage === "registering-agent"
+    ) {
+      await anchor.signAndRegisterAgent({
+        agentId: agent.id,
+        wallet: walletStatus.wallet,
+      });
+      return;
+    }
+  }, [anchor, walletStatus, agent.companyId, agent.identityId, agent.id]);
+
+  // Reload me on completion so agentChainTxSignature populates and this
+  // panel unmounts (needsAnchor flips to false in the parent).
+  useEffect(() => {
+    if (anchor.stage !== "complete") return;
+    void onReloadMe();
+  }, [anchor.stage, onReloadMe]);
+
+  const busy =
+    anchor.stage === "registering-company" ||
+    anchor.stage === "registering-identity" ||
+    anchor.stage === "awaiting-signature" ||
+    anchor.stage === "registering-agent";
+
+  // Step labels match the 3 phases the user signs through.
+  const STEPS = [
+    { key: "company", label: "Register company" },
+    { key: "identity", label: "Register identity" },
+    { key: "deployment", label: "Register deployment" },
+  ] as const;
+
+  // Map hook stage → step key for progress rendering.
+  const activeStepIdx = (() => {
+    switch (anchor.stage) {
+      case "idle":
+      case "registering-company":
+        return 0;
+      case "ready-to-sign-identity":
+      case "registering-identity":
+        return 1;
+      case "ready-to-sign":
+      case "awaiting-signature":
+      case "registering-agent":
+        return 2;
+      case "complete":
+        return 3;
+    }
+  })();
+
+  const buttonLabel = (() => {
+    if (busy) {
+      switch (anchor.stage) {
+        case "registering-company":
+          return "Registering company…";
+        case "registering-identity":
+          return "Registering identity…";
+        case "awaiting-signature":
+        case "registering-agent":
+          return "Registering deployment…";
+        default:
+          return "Working…";
+      }
+    }
+    if (anchor.stage === "complete") return "Done";
+    if (anchor.stage === "ready-to-sign-identity") return "Sign identity";
+    if (anchor.stage === "ready-to-sign") return "Sign deployment";
+    return "Sign company";
+  })();
+
+  const prettified = anchor.error
+    ? prettifyAnchorError(anchor.error.code)
+    : null;
+
+  return (
+    <Alert
+      variant="warning"
+      title="Action required: anchor company + CEO on Solana"
+    >
+      <p>
+        Three signatures register the company, your identity, and the CEO
+        deployment on-chain. The Wallet tab stays read-only until this
+        completes. Your private key never leaves your wallet.
+      </p>
+
+      <div className="flex items-center gap-2 mt-3">
+        {STEPS.map((s, idx) => {
+          const done = idx < activeStepIdx;
+          const active = idx === activeStepIdx && !done;
+          return (
+            <div key={s.key} className="flex items-center gap-1.5">
+              <span
+                className={`size-1.5 rounded-full ${
+                  done
+                    ? "bg-emerald-400"
+                    : active
+                      ? "bg-amber-300"
+                      : "bg-white/20"
+                }`}
+              />
+              <span
+                className={
+                  done
+                    ? "text-[10.5px] text-emerald-300/80"
+                    : active
+                      ? "text-[10.5px] text-amber-100/90"
+                      : "text-[10.5px] text-white/35"
+                }
+              >
+                {s.label}
+              </span>
+              {idx < STEPS.length - 1 && (
+                <span className="text-white/15 mx-0.5">/</span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {anchor.error && prettified && (
+        <div className="mt-3">
+          <Alert
+            variant="error"
+            title={prettified.headline}
+          >
+            <p>{prettified.hint}</p>
+            <p className="font-mono text-[10px] mt-1 opacity-70">
+              {anchor.error.code}
+            </p>
+          </Alert>
+        </div>
+      )}
+
+      {walletStatus.kind !== "ready" && walletStatus.kind !== "loading" && (
+        <p className="mt-3 text-[11px]">
+          {walletStatus.kind === "no-wallet"
+            ? "Connect a Solana wallet to anchor."
+            : "Connected wallet doesn't match your OCCA identity. Reconnect with the original wallet."}
+        </p>
+      )}
+
+      <div className="flex items-center justify-end gap-2 mt-3">
+        {anchor.error ? (
+          <Button variant="warning" size="md" onClick={anchor.reset}>
+            <RefreshCw className="size-3.5" />
+            Retry
+          </Button>
+        ) : (
+          <Button
+            variant="warning"
+            size="md"
+            onClick={onSignClick}
+            disabled={busy || walletStatus.kind !== "ready"}
+          >
+            {busy ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <Link2 className="size-3.5" />
+            )}
+            {buttonLabel}
+          </Button>
+        )}
+      </div>
+    </Alert>
   );
 }
 

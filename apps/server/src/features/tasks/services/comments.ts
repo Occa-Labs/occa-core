@@ -180,6 +180,54 @@ async function wakeAgentForComment(
   await enqueueTaskDispatch(task.id);
 }
 
+// Bounce a task back to its assigned agent after an automated gate
+// rejection: post a system-authored comment carrying the reason, then
+// re-open + re-dispatch the task. Same status→todo + enqueue mechanism
+// `wakeAgentForComment` uses, but addressed by deployment id directly —
+// a system actor has no name to @-mention.
+export async function bounceTaskToAgent(input: {
+  taskId: string;
+  companyId: string;
+  assignedDeploymentId: string;
+  body: string;
+  // Whether the re-dispatch dedupes on `taskId` (a `taskId` singletonKey).
+  //
+  // The verification gate bounces from INSIDE the task's still-active
+  // `task.dispatch` job — a `taskId` singletonKey would collide with
+  // that active job and the re-dispatch would be silently dropped, so
+  // it leaves this false (the default).
+  //
+  // The auto-reviewer bounces from a separate `review.dispatch` job,
+  // with no active `task.dispatch` for the task. There it MUST dedupe
+  // on `taskId`: a NULL singletonKey on the `exclusive` `task.dispatch`
+  // queue is a single slot shared across ALL tasks, so two concurrent
+  // bounces of different tasks collide and one is dropped.
+  redispatchDedupe?: boolean;
+}): Promise<void> {
+  const row = await insertTaskComment({
+    taskId: input.taskId,
+    companyId: input.companyId,
+    authorDeploymentId: null,
+    authorUserId: null,
+    body: input.body,
+    mentions: [input.assignedDeploymentId],
+  });
+  void appendTaskEventBestEffort({
+    companyId: input.companyId,
+    taskId: input.taskId,
+    eventType: "comment_added",
+    actorType: "system",
+    actorId: "system",
+    payload: { commentId: row.id, body: row.body, mentions: row.mentions },
+  });
+  await updateTask(input.taskId, { status: "todo", linkedTraceId: null });
+  // See `redispatchDedupe` above — the gate path leaves it false (bounce
+  // runs inside the active dispatch job), the auto-reviewer passes true.
+  await enqueueTaskDispatch(input.taskId, {
+    dedupe: input.redispatchDedupe ?? false,
+  });
+}
+
 export async function listTaskComments(
   taskId: string,
   companyId: string,

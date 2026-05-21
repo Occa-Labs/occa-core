@@ -1,0 +1,34 @@
+# Custom MCP Server (universal escape hatch)
+#
+# Companies bring their own MCP server (self-hosted or community-published)
+# and register the URL here. OCCA proxies invocations through the generic
+# mcp handler. Actions resolve dynamically via MCP introspection.
+
+type: mcp
+displayName: "Custom MCP Server"
+description: "Connect any MCP-compatible server you self-host (or that the community publishes). Actions are discovered automatically from the server."
+
+implementation:
+  kind: mcp
+  transport: http
+  url: dynamic
+  urlMetadataField: url
+
+credentialFields:
+  - name: authHeader
+    type: string
+    required: false
+    secret: true
+    description: "Optional Authorization header value sent on every request (e.g. 'Bearer <token>')."
+
+metadataFields:
+  - name: url
+    type: string
+    required: true
+    secret: false
+    description: "Public URL of the MCP server (https://...)."
+
+actions: []
+
+hasDynamicActions: true
+hasTestConnection: true
