@@ -23,7 +23,10 @@ import {
   listMessages,
   type ChatMessageRow,
 } from "../repositories/chat-messages";
-import { resolveUserCeoThreadId } from "../repositories/chat-threads";
+import {
+  bumpThreadResetGeneration,
+  resolveUserCeoThreadId,
+} from "../repositories/chat-threads";
 import { sendChatMessageBody } from "../domain/schemas";
 import { sendUserTurn } from "../services/chat-handler";
 
@@ -83,14 +86,21 @@ router.delete("/ceo", requireAuth, async (req: Request, res: Response) => {
     return;
   }
 
-  // Wipe the gateway session BEFORE the DB rows — best-effort. A failure
-  // here (gateway down) shouldn't block the user from clearing their
-  // local thread; worst case the CEO keeps stale memory until the next
-  // successful clear.
+  // Two-step reset, best-effort on both:
+  //   1. Adapters that own a server-side session-delete (OpenClaw) get
+  //      `resetSession` called against the CURRENT generation's session
+  //      key so the running gateway session is dropped.
+  //   2. The thread's reset_generation is bumped so the NEXT adapter call
+  //      derives a brand-new sessionKey. That's the only mechanism that
+  //      breaks continuity for adapters without an HTTP session-delete
+  //      (Hermes — the old session sits in its store until prune cron
+  //      reaps it, but OCCA never addresses that key again).
+  // A failure in either step shouldn't block the user from clearing
+  // their local thread.
   const profile = await findRuntimeProfile(ceo.id);
   if (profile?.externalAgentId) {
     try {
-      const threadId = await resolveUserCeoThreadId({
+      const { id: threadId, resetGeneration } = await resolveUserCeoThreadId({
         companyId,
         ceoDeploymentId: ceo.id,
       });
@@ -101,7 +111,11 @@ router.delete("/ceo", requireAuth, async (req: Request, res: Response) => {
             string,
             unknown
           >,
-          sessionKey: threadSessionKey(profile.externalAgentId, threadId),
+          sessionKey: threadSessionKey(
+            profile.externalAgentId,
+            threadId,
+            resetGeneration,
+          ),
         });
         if (!result.ok) {
           req.log.warn(
@@ -110,10 +124,11 @@ router.delete("/ceo", requireAuth, async (req: Request, res: Response) => {
           );
         }
       }
+      await bumpThreadResetGeneration(threadId);
     } catch (err) {
       req.log.warn(
         { err, ceoId: ceo.id },
-        "resetSession threw on thread clear (non-fatal)",
+        "thread reset cleanup failed (non-fatal)",
       );
     }
   }

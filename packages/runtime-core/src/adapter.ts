@@ -73,6 +73,19 @@ export interface AdapterProvisionInput {
   desiredExternalId: string;
   /** Desired workspace directory. Adapter may override in the result. */
   workspacePath: string;
+  /**
+   * Optional progress events emitted during provisioning. Adapters that
+   * have multi-step internal flows (e.g. OpenClaw's gateway-restart
+   * waiting window) use this to surface user-facing substeps to the
+   * onboarding SSE stream. Adapters with no substeps simply omit it.
+   * `kind` lets future events extend without breaking callers.
+   */
+  onEvent?: (event: {
+    kind: "step";
+    step: string;
+    label?: string;
+    status: "running" | "done";
+  }) => void;
 }
 
 export type AdapterProvisionResult =
@@ -136,8 +149,22 @@ export type AdapterResetSessionResult =
   | { ok: true }
   | { ok: false; error: string; reason?: string };
 
+// Whether the adapter preserves per-sessionKey conversation memory on
+// its own side (OpenClaw: yes — gateway holds chat history per session
+// key) or treats each request as a fresh stateless call (Hermes: yes —
+// /v1/chat/completions is one-shot, no session bound to the key).
+//
+// Callers branch on this to decide whether to:
+//   - rely on adapter-side memory for prior turns (preserved), or
+//   - render full conversation context into every prompt (stateless).
+//
+// Forbidden: hardcoding `adapter.type === "hermes"` outside the adapter
+// package. Always read this flag from the registered adapter.
+export type AdapterSessionMemory = "preserved" | "stateless";
+
 export interface AgentAdapter {
   type: string;
+  sessionMemory: AdapterSessionMemory;
 
   // ── Connection check ────────────────────────────────────────────────────
   probeConnection(config: Record<string, unknown>): Promise<ProbeResult>;

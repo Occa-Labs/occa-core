@@ -2,12 +2,15 @@ import { PublicKey } from "@solana/web3.js";
 import {
   AGENT_IDENTITY_SEED,
   COMPANY_SEED,
+  DAILY_ANCHOR_SEED,
   DEPLOYMENT_SEED,
+  OPERATIONS_SEED,
   POLICY_SEED,
   PROTOCOL_FEES_SEED,
   REGISTRY_PROGRAM_ID,
   TREASURY_PROGRAM_ID,
   TREASURY_SEED,
+  type OperationsKind,
 } from "./constants";
 
 /**
@@ -137,6 +140,59 @@ export function deriveProtocolFeePda(
 ): { pda: PublicKey; bump: number } {
   const [pda, bump] = PublicKey.findProgramAddressSync(
     [PROTOCOL_FEES_SEED],
+    programId,
+  );
+  return { pda, bump };
+}
+
+/**
+ * OperationsAccount PDA — owned by Treasury program. One per
+ * (company, kind) pair, so Disbursement and Anchor capabilities never
+ * share a key.
+ *
+ *   seeds = ["operations", company_pda, kind_byte]
+ *
+ * `kind_byte` is the single-byte discriminator from `OPERATIONS_KIND`
+ * (Disbursement=0, Anchor=1). Order MUST NOT change once any account
+ * exists.
+ */
+export function deriveOperationsPda(
+  companyPda: PublicKey,
+  kind: OperationsKind,
+  programId: PublicKey = TREASURY_PROGRAM_ID,
+): { pda: PublicKey; bump: number } {
+  const [pda, bump] = PublicKey.findProgramAddressSync(
+    [OPERATIONS_SEED, companyPda.toBuffer(), Buffer.from([kind])],
+    programId,
+  );
+  return { pda, bump };
+}
+
+/** Encode an i64 as little-endian 8 bytes (matches Anchor / Borsh). */
+function i64LeBytes(value: bigint): Buffer {
+  const buf = Buffer.alloc(8);
+  buf.writeBigInt64LE(value, 0);
+  return buf;
+}
+
+/**
+ * DailyAnchorAccount PDA — owned by Registry program. One per
+ * (deployment, UTC day) — captures the Merkle root over that day's
+ * task hashes.
+ *
+ *   seeds = ["daily_anchor", deployment_pda, day_unix_le_i64]
+ *
+ * `dayUnix` must be aligned to 00:00:00 UTC (multiple of 86400). The
+ * on-chain handler enforces alignment; passing an unaligned value will
+ * fail with a constraint error.
+ */
+export function deriveDailyAnchorPda(
+  deploymentPda: PublicKey,
+  dayUnix: bigint,
+  programId: PublicKey = REGISTRY_PROGRAM_ID,
+): { pda: PublicKey; bump: number } {
+  const [pda, bump] = PublicKey.findProgramAddressSync(
+    [DAILY_ANCHOR_SEED, deploymentPda.toBuffer(), i64LeBytes(dayUnix)],
     programId,
   );
   return { pda, bump };

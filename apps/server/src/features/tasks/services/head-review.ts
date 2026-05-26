@@ -48,11 +48,12 @@ type TaskRow = typeof tasks.$inferSelect;
 
 // The Head's verdict. taskId is accepted but ignored — the task under
 // review is known from the dispatch context; the field is a sanity hint
-// only. feedback is required in spirit for `revise` (the contract says
-// so) but tolerated empty so a malformed reply never wedges the loop.
+// only. feedback is required in spirit for `revise`/`reject` (the
+// contract says so) but tolerated empty so a malformed reply never
+// wedges the loop.
 const reviewVerdictPayload = z.object({
   taskId: z.string().uuid().optional(),
-  decision: z.enum(["approve", "revise"]),
+  decision: z.enum(["approve", "revise", "reject"]),
   feedback: z.string().trim().max(LIMITS.DESCRIPTION).optional(),
 });
 
@@ -63,20 +64,31 @@ const REVIEW_VERDICT_CONTRACT = [
   "",
   "[[OCCA:REVIEW_VERDICT]]",
   "{",
-  '  "decision": "approve" | "revise",',
+  '  "decision": "approve" | "revise" | "reject",',
   '  "feedback": "<your editorial note>"',
   "}",
   "[[/OCCA:REVIEW_VERDICT]]",
   "",
-  "approve — the deliverable is published as-is. feedback is optional.",
-  "revise  — it is sent back to the writer. feedback is REQUIRED and must",
-  "          be specific and actionable: what is wrong and what to change.",
+  "approve — the deliverable is published as-is. Downstream webhooks fire.",
+  "          Use ONLY when the piece is publishable as it stands.",
+  "          feedback is optional.",
+  "revise  — sent back to the writer for a fix. The cycle continues; the",
+  "          writer gets another shot. feedback is REQUIRED and must be",
+  "          specific and actionable: what is wrong and what to change.",
+  "reject  — kill this attempt. The task is archived, NO webhook fires,",
+  "          no retry. Use when the deliverable cannot be salvaged: the",
+  "          writer flagged unverifiable claims and the gap is upstream",
+  "          (no primary source exists), the story does not clear the",
+  "          publication bar, or the piece would mislead readers if",
+  "          published. feedback is REQUIRED and must explain why the",
+  "          piece cannot ship.",
+  "",
   "Do NOT rewrite the piece yourself, do NOT delegate, do NOT spawn",
   "sub-agents. Your only job this turn is the verdict.",
 ].join("\n");
 
 interface Verdict {
-  decision: "approve" | "revise";
+  decision: "approve" | "revise" | "reject";
   feedback: string;
 }
 
@@ -131,26 +143,47 @@ export async function dispatchHeadReview(reviewTaskId: string): Promise<void> {
     return;
   }
 
-  // Round cap: count verdicts already issued. Past the cap, auto-approve
-  // rather than ask the Head again — the loop must always terminate.
+  // Round cap: count verdicts already issued. Past the cap, auto-reject
+  // rather than ask the Head again — the loop must always terminate and
+  // a piece that needed 2+ revisions and still isn't clearing the bar is
+  // safer killed than shipped. Auto-APPROVE here was the previous default
+  // and meant a flagged piece could ship past the writer's REVIEW intent.
   const priorRounds = await countReviewRounds(reviewTaskId);
   if (priorRounds >= MAX_REVIEW_ROUNDS) {
     log.info(
       { taskId: reviewTaskId, priorRounds },
-      "review round cap reached, auto-approving",
+      "review round cap reached, auto-rejecting",
     );
     await recordVerdict(
       task,
       reviewerId,
-      { decision: "approve", feedback: "Auto-approved: review round cap reached." },
+      {
+        decision: "reject",
+        feedback: "Auto-rejected: review round cap reached without approval.",
+      },
       deliverable.traceId,
       true,
     );
-    await finalizeTaskDone({
-      taskId: reviewTaskId,
-      deliverable: deliverable.text,
-      traceId: deliverable.traceId,
-    });
+    const reviewer = await loadReviewer(reviewerId);
+    if (reviewer) {
+      await rejectReviewedTask({
+        task,
+        reviewer: { id: reviewer.id, name: reviewer.name },
+        feedback: "Auto-rejected: review round cap reached without approval.",
+        round: priorRounds + 1,
+      });
+    } else {
+      // Reviewer record missing (rare). Still archive to avoid a stuck
+      // task or accidental publish.
+      await db
+        .update(tasks)
+        .set({
+          archivedAt: new Date(),
+          archiveReason: "review_rejected",
+          updatedAt: new Date(),
+        })
+        .where(eq(tasks.id, reviewTaskId));
+    }
     return;
   }
 
@@ -267,6 +300,25 @@ export async function dispatchHeadReview(reviewTaskId: string): Promise<void> {
     return;
   }
 
+  if (verdict.decision === "reject") {
+    // Reject = kill this attempt. Archive the task without calling
+    // finalizeTaskDone — webhooks live in that path and we explicitly
+    // do not want a rejected piece going to downstream subscribers.
+    // The task stays searchable in the archived view; operators can
+    // read the verdict feedback to understand why it was killed.
+    await rejectReviewedTask({
+      task,
+      reviewer,
+      feedback: verdict.feedback,
+      round,
+    });
+    log.info(
+      { taskId: reviewTaskId, round, reason: verdict.feedback },
+      "head review rejected, task archived",
+    );
+    return;
+  }
+
   // revise — bounce back to the writer with the Head's feedback. Same
   // mechanism the verification gate uses: comment + re-open + re-dispatch.
   await bounceTaskToAgent({
@@ -288,6 +340,45 @@ export async function dispatchHeadReview(reviewTaskId: string): Promise<void> {
     { taskId: reviewTaskId, round },
     "head review requested revision, task bounced to writer",
   );
+}
+
+// Reject handler — extracted so the main flow stays a verdict switch.
+// Archives the task and posts an editorial-killed comment so the trail
+// of "why didn't this publish?" is on the task itself, not just in
+// task_events. Importantly does NOT call finalizeTaskDone (which fires
+// webhooks) — a rejected piece must never reach downstream subscribers.
+async function rejectReviewedTask(args: {
+  task: TaskRow;
+  reviewer: { id: string; name: string };
+  feedback: string;
+  round: number;
+}): Promise<void> {
+  const { task, reviewer, feedback, round } = args;
+  const now = new Date();
+
+  await db
+    .update(tasks)
+    .set({
+      archivedAt: now,
+      archiveReason: "review_rejected",
+      updatedAt: now,
+    })
+    .where(eq(tasks.id, task.id));
+
+  void appendTaskEventBestEffort({
+    companyId: task.companyId,
+    taskId: task.id,
+    eventType: "task_archived",
+    actorType: "system",
+    actorId: "system",
+    payload: {
+      reason: "review_rejected",
+      reviewerId: reviewer.id,
+      reviewerName: reviewer.name,
+      round,
+      feedback,
+    },
+  });
 }
 
 // ── helpers ────────────────────────────────────────────────────────────
@@ -420,21 +511,26 @@ function parseVerdict(reply: string): Verdict {
     (b) => b.token === "REVIEW_VERDICT",
   );
   if (!block) {
-    log.warn("no REVIEW_VERDICT block in reviewer reply, defaulting to approve");
+    // Fail safe: if the Head emits no verdict block, do NOT default to
+    // publish. Reject the piece so a deliverable that nobody approved
+    // can never reach downstream subscribers. Previously this defaulted
+    // to approve, which let badly-formed reviewer replies pass garbage
+    // through to crypoch.com.
+    log.warn("no REVIEW_VERDICT block in reviewer reply, defaulting to reject");
     return {
-      decision: "approve",
-      feedback: "No verdict block emitted by the reviewer; auto-approved.",
+      decision: "reject",
+      feedback: "No verdict block emitted by the reviewer; auto-rejected.",
     };
   }
   const parsed = reviewVerdictPayload.safeParse(block.body);
   if (!parsed.success) {
     log.warn(
       { detail: parsed.error.flatten() },
-      "invalid REVIEW_VERDICT payload, defaulting to approve",
+      "invalid REVIEW_VERDICT payload, defaulting to reject",
     );
     return {
-      decision: "approve",
-      feedback: "Reviewer verdict could not be parsed; auto-approved.",
+      decision: "reject",
+      feedback: "Reviewer verdict could not be parsed; auto-rejected.",
     };
   }
   return {

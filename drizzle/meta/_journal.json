@@ -113,6 +113,27 @@
       "when": 1779305730596,
       "tag": "0015_lazy_groot",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1779400177377,
+      "tag": "0016_jazzy_scarlet_witch",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1779631361941,
+      "tag": "0017_magenta_kingpin",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1779818997490,
+      "tag": "0018_curved_inertia",
+      "breakpoints": true
     }
   ]
 }

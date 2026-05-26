@@ -96,6 +96,9 @@ export type {
 
 export const openclawAdapter: AgentAdapter = {
   type: "openclaw",
+  // OpenClaw's gateway preserves conversation memory per `sessionKey` —
+  // turn 2+ rides on what the gateway already saw under that key.
+  sessionMemory: "preserved",
 
   // ── Connection check ──────────────────────────────────────────────────────
   async probeConnection(config): Promise<ProbeResult> {
@@ -207,15 +210,41 @@ export const openclawAdapter: AgentAdapter = {
       };
     }
     const device = deserializeKeypair(cfg.deviceKeypair as SerializedKeypair);
-    const result = await provisionAgent({
-      gatewayUrl: cfg.gatewayUrl,
-      apiKey: cfg.apiKey,
-      device,
-      deviceToken:
-        typeof cfg.deviceToken === "string" ? cfg.deviceToken : undefined,
-      desiredId: input.desiredExternalId,
-      workspacePath: input.workspacePath,
-    });
+    // Map openclaw-internal restart events onto the adapter-contract
+    // `onEvent` so the create-flow SSE keeps showing the "Waiting for
+    // gateway restart" substep without the caller importing anything
+    // openclaw-specific.
+    const result = await provisionAgent(
+      {
+        gatewayUrl: cfg.gatewayUrl,
+        apiKey: cfg.apiKey,
+        device,
+        deviceToken:
+          typeof cfg.deviceToken === "string" ? cfg.deviceToken : undefined,
+        desiredId: input.desiredExternalId,
+        workspacePath: input.workspacePath,
+      },
+      input.onEvent
+        ? {
+            onStep: (event) => {
+              if (event === "restart_detected") {
+                input.onEvent!({
+                  kind: "step",
+                  step: "gateway_restart",
+                  label: "Waiting for gateway restart",
+                  status: "running",
+                });
+              } else if (event === "restart_verified") {
+                input.onEvent!({
+                  kind: "step",
+                  step: "gateway_restart",
+                  status: "done",
+                });
+              }
+            },
+          }
+        : undefined,
+    );
     if (!result.ok) {
       return { ok: false, error: result.error, reason: result.reason };
     }

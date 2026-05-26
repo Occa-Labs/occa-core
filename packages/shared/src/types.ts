@@ -357,7 +357,7 @@ export type AgentDeploymentStatus = "active" | "paused" | "retired";
 export interface UpdateAgentRequest {
   name?: string;
   role?: AgentRole;
-  adapterConfig?: OpenclawAdapterConfig;
+  adapterConfig?: AdapterConfig;
   // Pass `null` to detach (becomes top-level). Server validates that the
   // new parent is in the same company and not a descendant of this agent
   // (prevents cycles).
@@ -404,14 +404,30 @@ export type AgentRole = string;
 export const ROLE_SLUG_PATTERN = /^[a-z0-9_-]+$/;
 export const ROLE_SLUG_MAX = 32;
 
-// ── Adapter types (only openclaw active) ──
-export const ADAPTER_TYPES = ["openclaw"] as const;
+// ── Adapter types ──
+// Order = display order in any "pick an adapter" UI. Keep openclaw first
+// as the default-rendered card until usage data says otherwise.
+export const ADAPTER_TYPES = ["openclaw", "hermes"] as const;
 export type AdapterType = (typeof ADAPTER_TYPES)[number];
 
 export interface OpenclawAdapterConfig {
   gatewayUrl: string;
   apiKey: string;
 }
+
+// Hermes adapter config mirrors `HermesAdapterConfig` from
+// `@occa/adapter-hermes/src/types.ts`. Re-declared here (not imported)
+// because `@occa/shared` must stay adapter-agnostic — only the field
+// shapes that cross the HTTP boundary live here. Same gateway-url +
+// bearer-token shape as OpenClaw since both adapters now use HTTP.
+export interface HermesAdapterConfig {
+  gatewayUrl: string;
+  apiKey: string;
+}
+
+// Union of all known adapter configs. Per `adapterType` discrimination
+// lives in the server zod schema; client TS can pass either shape.
+export type AdapterConfig = OpenclawAdapterConfig | HermesAdapterConfig;
 
 // ── POST /api/adapters/openclaw/probe ──
 export interface ProbeRequest {
@@ -428,9 +444,31 @@ export type ProbeErrorCode =
 export interface ProbeResponse {
   ok: boolean;
   latencyMs: number;
-  error?: ProbeErrorCode;
-  info?: { scopes?: string[]; connId?: string; protocol?: number };
+  error?: ProbeErrorCode | HermesProbeErrorCode;
+  info?: {
+    scopes?: string[];
+    connId?: string;
+    protocol?: number;
+    version?: string;
+    exitCode?: number | null;
+    stderr?: string;
+    message?: string;
+  };
 }
+
+// ── POST /api/adapters/hermes/probe ──
+export interface HermesProbeRequest {
+  gatewayUrl: string;
+  apiKey: string;
+}
+
+export type HermesProbeErrorCode =
+  | "config_invalid"
+  | "probe_timeout"
+  | "probe_failed"
+  | "unreachable"
+  | "unauthorized"
+  | "invalid_response";
 
 // ── POST /api/agents ──
 // Atomic onboarding entry point. If the caller has no company yet, supply
@@ -446,7 +484,7 @@ export interface CreateAgentRequest {
   name: string;
   role: AgentRole;
   adapterType: AdapterType;
-  adapterConfig: OpenclawAdapterConfig;
+  adapterConfig: AdapterConfig;
   companyName?: string;
   // Optional explicit parent. When omitted / null, the server falls back
   // to catalog-driven auto-resolve (canonical head per role-catalog →
@@ -473,19 +511,6 @@ export interface CreateAgentResponse {
 // ── GET /api/agents ──
 export interface ListAgentsResponse {
   agents: AgentDTO[];
-}
-
-// ── POST /api/agents/:id/chat ──
-// conversationId is a stable ID the client generates once per chat session.
-// Reusing it across turns routes messages to the same gateway session so the
-// agent sees conversation history inside OpenClaw.
-export interface AgentChatRequest {
-  message: string;
-  conversationId: string;
-}
-
-export interface AgentChatResponse {
-  reply: string;
 }
 
 // ── GET /api/agents/:id/files ──
@@ -831,6 +856,21 @@ export interface TraceUsage {
   costCents: number;
 }
 
+// Snapshot of one skill the agent had loaded at the moment a trace was
+// opened. Captured at trace-start (the agent's `desiredSkills` resolved
+// to identity + version pin), NOT at actual invocation — that's a
+// later refinement once adapters report per-skill usage.
+//
+// `id` is the local companySkills row UUID; will map to an on-chain
+// PDA when SkillAccount lands in Phase 3. `key` is the canonical
+// "owner/repo/slug" for cross-system reference. `sourceRef` is the git
+// commit SHA the skill content was pinned to — the de-facto version.
+export interface SkillUsageEntry {
+  id: string;
+  key: string;
+  sourceRef: string;
+}
+
 export interface TraceDTO {
   id: string;
   agentId: string;
@@ -853,6 +893,7 @@ export interface TraceDTO {
   usage: TraceUsage | null;
   resultJson: Record<string, unknown> | null;
   sessionIdAfter: string | null;
+  skillsUsed: SkillUsageEntry[];
   createdAt: string;
   updatedAt: string;
 }
@@ -1107,6 +1148,43 @@ export interface DecideApprovalResponse {
 
 export interface ListApprovalsResponse {
   approvals: ApprovalDTO[];
+}
+
+// ── Notifications ────────────────────────────────────────────────────
+// Inbox event stream for the operator. Every approval emits one
+// notification; non-approval events (treasury readiness, anchor failure,
+// etc.) emit notifications too. `kind` discriminates payload shape.
+//
+// Known kinds listed here; schema accepts any string so new kinds land
+// without a migration. Reserve `approval_*` prefix for approval-derived
+// notifications so consumers can route generically.
+export const NOTIFICATION_KINDS = ["approval_pending"] as const;
+export type NotificationKind =
+  | (typeof NOTIFICATION_KINDS)[number]
+  | (string & {});
+
+export interface NotificationDTO {
+  id: string;
+  companyId: string;
+  userId: string;
+  kind: NotificationKind;
+  title: string;
+  body: string | null;
+  payload: Record<string, unknown>;
+  /** In-app deep link target. Format "<window>:<id?>". */
+  link: string | null;
+  readAt: string | null;
+  dismissedAt: string | null;
+  createdAt: string;
+}
+
+export interface ListNotificationsResponse {
+  notifications: NotificationDTO[];
+  unreadCount: number;
+}
+
+export interface NotificationActionResponse {
+  notification: NotificationDTO;
 }
 
 // ── Routine triggers + status ────────────────────────────────────────

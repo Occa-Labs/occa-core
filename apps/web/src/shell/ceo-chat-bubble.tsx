@@ -62,7 +62,7 @@ export function CeoChatBubble({ agents }: { agents: AgentRef[] }) {
     if (
       typeof window !== "undefined" &&
       !window.confirm(
-        "Start a new chat? This clears the history and the CEO's session memory.",
+        "Start a new conversation? This clears the chat history and resets the adapter session. The CEO may still remember facts it learned in earlier turns — those live on the agent runtime, not in OCCA.",
       )
     )
       return;
@@ -70,14 +70,18 @@ export function CeoChatBubble({ agents }: { agents: AgentRef[] }) {
   };
 
   // Header-right control: starts a brand-new conversation. Only shown
-  // when a CEO is deployed (otherwise there's nothing to clear).
+  // when a CEO is deployed (otherwise there's nothing to clear). Copy
+  // intentionally says "conversation" not "memory" — clearing only
+  // resets OCCA-side history + the adapter sessionKey. Persistent
+  // agent-runtime memory (e.g. Hermes' MEMORY.md / USER.md, OpenClaw's
+  // workspace files) lives outside OCCA and is the runtime's concern.
   const headerRight = ceo ? (
     <button
       type="button"
       onClick={handleClear}
       disabled={clearChat.isPending}
-      title="New chat"
-      aria-label="New chat"
+      title="Start a new conversation"
+      aria-label="Start a new conversation"
       className="size-5 rounded-full flex items-center justify-center text-white/40 hover:text-white/85 hover:bg-white/10 disabled:opacity-40 transition-colors"
     >
       <RotateCcw className="size-3" />

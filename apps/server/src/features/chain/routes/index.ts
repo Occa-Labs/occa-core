@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from "express";
 import { StatusCodes } from "http-status-codes";
 import { z } from "zod";
 import { PublicKey } from "@solana/web3.js";
+import { getConnection } from "../../../infra/solana/connection";
 import { ERROR_CODES } from "@occa/shared/error-codes";
 import {
   buildCreateCompanyInstruction,
@@ -46,10 +47,24 @@ import { findCompaniesForWallet } from "../services/chain-lookup";
 import { fetchTreasuryState } from "../services/treasury-lookup";
 import { buildDisbursementPlan } from "../../billing/services/disbursement";
 import { markInvoicesPaid } from "../../billing/repositories/invoices";
+import operationsRouter from "./operations";
+import payoutsRouter from "./payouts";
+import anchorsRouter from "./anchors";
+import transactionsRouter from "./transactions";
 
 const log = childLogger("routes:chain");
 
 const router: Router = Router();
+
+// Operations lifecycle (register / update / revoke / close + read) lives
+// in its own sub-router to keep this file from growing further.
+router.use(operationsRouter);
+// Routine payouts engine — operator-signed, no wallet popup.
+router.use(payoutsRouter);
+// Daily anchors read — operator-facing list of commit_daily_anchor PDAs.
+router.use(anchorsRouter);
+// Company-wide on-chain transaction list.
+router.use(transactionsRouter);
 
 // ── Architecture (post-refactor) ────────────────────────────────────────────
 // All state-changing instructions are signed by the user wallet (`owner`).
@@ -128,7 +143,11 @@ const prepareSetOperatingWalletBody = z
 
 const prepareSetPolicyBody = z
   .object({
-    // SOL discretionary budget per calendar month, in lamports.
+    // SOL routine-class cap per calendar month, in lamports.
+    // Drives `disburse_routine` (auto-payouts).
+    routineBudgetLamports: z.number().int().min(0),
+    // SOL discretionary-class cap per calendar month, in lamports.
+    // Drives `disburse_discretionary` (manual operator-signed).
     discretionaryBudgetLamports: z.number().int().min(0),
   })
   .strict();
@@ -1551,6 +1570,8 @@ router.get(
       balanceLamports: state.balanceLamports,
       initialized: state.initialized,
       // bigint → string — JSON can't carry bigint, FE parses back.
+      routineBudgetLamports: state.routineBudgetLamports.toString(),
+      routineSpentLamports: state.routineSpentLamports.toString(),
       discretionaryBudgetLamports: state.discretionaryBudgetLamports.toString(),
       discretionarySpentLamports: state.discretionarySpentLamports.toString(),
       agentOperatingFeeBps: state.agentOperatingFeeBps,
@@ -1602,6 +1623,12 @@ router.post(
       treasuryPda: deriveTreasuryPda(companyPda).pda,
       policyPda: derivePolicyPda(companyPda).pda,
       controllingAuthority: new PublicKey(req.user!.walletAddress),
+      routineBudgetPerMonth: [
+        {
+          mint: SOL_PSEUDO_MINT,
+          amount: BigInt(parsed.data.routineBudgetLamports),
+        },
+      ],
       discretionaryBudgetPerMonth: [
         {
           mint: SOL_PSEUDO_MINT,
@@ -1714,14 +1741,35 @@ router.get(
     const plan = await buildDisbursementPlan(companyId);
 
     let treasury: Awaited<ReturnType<typeof fetchTreasuryState>> | null = null;
+    let rentExemptMinLamports = 0;
     try {
+      const conn = getConnection();
       treasury = await fetchTreasuryState(new PublicKey(company.companyPda));
+      // Rent-exempt floor that the TreasuryAccount must keep above. The
+      // chain bails with `InsufficientFunds` (6025) if a disburse would
+      // drop balance below this — FE needs the value to warn pre-flight.
+      if (treasury.initialized) {
+        const treasuryAccount = await conn.getAccountInfo(
+          new PublicKey(treasury.treasuryPda),
+          "confirmed",
+        );
+        if (treasuryAccount) {
+          rentExemptMinLamports = await conn.getMinimumBalanceForRentExemption(
+            treasuryAccount.data.length,
+          );
+        }
+      }
     } catch (err) {
       log.warn({ err, companyId }, "treasury read failed during plan fetch");
     }
 
     const feeBps = treasury?.agentOperatingFeeBps ?? 0;
     const estimatedFee = Math.floor((plan.totalLamports * feeBps) / 10_000);
+    const balanceLamports = treasury?.balanceLamports ?? 0;
+    const usableBalanceLamports = Math.max(
+      0,
+      balanceLamports - rentExemptMinLamports,
+    );
 
     res.status(StatusCodes.OK).json({
       payable: plan.payable.map((a) => ({
@@ -1735,7 +1783,9 @@ router.get(
       totalLamports: plan.totalLamports,
       estimatedFeeLamports: estimatedFee,
       feeBps,
-      treasuryBalanceLamports: treasury?.balanceLamports ?? 0,
+      treasuryBalanceLamports: balanceLamports,
+      rentExemptMinLamports,
+      usableBalanceLamports,
       budgetRemainingLamports: treasury
         ? (
             treasury.discretionaryBudgetLamports -

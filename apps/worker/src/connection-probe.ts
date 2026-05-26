@@ -27,11 +27,13 @@ async function probeProfile(
       error: `provisioning_state:${row.provisioningState}`,
     };
   }
-  // Defensive: also skip if the runtime profile somehow has no
-  // deviceKeypair. probeConnection's fallback would generate ephemeral
-  // → unpaired → spam.
+  // Defensive: OpenClaw's probeConnection falls back to generating an
+  // ephemeral keypair when adapterConfig has no `deviceKeypair`, which
+  // creates a fresh unpaired device on the gateway every 90s = spam.
+  // Other adapters don't share this fallback (Hermes hits a plain HTTP
+  // endpoint with a bearer token), so the gate only applies to openclaw.
   const cfg = (row.adapterConfig as Record<string, unknown> | null) ?? {};
-  if (!cfg.deviceKeypair) {
+  if (row.adapterType === "openclaw" && !cfg.deviceKeypair) {
     return { state: "unknown", error: "no_device_keypair" };
   }
   try {

@@ -5,13 +5,20 @@ import {
   AlertCircle,
   CheckCircle2,
   Loader2,
+  Network,
   Plus,
   RefreshCw,
+  Server,
 } from "lucide-react";
 import { Modal } from "@/components/ui/modal";
 import { Autocomplete } from "@/components/ui/autocomplete";
 import { ApiError, adaptersApi, agentsApi } from "@/lib/api";
-import type { AgentDTO } from "@occa/shared/types";
+import type {
+  AdapterType,
+  AgentDTO,
+  HermesAdapterConfig,
+  OpenclawAdapterConfig,
+} from "@occa/shared/types";
 import { CSUITE_ROLES, ROLE_LABELS, ROLE_ORDER } from "./_shared";
 
 type DeployStep = "form" | "probing" | "creating";
@@ -56,8 +63,19 @@ export function DeployAgentModal({
 }) {
   const [name, setName] = useState("");
   const [role, setRole] = useState("");
+  // Adapter tab selection. Default to openclaw — matches the onboarding
+  // stepper default and keeps post-onboarding muscle memory intact.
+  const [adapterType, setAdapterType] = useState<AdapterType>("openclaw");
+  // OpenClaw form state — kept on its own slot so switching tabs back
+  // and forth doesn't wipe what the operator already typed.
   const [gatewayUrl, setGatewayUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
+  // Hermes form state — public HTTPS URL of the operator's Hermes VPS
+  // (running `hermes gateway` with API_SERVER_ENABLED) + the bearer
+  // token they set in API_SERVER_KEY. Same shape as OpenClaw because
+  // both runtimes now authenticate via HTTP + bearer.
+  const [hermesGatewayUrl, setHermesGatewayUrl] = useState("");
+  const [hermesApiKey, setHermesApiKey] = useState("");
   // Optional flat per-task invoice rate, entered in SOL. Empty = no rate
   // (operator can set it later from the Wallet tab).
   const [taskRateSol, setTaskRateSol] = useState("");
@@ -88,8 +106,11 @@ export function DeployAgentModal({
   const taskRateValid =
     taskRateSol.trim() === "" ||
     (Number.isFinite(Number(taskRateSol)) && Number(taskRateSol) >= 0);
-  const canProbe =
-    gatewayUrl.trim().length > 0 && apiKey.trim().length > 0 && step === "form";
+  const credsFilled =
+    adapterType === "openclaw"
+      ? gatewayUrl.trim().length > 0 && apiKey.trim().length > 0
+      : hermesGatewayUrl.trim().length > 0 && hermesApiKey.trim().length > 0;
+  const canProbe = credsFilled && step === "form";
   const canCreate =
     name.trim().length > 0 &&
     roleValid &&
@@ -116,8 +137,11 @@ export function DeployAgentModal({
     if (open) return;
     setName("");
     setRole("");
+    setAdapterType("openclaw");
     setGatewayUrl("");
     setApiKey("");
+    setHermesGatewayUrl("");
+    setHermesApiKey("");
     setTaskRateSol("");
     setParentAgentId("");
     setStep("form");
@@ -128,14 +152,31 @@ export function DeployAgentModal({
     setFailedAgentId(null);
   }, [open]);
 
+  // Switching tabs invalidates a stale probe — credentials are different
+  // between adapters so the old "ok" no longer applies.
+  const switchAdapter = useCallback((next: AdapterType) => {
+    setAdapterType((prev) => {
+      if (prev === next) return prev;
+      setProbeResult(null);
+      setFailedAgentId(null);
+      return next;
+    });
+  }, []);
+
   const handleProbe = useCallback(async () => {
     setStep("probing");
     setProbeResult(null);
     try {
-      const res = await adaptersApi.probeOpenclaw({
-        gatewayUrl: gatewayUrl.trim(),
-        apiKey: apiKey.trim(),
-      });
+      const res =
+        adapterType === "openclaw"
+          ? await adaptersApi.probeOpenclaw({
+              gatewayUrl: gatewayUrl.trim(),
+              apiKey: apiKey.trim(),
+            })
+          : await adaptersApi.probeHermes({
+              gatewayUrl: hermesGatewayUrl.trim(),
+              apiKey: hermesApiKey.trim(),
+            });
       setProbeResult({
         ok: res.ok,
         latencyMs: res.latencyMs,
@@ -153,7 +194,7 @@ export function DeployAgentModal({
     } finally {
       setStep("form");
     }
-  }, [gatewayUrl, apiKey]);
+  }, [adapterType, gatewayUrl, apiKey, hermesGatewayUrl, hermesApiKey]);
 
   type StreamErrorBody = {
     message?: string;
@@ -187,15 +228,19 @@ export function DeployAgentModal({
     setFailedAgentId(null);
     setStepStatuses({ ...INITIAL_STEP_STATUSES });
     try {
+      const adapterConfig: OpenclawAdapterConfig | HermesAdapterConfig =
+        adapterType === "openclaw"
+          ? { gatewayUrl: gatewayUrl.trim(), apiKey: apiKey.trim() }
+          : {
+              gatewayUrl: hermesGatewayUrl.trim(),
+              apiKey: hermesApiKey.trim(),
+            };
       const res = await agentsApi.createStream(
         {
           name: name.trim(),
           role: role.trim(),
-          adapterType: "openclaw",
-          adapterConfig: {
-            gatewayUrl: gatewayUrl.trim(),
-            apiKey: apiKey.trim(),
-          },
+          adapterType,
+          adapterConfig,
           parentAgentId: parentAgentId || null,
           // SOL → lamports. Empty input = null (no rate set yet).
           taskRateLamports:
@@ -222,8 +267,11 @@ export function DeployAgentModal({
     canCreate,
     name,
     role,
+    adapterType,
     gatewayUrl,
     apiKey,
+    hermesGatewayUrl,
+    hermesApiKey,
     parentAgentId,
     taskRateSol,
     handleStreamError,
@@ -407,47 +455,106 @@ export function DeployAgentModal({
         {/* Divider */}
         <div style={{ height: "1px", background: "rgba(255,255,255,0.06)" }} />
 
-        {/* Gateway credentials */}
+        {/* Runtime credentials */}
         <section className="space-y-3">
-          <h3 className="text-[10px] uppercase tracking-widest text-white/30 font-semibold">
-            Gateway credentials
-          </h3>
-          <div className="space-y-2.5">
-            <label className="block">
-              <span className="text-[11px] text-white/50 mb-1.5 block">
-                Gateway URL
-              </span>
-              <input
-                value={gatewayUrl}
-                onChange={(e) => {
-                  setGatewayUrl(e.target.value);
-                  setProbeResult(null);
-                  setFailedAgentId(null);
-                }}
-                placeholder="https://gateway.example.com"
-                type="url"
+          <div className="flex items-center justify-between">
+            <h3 className="text-[10px] uppercase tracking-widest text-white/30 font-semibold">
+              Runtime credentials
+            </h3>
+            {/* Tab bar — picks the adapter for THIS agent. Different
+                agents in the same company may run on different runtimes. */}
+            <div className="flex items-center gap-1 rounded-lg bg-white/5 p-0.5 ring-1 ring-inset ring-white/8">
+              <AdapterTab
+                active={adapterType === "openclaw"}
                 disabled={busy}
-                className="w-full rounded-xl bg-white/5 ring-1 ring-inset ring-white/10 focus:ring-white/22 focus:outline-none px-3.5 py-2.5 text-[13px] text-white/85 placeholder:text-white/22 transition disabled:opacity-50 font-mono"
+                icon={<Network className="size-3" />}
+                label="OpenClaw"
+                onClick={() => switchAdapter("openclaw")}
               />
-            </label>
-            <label className="block">
-              <span className="text-[11px] text-white/50 mb-1.5 block">
-                API key
-              </span>
-              <input
-                value={apiKey}
-                onChange={(e) => {
-                  setApiKey(e.target.value);
-                  setProbeResult(null);
-                  setFailedAgentId(null);
-                }}
-                placeholder="sk-…"
-                type="password"
+              <AdapterTab
+                active={adapterType === "hermes"}
                 disabled={busy}
-                className="w-full rounded-xl bg-white/5 ring-1 ring-inset ring-white/10 focus:ring-white/22 focus:outline-none px-3.5 py-2.5 text-[13px] text-white/85 placeholder:text-white/22 transition disabled:opacity-50 font-mono"
+                icon={<Server className="size-3" />}
+                label="Hermes"
+                onClick={() => switchAdapter("hermes")}
               />
-            </label>
+            </div>
           </div>
+          {adapterType === "openclaw" ? (
+            <div className="space-y-2.5">
+              <label className="block">
+                <span className="text-[11px] text-white/50 mb-1.5 block">
+                  Gateway URL
+                </span>
+                <input
+                  value={gatewayUrl}
+                  onChange={(e) => {
+                    setGatewayUrl(e.target.value);
+                    setProbeResult(null);
+                    setFailedAgentId(null);
+                  }}
+                  placeholder="https://gateway.example.com"
+                  type="url"
+                  disabled={busy}
+                  className="w-full rounded-xl bg-white/5 ring-1 ring-inset ring-white/10 focus:ring-white/22 focus:outline-none px-3.5 py-2.5 text-[13px] text-white/85 placeholder:text-white/22 transition disabled:opacity-50 font-mono"
+                />
+              </label>
+              <label className="block">
+                <span className="text-[11px] text-white/50 mb-1.5 block">
+                  API key
+                </span>
+                <input
+                  value={apiKey}
+                  onChange={(e) => {
+                    setApiKey(e.target.value);
+                    setProbeResult(null);
+                    setFailedAgentId(null);
+                  }}
+                  placeholder="sk-…"
+                  type="password"
+                  disabled={busy}
+                  className="w-full rounded-xl bg-white/5 ring-1 ring-inset ring-white/10 focus:ring-white/22 focus:outline-none px-3.5 py-2.5 text-[13px] text-white/85 placeholder:text-white/22 transition disabled:opacity-50 font-mono"
+                />
+              </label>
+            </div>
+          ) : (
+            <div className="space-y-2.5">
+              <label className="block">
+                <span className="text-[11px] text-white/50 mb-1.5 block">
+                  Gateway URL
+                </span>
+                <input
+                  value={hermesGatewayUrl}
+                  onChange={(e) => {
+                    setHermesGatewayUrl(e.target.value);
+                    setProbeResult(null);
+                    setFailedAgentId(null);
+                  }}
+                  placeholder="https://hermes.example.com"
+                  type="url"
+                  disabled={busy}
+                  className="w-full rounded-xl bg-white/5 ring-1 ring-inset ring-white/10 focus:ring-white/22 focus:outline-none px-3.5 py-2.5 text-[13px] text-white/85 placeholder:text-white/22 transition disabled:opacity-50 font-mono"
+                />
+              </label>
+              <label className="block">
+                <span className="text-[11px] text-white/50 mb-1.5 block">
+                  API_SERVER_KEY bearer
+                </span>
+                <input
+                  value={hermesApiKey}
+                  onChange={(e) => {
+                    setHermesApiKey(e.target.value);
+                    setProbeResult(null);
+                    setFailedAgentId(null);
+                  }}
+                  placeholder="—"
+                  type="password"
+                  disabled={busy}
+                  className="w-full rounded-xl bg-white/5 ring-1 ring-inset ring-white/10 focus:ring-white/22 focus:outline-none px-3.5 py-2.5 text-[13px] text-white/85 placeholder:text-white/22 transition disabled:opacity-50 font-mono"
+                />
+              </label>
+            </div>
+          )}
 
           {/* Probe result */}
           {probeResult && (
@@ -519,6 +626,11 @@ export function DeployAgentModal({
               <AlertCircle className="size-3.5 shrink-0" />
               {submitError}
             </p>
+            {/* Retry button only appears for openclaw failures because
+                Phase 0 reprovision is openclaw-only (server returns 501
+                for hermes, see lifecycle.ts). The hermes path emits
+                `retryable: false` so `failedAgentId` stays null and this
+                block hides naturally. */}
             {failedAgentId && (
               <button
                 type="button"
@@ -537,6 +649,38 @@ export function DeployAgentModal({
         )}
       </div>
     </Modal>
+  );
+}
+
+function AdapterTab({
+  active,
+  disabled,
+  icon,
+  label,
+  onClick,
+}: {
+  active: boolean;
+  disabled: boolean;
+  icon: React.ReactNode;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={`flex cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+        active
+          ? "bg-emerald-500/15 text-emerald-100 ring-1 ring-inset ring-emerald-400/30"
+          : "text-white/55 hover:text-white/85"
+      }`}
+    >
+      <span className={active ? "text-emerald-300" : "text-white/45"}>
+        {icon}
+      </span>
+      {label}
+    </button>
   );
 }
 

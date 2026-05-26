@@ -1,6 +1,6 @@
 {
   "name": "occa-sdk",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "OCCA on-chain protocol SDK — PDA helpers, instruction builders, and types for the OCCA Registry + Treasury programs on Solana.",
   "license": "MIT",
   "author": "OCCA",
@@ -60,7 +60,7 @@
   "scripts": {
     "build": "tsup",
     "prepublishOnly": "pnpm build",
-    "sync-idl": "cp ../../../occa-programs/target/idl/registry.json src/idl/registry.json",
+    "sync-idl": "cp ../../../occa-programs/target/idl/registry.json src/idl/registry.json && cp ../../../occa-programs/target/idl/treasury.json src/idl/treasury.json",
     "devnet-smoke": "tsx scripts/devnet-smoke.ts"
   },
   "dependencies": {

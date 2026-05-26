@@ -2,20 +2,33 @@
 // Pure logic — no Drizzle, no Express.
 
 import { z } from "zod";
-import {
-  ADAPTER_TYPES,
-  SKILL_SYNC_ACTIONS,
-  type AgentChatRequest,
-} from "@occa/shared/types";
+import { SKILL_SYNC_ACTIONS } from "@occa/shared/types";
 import { LIMITS } from "../../../lib/limits";
 import { roleSchema } from "../../../lib/role-schema";
 
-// ── Adapter config (shared between create + patch) ───────────────────────
+// ── Adapter config (per-adapter shapes) ──────────────────────────────────
+//
+// Two adapters today: openclaw (WS gateway + bearer) and hermes (HTTP
+// gateway + bearer). `createAgentBody` discriminates on `adapterType` so
+// each new agent has the correct config shape for its runtime.
+// `patchAgentBody` and `reprovisionAgentBody` accept either shape via a
+// plain union — the route handler knows the agent's adapterType from the
+// DB record and is expected to revalidate before persisting.
 
-export const adapterConfigSchema = z.object({
+export const openclawAdapterConfigSchema = z.object({
   gatewayUrl: z.string().url(),
   apiKey: z.string().min(1).max(LIMITS.API_KEY),
 });
+
+export const hermesAdapterConfigSchema = z.object({
+  gatewayUrl: z.string().url(),
+  apiKey: z.string().min(1).max(LIMITS.API_KEY),
+});
+
+export const adapterConfigSchema = z.union([
+  openclawAdapterConfigSchema,
+  hermesAdapterConfigSchema,
+]);
 
 // Upper bound for a per-task invoice rate (lamports). 1000 SOL — far above
 // any realistic devnet rate; guards against fat-finger / overflow input.
@@ -34,11 +47,14 @@ const taskRateLamportsSchema = z
 // ── Mutations ────────────────────────────────────────────────────────────
 
 // POST /api/agents — initial onboarding (CEO) or subsequent agent.
-export const createAgentBody = z.object({
+//
+// Discriminated by `adapterType` so the wrong config shape (e.g. openclaw
+// `gatewayUrl` against `adapterType: "hermes"`) is rejected by zod before
+// it reaches the provision call. Shared fields stay on a base object to
+// avoid duplication between the two branches.
+const createAgentSharedFields = {
   name: z.string().trim().min(1).max(LIMITS.NAME),
   role: roleSchema,
-  adapterType: z.enum(ADAPTER_TYPES),
-  adapterConfig: adapterConfigSchema,
   // Used only on first-time onboarding (user has no company yet). Ignored
   // when the user already owns a company — agents always attach to the
   // existing one so we never end up with split companies.
@@ -49,7 +65,20 @@ export const createAgentBody = z.object({
   parentAgentId: z.string().uuid().nullable().optional(),
   // Optional flat per-task invoice rate, set at deploy time.
   taskRateLamports: taskRateLamportsSchema,
-});
+};
+
+export const createAgentBody = z.discriminatedUnion("adapterType", [
+  z.object({
+    ...createAgentSharedFields,
+    adapterType: z.literal("openclaw"),
+    adapterConfig: openclawAdapterConfigSchema,
+  }),
+  z.object({
+    ...createAgentSharedFields,
+    adapterType: z.literal("hermes"),
+    adapterConfig: hermesAdapterConfigSchema,
+  }),
+]);
 
 // POST /api/agents/:id/reprovision
 //
@@ -111,11 +140,10 @@ export const createAgentTokenBody = z.object({
   name: z.string().trim().min(1).max(LIMITS.LABEL),
 });
 
-// POST /api/agents/:id/chat
-export const agentChatBody = z.object({
-  message: z.string().min(1).max(LIMITS.CHAT_MESSAGE),
-  conversationId: z.string().uuid(),
-}) satisfies z.ZodType<AgentChatRequest>;
+// POST /api/agents/:id/adapter/rotate-bearer
+export const rotateBearerBody = z.object({
+  apiKey: z.string().min(1).max(LIMITS.API_KEY),
+});
 
 // ── Queries ──────────────────────────────────────────────────────────────
 

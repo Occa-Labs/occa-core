@@ -159,16 +159,40 @@ export default function HomePage() {
     string | null
   >(null);
 
-  // "Open in Approvals" deep-link from notification.
+  // Deep-link state driven by NotificationCenter card clicks. Each link
+  // window maps to one slot of OsShell state; the dispatcher below
+  // routes by parsed.window.
   const [pendingApprovalId, setPendingApprovalId] = useState<string | null>(
     null,
   );
-  const handleOpenApprovals = useCallback(
-    (id: string) => setPendingApprovalId(id),
-    [],
-  );
+  const [pendingChainSection, setPendingChainSection] = useState<
+    string | null
+  >(null);
   const handleClearPendingApproval = useCallback(
     () => setPendingApprovalId(null),
+    [],
+  );
+  const handleClearPendingChain = useCallback(
+    () => setPendingChainSection(null),
+    [],
+  );
+  const handleNavigate = useCallback(
+    (parsed: import("@/features/notifications/utils").ParsedNotificationLink) => {
+      switch (parsed.window) {
+        case "approvals":
+          if (parsed.target) setPendingApprovalId(parsed.target);
+          break;
+        case "chain":
+          // "chain:treasury" / "chain:registry" etc. — target is the
+          // section id. Missing target opens the default section.
+          setPendingChainSection(parsed.target ?? "registry");
+          break;
+        // Other windows (agents, tasks, ...) wire in as their consumers
+        // add deep-link entry points. Unknown windows are no-ops.
+        default:
+          break;
+      }
+    },
     [],
   );
   const handleFocusWorkstation = useCallback((id: string | null) => {
@@ -257,7 +281,7 @@ export default function HomePage() {
           viewMode3d={view.enabled}
           onToggleViewMode={view.toggle}
           viewModeToggleEnabled={true}
-          onOpenApprovals={handleOpenApprovals}
+          onNavigate={handleNavigate}
         />
         {authenticated && (
           <TokenGate
@@ -284,6 +308,8 @@ export default function HomePage() {
               onToggleWalkRecord={handleToggleWalkRecord}
               pendingApprovalId={pendingApprovalId}
               onClearPendingApproval={handleClearPendingApproval}
+              pendingChainSection={pendingChainSection}
+              onClearPendingChain={handleClearPendingChain}
             />
           </TokenGate>
         )}

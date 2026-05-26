@@ -4,14 +4,18 @@ import {
   TransactionInstruction,
 } from "@solana/web3.js";
 import {
+  OPERATIONS_KIND,
   REGISTRY_PROGRAM_ID,
   SOL_PSEUDO_MINT,
   TREASURY_PROGRAM_ID,
+  type OperationsKind,
 } from "./constants";
 import {
   deriveAgentIdentityPda,
   deriveCompanyPda,
+  deriveDailyAnchorPda,
   deriveDeploymentPda,
+  deriveOperationsPda,
   derivePolicyPda,
   deriveProtocolFeePda,
   deriveTreasuryPda,
@@ -38,6 +42,7 @@ export const INSTRUCTION_DISCRIMINATOR = {
   updateDeploymentStatus: Buffer.from([225, 195, 150, 254, 178, 203, 53, 147]),
   retireDeployment: Buffer.from([45, 188, 162, 197, 136, 180, 202, 153]),
   setReceivingAddress: Buffer.from([70, 63, 44, 87, 16, 6, 156, 200]),
+  commitDailyAnchor: Buffer.from([18, 7, 3, 65, 58, 148, 164, 0]),
 } as const;
 
 // ── Borsh primitives ────────────────────────────────────────────────────────
@@ -465,6 +470,13 @@ export function buildSetReceivingAddressInstruction(
 export const TREASURY_INSTRUCTION_DISCRIMINATOR = {
   setPolicy: Buffer.from([40, 133, 12, 157, 235, 202, 2, 132]),
   disburseDiscretionary: Buffer.from([102, 176, 14, 127, 210, 4, 96, 175]),
+  initProtocolFeeAccount: Buffer.from([214, 27, 184, 174, 155, 79, 141, 114]),
+  registerCompanyOperations: Buffer.from([212, 173, 142, 23, 28, 221, 55, 99]),
+  updateOperationsCapability: Buffer.from([21, 13, 197, 41, 92, 229, 142, 202]),
+  revokeOperations: Buffer.from([141, 196, 241, 103, 182, 146, 117, 183]),
+  closeOperations: Buffer.from([2, 52, 136, 225, 80, 230, 222, 120]),
+  disburseRoutine: Buffer.from([45, 152, 225, 130, 133, 73, 62, 202]),
+  disbursePrivileged: Buffer.from([173, 78, 248, 158, 76, 46, 88, 167]),
 } as const;
 
 // ── Borsh helpers for treasury args ─────────────────────────────────────────
@@ -523,6 +535,20 @@ export interface SetPolicyParams {
   routineBudgetPerMonth?: AssetBudget[];
   /** Per-month discretionary-class cap. Omit to leave unchanged. */
   discretionaryBudgetPerMonth?: AssetBudget[];
+  /** SOL threshold above which Privileged-class disbursement (= owner +
+   *  secondary signer) is required. Omit to leave unchanged. Pass
+   *  `u64::MAX` (-1n cast) to disable (= secondary signer never required). */
+  privilegedThresholdLamports?: bigint;
+  /** Per-asset threshold variant of the above. Omit to leave unchanged. */
+  privilegedThresholdPerToken?: AssetBudget[];
+  /** Second signer required for Privileged-class disbursements.
+   *  Distinguishes three cases:
+   *   • `undefined` — leave unchanged
+   *   • `null`      — clear (no secondary signer; Privileged disburse
+   *                   then has no valid signer combination, effectively
+   *                   disabling it)
+   *   • `PublicKey` — set to this pubkey */
+  secondarySigner?: PublicKey | null;
   /** Agent Operating Fee in basis points. Omit to leave unchanged. */
   agentOperatingFeeBps?: number;
   /** Accepted-asset allow-list. Omit to leave unchanged. */
@@ -534,16 +560,24 @@ export interface SetPolicyParams {
  * Build a `set_policy` instruction. Privileged-class — signed by the
  * controlling authority (= company owner).
  *
- * `SetPolicyParams` on-chain has 7 `Option` fields; each omitted field
- * encodes as `None` ("leave unchanged"). This builder exposes the four
- * fields OCCA uses today; `privileged_threshold_lamports`,
- * `privileged_threshold_per_token`, and `secondary_signer` are always
- * encoded `None`.
+ * Every parameter is `Option<T>`: omitted = "leave unchanged". For
+ * `secondarySigner`, JS `null` maps to the "clear" case (outer Some,
+ * inner None) — see the field doc above.
  */
 export function buildSetPolicyInstruction(params: SetPolicyParams): {
   instruction: TransactionInstruction;
 } {
   const programId = params.programId ?? TREASURY_PROGRAM_ID;
+
+  // Borsh `Option<Option<Pubkey>>` encoder for secondary_signer:
+  //   undefined → outer None  (00)
+  //   null      → outer Some, inner None  (01 00)
+  //   pubkey    → outer Some, inner Some  (01 01 <32 bytes>)
+  function encodeSecondarySigner(v: PublicKey | null | undefined): Buffer {
+    if (v === undefined) return Buffer.from([0]);
+    if (v === null) return Buffer.from([1, 0]);
+    return Buffer.concat([Buffer.from([1, 1]), encodePubkey(v)]);
+  }
 
   // Field order MUST match the on-chain `SetPolicyParams` struct.
   const data = Buffer.concat([
@@ -556,12 +590,14 @@ export function buildSetPolicyInstruction(params: SetPolicyParams): {
     encodeOption(params.discretionaryBudgetPerMonth, (v) =>
       encodeVec(v, encodeAssetBudget),
     ),
-    // 3. privileged_threshold_lamports: Option<u64> — always None.
-    Buffer.from([0]),
-    // 4. privileged_threshold_per_token: Option<Vec<AssetBudget>> — None.
-    Buffer.from([0]),
-    // 5. secondary_signer: Option<Option<Pubkey>> — None.
-    Buffer.from([0]),
+    // 3. privileged_threshold_lamports: Option<u64>
+    encodeOption(params.privilegedThresholdLamports, encodeU64),
+    // 4. privileged_threshold_per_token: Option<Vec<AssetBudget>>
+    encodeOption(params.privilegedThresholdPerToken, (v) =>
+      encodeVec(v, encodeAssetBudget),
+    ),
+    // 5. secondary_signer: Option<Option<Pubkey>>
+    encodeSecondarySigner(params.secondarySigner),
     // 6. agent_operating_fee_bps: Option<u16>
     encodeOption(params.agentOperatingFeeBps, encodeU16),
     // 7. accepted_assets: Option<Vec<Pubkey>>
@@ -641,6 +677,493 @@ export function buildDisburseDiscretionaryInstruction(
       { pubkey: params.deploymentPda, isSigner: false, isWritable: false },
       { pubkey: params.destination, isSigner: false, isWritable: true },
       { pubkey: protocolFeePda, isSigner: false, isWritable: true },
+    ],
+    data,
+  });
+  return { instruction };
+}
+
+// ── Treasury: more builders ────────────────────────────────────────────────
+
+/** Encode an i64 as little-endian 8 bytes (Borsh). */
+function encodeI64(n: bigint): Buffer {
+  const buf = Buffer.alloc(8);
+  buf.writeBigInt64LE(n, 0);
+  return buf;
+}
+
+/** Encode a Borsh bool — single byte 0 or 1. */
+function encodeBool(b: boolean): Buffer {
+  return Buffer.from([b ? 1 : 0]);
+}
+
+/** Encode an 8-byte action whitelist entry (Anchor ix discriminator). */
+function encodeAction(disc: Uint8Array | Buffer): Buffer {
+  if (disc.length !== 8) {
+    throw new RangeError(`action_whitelist entry must be 8 bytes, got ${disc.length}`);
+  }
+  return Buffer.from(disc);
+}
+
+// ── init_protocol_fee_account ───────────────────────────────────────────────
+
+export interface InitProtocolFeeAccountParams {
+  /** Upgrade authority of the Treasury program. Pays + signs. */
+  authority: PublicKey;
+  /** Long-lived withdrawal authority for accumulated fees (e.g. governance
+   *  multisig). Immutable after init. */
+  governance: PublicKey;
+  /** The Treasury program's own pubkey — passed as an account. Defaults to
+   *  `TREASURY_PROGRAM_ID`. */
+  program?: PublicKey;
+  /** The program's ProgramData PDA (BPFLoaderUpgradeable). Anchor uses this
+   *  to verify the signer is the upgrade authority. Caller derives:
+   *    `PublicKey.findProgramAddressSync([program.toBuffer()],
+   *     BPF_LOADER_UPGRADEABLE_PROGRAM_ID)`. */
+  programData: PublicKey;
+  programId?: PublicKey;
+}
+
+/**
+ * Build an `init_protocol_fee_account` instruction. Singleton — call once
+ * per program deployment by the upgrade authority. Subsequent calls fail
+ * (PDA already initialized).
+ */
+export function buildInitProtocolFeeAccountInstruction(
+  params: InitProtocolFeeAccountParams,
+): { instruction: TransactionInstruction } {
+  const programId = params.programId ?? TREASURY_PROGRAM_ID;
+  const programAccount = params.program ?? programId;
+  const { pda: protocolFeePda } = deriveProtocolFeePda(programId);
+
+  const data = Buffer.concat([
+    TREASURY_INSTRUCTION_DISCRIMINATOR.initProtocolFeeAccount,
+    encodePubkey(params.governance),
+  ]);
+
+  const instruction = new TransactionInstruction({
+    programId,
+    keys: [
+      { pubkey: protocolFeePda, isSigner: false, isWritable: true },
+      { pubkey: params.authority, isSigner: true, isWritable: true },
+      { pubkey: programAccount, isSigner: false, isWritable: false },
+      { pubkey: params.programData, isSigner: false, isWritable: false },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    ],
+    data,
+  });
+  return { instruction };
+}
+
+// ── register_company_operations ─────────────────────────────────────────────
+
+export interface RegisterCompanyOperationsParams {
+  companyPda: PublicKey;
+  /** Must equal `company.owner` — Privileged-class signer. */
+  controllingAuthority: PublicKey;
+  /** Disbursement or Anchor — determines which OperationsAccount PDA is
+   *  created. Order matters: enum byte is part of the seed. */
+  kind: OperationsKind;
+  /** Hot wallet that will sign downstream operations ix (e.g.
+   *  `disburse_routine` for Disbursement, `commit_daily_anchor` for Anchor). */
+  signer: PublicKey;
+  /** Each entry = an 8-byte Anchor instruction discriminator the signer
+   *  is allowed to invoke. Empty = no actions permitted (account exists
+   *  but is essentially disabled). */
+  actionWhitelist: (Uint8Array | Buffer)[];
+  /** How many disburse calls this signer may make per calendar month. */
+  rateLimitPerPeriod: number;
+  /** Unix seconds. `0` = never expires. */
+  expiryUnix: bigint;
+  /** Rent payer — typically the operator hot wallet. */
+  payer: PublicKey;
+  programId?: PublicKey;
+}
+
+/**
+ * Build a `register_company_operations` instruction — creates an
+ * OperationsAccount binding a hot wallet to a capability set. Privileged-
+ * class (signed by `controlling_authority` = company owner).
+ */
+export function buildRegisterCompanyOperationsInstruction(
+  params: RegisterCompanyOperationsParams,
+): { instruction: TransactionInstruction } {
+  const programId = params.programId ?? TREASURY_PROGRAM_ID;
+  const { pda: operationsPda } = deriveOperationsPda(
+    params.companyPda,
+    params.kind,
+    programId,
+  );
+
+  const data = Buffer.concat([
+    TREASURY_INSTRUCTION_DISCRIMINATOR.registerCompanyOperations,
+    // kind: u8 enum byte
+    Buffer.from([params.kind]),
+    encodePubkey(params.signer),
+    encodeVec(params.actionWhitelist, encodeAction),
+    u32LeBytes(params.rateLimitPerPeriod),
+    encodeI64(params.expiryUnix),
+  ]);
+
+  const instruction = new TransactionInstruction({
+    programId,
+    keys: [
+      { pubkey: params.companyPda, isSigner: false, isWritable: false },
+      {
+        pubkey: params.controllingAuthority,
+        isSigner: true,
+        isWritable: false,
+      },
+      { pubkey: operationsPda, isSigner: false, isWritable: true },
+      { pubkey: params.payer, isSigner: true, isWritable: true },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    ],
+    data,
+  });
+  return { instruction };
+}
+
+// ── update_operations_capability ────────────────────────────────────────────
+
+export interface UpdateOperationsCapabilityParams {
+  companyPda: PublicKey;
+  controllingAuthority: PublicKey;
+  /** Which OperationsAccount (by kind) to update. */
+  kind: OperationsKind;
+  /** Each field is independently optional — omitted = "leave unchanged". */
+  actionWhitelist?: (Uint8Array | Buffer)[];
+  rateLimitPerPeriod?: number;
+  /** Pass `0n` to set "no expiry" sentinel; `undefined` to leave unchanged. */
+  expiryUnix?: bigint;
+  programId?: PublicKey;
+}
+
+/**
+ * Build an `update_operations_capability` instruction — Privileged-class
+ * mutation of an existing OperationsAccount's whitelist / rate limit /
+ * expiry. Each param is Option-encoded.
+ */
+export function buildUpdateOperationsCapabilityInstruction(
+  params: UpdateOperationsCapabilityParams,
+): { instruction: TransactionInstruction } {
+  const programId = params.programId ?? TREASURY_PROGRAM_ID;
+  const { pda: operationsPda } = deriveOperationsPda(
+    params.companyPda,
+    params.kind,
+    programId,
+  );
+
+  // Field order MUST match `UpdateOperationsCapabilityParams` struct.
+  const argBody = Buffer.concat([
+    encodeOption(params.actionWhitelist, (v) => encodeVec(v, encodeAction)),
+    encodeOption(params.rateLimitPerPeriod, u32LeBytes),
+    encodeOption(params.expiryUnix, encodeI64),
+  ]);
+
+  const data = Buffer.concat([
+    TREASURY_INSTRUCTION_DISCRIMINATOR.updateOperationsCapability,
+    argBody,
+  ]);
+
+  const instruction = new TransactionInstruction({
+    programId,
+    keys: [
+      { pubkey: params.companyPda, isSigner: false, isWritable: false },
+      {
+        pubkey: params.controllingAuthority,
+        isSigner: true,
+        isWritable: false,
+      },
+      { pubkey: operationsPda, isSigner: false, isWritable: true },
+    ],
+    data,
+  });
+  return { instruction };
+}
+
+// ── revoke_operations ───────────────────────────────────────────────────────
+
+export interface RevokeOperationsParams {
+  companyPda: PublicKey;
+  controllingAuthority: PublicKey;
+  kind: OperationsKind;
+  programId?: PublicKey;
+}
+
+/**
+ * Build a `revoke_operations` instruction — flips the `revoked` flag on
+ * the OperationsAccount. Subsequent ix attempts by the signer fail. The
+ * account stays open (rent retained); call `close_operations` to reclaim.
+ */
+export function buildRevokeOperationsInstruction(
+  params: RevokeOperationsParams,
+): { instruction: TransactionInstruction } {
+  const programId = params.programId ?? TREASURY_PROGRAM_ID;
+  const { pda: operationsPda } = deriveOperationsPda(
+    params.companyPda,
+    params.kind,
+    programId,
+  );
+
+  const data = Buffer.from(TREASURY_INSTRUCTION_DISCRIMINATOR.revokeOperations);
+
+  const instruction = new TransactionInstruction({
+    programId,
+    keys: [
+      { pubkey: params.companyPda, isSigner: false, isWritable: false },
+      {
+        pubkey: params.controllingAuthority,
+        isSigner: true,
+        isWritable: false,
+      },
+      { pubkey: operationsPda, isSigner: false, isWritable: true },
+    ],
+    data,
+  });
+  return { instruction };
+}
+
+// ── close_operations ────────────────────────────────────────────────────────
+
+export interface CloseOperationsParams {
+  companyPda: PublicKey;
+  /** Rent refund destination + signer. */
+  controllingAuthority: PublicKey;
+  kind: OperationsKind;
+  programId?: PublicKey;
+}
+
+/**
+ * Build a `close_operations` instruction — closes the OperationsAccount
+ * and refunds rent to `controlling_authority`. Permanent: a new
+ * register call would create a fresh account at the same PDA.
+ */
+export function buildCloseOperationsInstruction(
+  params: CloseOperationsParams,
+): { instruction: TransactionInstruction } {
+  const programId = params.programId ?? TREASURY_PROGRAM_ID;
+  const { pda: operationsPda } = deriveOperationsPda(
+    params.companyPda,
+    params.kind,
+    programId,
+  );
+
+  const data = Buffer.from(TREASURY_INSTRUCTION_DISCRIMINATOR.closeOperations);
+
+  const instruction = new TransactionInstruction({
+    programId,
+    keys: [
+      { pubkey: params.companyPda, isSigner: false, isWritable: false },
+      {
+        pubkey: params.controllingAuthority,
+        isSigner: true,
+        isWritable: true,
+      },
+      { pubkey: operationsPda, isSigner: false, isWritable: true },
+    ],
+    data,
+  });
+  return { instruction };
+}
+
+// ── disburse_routine ────────────────────────────────────────────────────────
+
+export interface DisburseRoutineParams {
+  companyPda: PublicKey;
+  treasuryPda: PublicKey;
+  policyPda: PublicKey;
+  /** Disbursement-kind OperationsAccount for this company. */
+  operationsPda: PublicKey;
+  /** Hot wallet matching `operations.signer` — the only signer. NOT the
+   *  controlling authority. */
+  operationsSigner: PublicKey;
+  /** Deployment PDA of the agent being paid. */
+  deploymentPda: PublicKey;
+  /** Agent's receiving_address. Chain verifies match against deployment. */
+  destination: PublicKey;
+  amountLamports: bigint;
+  /** Defaults to `SOL_PSEUDO_MINT`. */
+  mint?: PublicKey;
+  programId?: PublicKey;
+}
+
+/**
+ * Build a `disburse_routine` instruction — Routine-class batched payout.
+ * Signed by the Disbursement Wallet (operations_signer), NOT the company
+ * owner. Whitelist + rate limit + expiry enforced on-chain by the
+ * OperationsAccount. The 3% Agent Operating Fee is deducted and routed
+ * to ProtocolFeeAccount.
+ */
+export function buildDisburseRoutineInstruction(
+  params: DisburseRoutineParams,
+): { instruction: TransactionInstruction } {
+  const programId = params.programId ?? TREASURY_PROGRAM_ID;
+  const mint = params.mint ?? SOL_PSEUDO_MINT;
+  const { pda: protocolFeePda } = deriveProtocolFeePda(programId);
+
+  const data = Buffer.concat([
+    TREASURY_INSTRUCTION_DISCRIMINATOR.disburseRoutine,
+    encodePubkey(mint),
+    encodeU64(params.amountLamports),
+  ]);
+
+  const instruction = new TransactionInstruction({
+    programId,
+    // Order: company, treasury, policy, operations, operations_signer,
+    // deployment, destination, protocol_fee_account.
+    keys: [
+      { pubkey: params.companyPda, isSigner: false, isWritable: false },
+      { pubkey: params.treasuryPda, isSigner: false, isWritable: true },
+      { pubkey: params.policyPda, isSigner: false, isWritable: true },
+      { pubkey: params.operationsPda, isSigner: false, isWritable: true },
+      { pubkey: params.operationsSigner, isSigner: true, isWritable: false },
+      { pubkey: params.deploymentPda, isSigner: false, isWritable: false },
+      { pubkey: params.destination, isSigner: false, isWritable: true },
+      { pubkey: protocolFeePda, isSigner: false, isWritable: true },
+    ],
+    data,
+  });
+  return { instruction };
+}
+
+// ── disburse_privileged ─────────────────────────────────────────────────────
+
+export interface DisbursePrivilegedParams {
+  companyPda: PublicKey;
+  treasuryPda: PublicKey;
+  policyPda: PublicKey;
+  /** Must equal `company.owner`. */
+  controllingAuthority: PublicKey;
+  /** Must equal `policy.secondary_signer` (which must be set, i.e. not
+   *  the default pubkey, for Privileged disbursements to work). */
+  secondarySigner: PublicKey;
+  /** Deployment of the recipient agent when `isAgentDestination = true`.
+   *  Still required as a read-only account even for external destinations
+   *  (chain verifies it belongs to the same company). */
+  deploymentPda: PublicKey;
+  destination: PublicKey;
+  amountLamports: bigint;
+  /** Whether the destination is an in-company agent (fee applies) or an
+   *  external party (no fee). */
+  isAgentDestination: boolean;
+  mint?: PublicKey;
+  programId?: PublicKey;
+}
+
+/**
+ * Build a `disburse_privileged` instruction — over-threshold or
+ * externally-destined payout. Requires both the controlling authority
+ * (owner) AND a secondary signer. Bypasses normal budget caps; logged
+ * in the policy's privileged-spent counter regardless.
+ */
+export function buildDisbursePrivilegedInstruction(
+  params: DisbursePrivilegedParams,
+): { instruction: TransactionInstruction } {
+  const programId = params.programId ?? TREASURY_PROGRAM_ID;
+  const mint = params.mint ?? SOL_PSEUDO_MINT;
+  const { pda: protocolFeePda } = deriveProtocolFeePda(programId);
+
+  const data = Buffer.concat([
+    TREASURY_INSTRUCTION_DISCRIMINATOR.disbursePrivileged,
+    encodePubkey(mint),
+    encodeU64(params.amountLamports),
+    encodeBool(params.isAgentDestination),
+  ]);
+
+  const instruction = new TransactionInstruction({
+    programId,
+    // Order: company, controlling_authority, secondary_signer, treasury,
+    // policy, deployment, destination, protocol_fee_account.
+    keys: [
+      { pubkey: params.companyPda, isSigner: false, isWritable: false },
+      {
+        pubkey: params.controllingAuthority,
+        isSigner: true,
+        isWritable: false,
+      },
+      { pubkey: params.secondarySigner, isSigner: true, isWritable: false },
+      { pubkey: params.treasuryPda, isSigner: false, isWritable: true },
+      { pubkey: params.policyPda, isSigner: false, isWritable: false },
+      { pubkey: params.deploymentPda, isSigner: false, isWritable: false },
+      { pubkey: params.destination, isSigner: false, isWritable: true },
+      { pubkey: protocolFeePda, isSigner: false, isWritable: true },
+    ],
+    data,
+  });
+  return { instruction };
+}
+
+// ── Registry: commit_daily_anchor ───────────────────────────────────────────
+
+export interface CommitDailyAnchorParams {
+  deploymentPda: PublicKey;
+  companyPda: PublicKey;
+  /** Anchor Wallet — must equal `operations.signer` (kind=Anchor). */
+  anchorSigner: PublicKey;
+  /** Anchor-kind OperationsAccount for this company (in TREASURY program,
+   *  read-only here). Caller derives via `deriveOperationsPda(company,
+   *  OPERATIONS_KIND.Anchor)`. */
+  operationsPda: PublicKey;
+  /** Unix seconds aligned to 00:00:00 UTC for the day this anchor covers
+   *  (multiple of 86_400). Becomes part of the DailyAnchor PDA seed. */
+  dayUnix: bigint;
+  /** Merkle root over the day's task hashes — 32 bytes. */
+  merkleRoot: Uint8Array | Buffer;
+  /** Number of leaves in the Merkle tree. Must be > 0. */
+  taskCount: number;
+  /** Rent payer (typically the operator hot wallet). */
+  payer: PublicKey;
+  programId?: PublicKey;
+}
+
+/**
+ * Build a `commit_daily_anchor` instruction — Anchor-class single-tx
+ * commit of one agent-day's Merkle-rooted task activity. Signed by the
+ * Anchor Wallet bound to the company's Anchor-kind OperationsAccount.
+ *
+ * Caller is responsible for:
+ *   1. Hashing each task's content (Blake3) off-chain
+ *   2. Building the Merkle tree
+ *   3. Passing the root + leaf count here
+ *
+ * The on-chain handler does NOT verify the Merkle tree itself — chain
+ * holds only the commitment; verification happens off-chain against the
+ * trace store.
+ */
+export function buildCommitDailyAnchorInstruction(
+  params: CommitDailyAnchorParams,
+): { instruction: TransactionInstruction } {
+  const programId = params.programId ?? REGISTRY_PROGRAM_ID;
+  if (params.merkleRoot.length !== 32) {
+    throw new RangeError(
+      `merkleRoot must be 32 bytes, got ${params.merkleRoot.length}`,
+    );
+  }
+  const { pda: dailyAnchorPda } = deriveDailyAnchorPda(
+    params.deploymentPda,
+    params.dayUnix,
+    programId,
+  );
+
+  const data = Buffer.concat([
+    INSTRUCTION_DISCRIMINATOR.commitDailyAnchor,
+    encodeI64(params.dayUnix),
+    Buffer.from(params.merkleRoot),
+    u32LeBytes(params.taskCount),
+  ]);
+
+  const instruction = new TransactionInstruction({
+    programId,
+    // Order: deployment, company, anchor_signer, operations, daily_anchor,
+    // payer, system_program.
+    keys: [
+      { pubkey: params.deploymentPda, isSigner: false, isWritable: false },
+      { pubkey: params.companyPda, isSigner: false, isWritable: false },
+      { pubkey: params.anchorSigner, isSigner: true, isWritable: false },
+      { pubkey: params.operationsPda, isSigner: false, isWritable: false },
+      { pubkey: dailyAnchorPda, isSigner: false, isWritable: true },
+      { pubkey: params.payer, isSigner: true, isWritable: true },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
     ],
     data,
   });

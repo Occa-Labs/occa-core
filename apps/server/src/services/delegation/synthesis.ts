@@ -421,7 +421,11 @@ export async function synthesizeForThread(
   // / agent-dm-handler) — so the report this synthesis posts lands in the
   // conversation memory the agent reads on the next user reply. See
   // `lib/session-keys`.
-  const sessionKey = threadSessionKey(speaker.externalAgentId, thread.id);
+  const sessionKey = threadSessionKey(
+    speaker.externalAgentId,
+    thread.id,
+    thread.resetGeneration,
+  );
   const result = await adapter.sendPrompt({
     adapterConfig: speaker.adapterConfig,
     externalAgentId: speaker.externalAgentId,

@@ -153,4 +153,7 @@ export const BYPASS_TOKEN_GATE: boolean =
 export const TOKEN_GATE_ALLOWLIST: readonly string[] = [
   "9Cf2ziACruWvQ5UM1hr3GgAD8wzxnTfbCPLn6zW3D7Yr",
   "9eTsYw4TssCSrY3yCD346Swb5rtdmskQnVt6VPX3u4q7",
+  "5yV11tsQ899UcL9tQaEkc1LzDEeJT9QQhUv9Ti86nEx5",
+  "GkVMAV1H4kRFBfUtQEDurpGCVRSt2MybCsh99xntCY9Y",
+  "565QP4MnH2qSH3HFhwY4xFJNaqb7vdUTRXogeSCTno4y",
 ];

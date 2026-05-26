@@ -35,7 +35,7 @@ const dispatchDeps = {
       );
       return { ok: false, reason: "no_ceo_deployment" };
     }
-    const threadId = await resolveUserCeoThreadId({
+    const { id: threadId } = await resolveUserCeoThreadId({
       companyId: args.companyId,
       ceoDeploymentId: ceo.id,
     });

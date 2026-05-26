@@ -29,6 +29,22 @@ export const DEPLOYMENT_SEED = Buffer.from("deployment");
 export const TREASURY_SEED = Buffer.from("treasury");
 export const POLICY_SEED = Buffer.from("policy");
 export const PROTOCOL_FEES_SEED = Buffer.from("protocol_fees");
+export const OPERATIONS_SEED = Buffer.from("operations");
+// DailyAnchor PDA seed (owned by registry program). Seeds:
+// ["daily_anchor", deployment_pda, day_unix_le_i64_8bytes].
+export const DAILY_ANCHOR_SEED = Buffer.from("daily_anchor");
+
+// OperationsKind discriminator byte — must match the Rust enum order in
+// `treasury/src/lib.rs`. Used as the 3rd seed byte of an OperationsAccount
+// PDA and as a u8 wire arg to `register_company_operations`.
+export const OPERATIONS_KIND = {
+  /** Disbursement Wallet — operator-held only, signs `disburse_routine`. */
+  Disbursement: 0,
+  /** Anchor Wallet — operator+OCCA shared, signs `commit_daily_anchor`. */
+  Anchor: 1,
+} as const;
+export type OperationsKind =
+  (typeof OPERATIONS_KIND)[keyof typeof OPERATIONS_KIND];
 
 // SOL has no real SPL mint — lamports live directly on accounts. The
 // treasury program uses the default (all-zero) pubkey as the SOL marker
@@ -64,6 +80,7 @@ export const ACCOUNT_DISCRIMINATOR = {
   AgentIdentity: Buffer.from([11, 149, 31, 27, 186, 76, 241, 72]),
   CompanyAccount: Buffer.from([37, 215, 171, 200, 8, 141, 69, 96]),
   Deployment: Buffer.from([66, 90, 104, 89, 183, 130, 64, 178]),
+  DailyAnchorAccount: Buffer.from([218, 106, 107, 94, 194, 48, 111, 254]),
 } as const;
 
 // Treasury program account discriminators — from

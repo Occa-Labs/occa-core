@@ -1,7 +1,58 @@
-import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
-import { deployments, traces } from "@occa/shared/schema";
-import type { WakeActor, WakeSource } from "@occa/shared/types";
+import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import {
+  agentRuntimeProfile,
+  companySkills,
+  deployments,
+  traces,
+} from "@occa/shared/schema";
+import type {
+  SkillUsageEntry,
+  WakeActor,
+  WakeSource,
+} from "@occa/shared/types";
 import { db } from "./db";
+
+// Snapshot duplicated from apps/server/src/services/trace-skill-snapshot.ts.
+// Worker app has its own db client and can't import server services
+// across apps; the query is short enough that duplication beats adding
+// a new shared package.
+async function snapshotDeploymentSkills(
+  deploymentId: string,
+  companyId: string,
+): Promise<SkillUsageEntry[]> {
+  try {
+    const [profile] = await db
+      .select({ desiredSkills: agentRuntimeProfile.desiredSkills })
+      .from(agentRuntimeProfile)
+      .where(eq(agentRuntimeProfile.deploymentId, deploymentId))
+      .limit(1);
+    if (!profile || profile.desiredSkills.length === 0) return [];
+
+    const rows = await db
+      .select({
+        id: companySkills.id,
+        key: companySkills.key,
+        sourceRef: companySkills.sourceRef,
+      })
+      .from(companySkills)
+      .where(
+        and(
+          or(
+            eq(companySkills.companyId, companyId),
+            isNull(companySkills.companyId),
+          ),
+          inArray(companySkills.key, profile.desiredSkills),
+        ),
+      );
+
+    const byKey = new Map(rows.map((r) => [r.key, r]));
+    return profile.desiredSkills
+      .map((k) => byKey.get(k))
+      .filter((r): r is (typeof rows)[number] => r != null);
+  } catch {
+    return [];
+  }
+}
 
 export interface WakeupInput {
   agentId: string;
@@ -85,6 +136,10 @@ export async function wakeup(input: WakeupInput): Promise<WakeupResult> {
     }
 
     // Create a new queued trace.
+    const skillsUsed = await snapshotDeploymentSkills(
+      input.agentId,
+      agent.companyId,
+    );
     const [trace] = await tx
       .insert(traces)
       .values({
@@ -103,6 +158,7 @@ export async function wakeup(input: WakeupInput): Promise<WakeupResult> {
         continuationAttempt: input.continuationAttempt ?? 0,
         retryOfTraceId: input.retryOfTraceId ?? null,
         retryReason: input.retryReason ?? null,
+        skillsUsed,
       })
       .returning({ id: traces.id });
 

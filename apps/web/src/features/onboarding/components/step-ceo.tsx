@@ -7,18 +7,24 @@
 // real progress instead of a silent 5-30s spinner.
 
 import { AlertTriangle, Crown, Loader2, Sparkles } from "lucide-react";
+import type {
+  AdapterType,
+  HermesAdapterConfig,
+  OpenclawAdapterConfig,
+} from "@occa/shared/types";
 import { useDeployCeo, type DeployStage } from "../api/use-deploy-ceo";
 
 interface StepCeoProps {
   companyName: string;
   ceoName: string;
   onCeoNameChange: (next: string) => void;
-  gatewayUrl: string;
-  apiKey: string;
+  adapterType: AdapterType;
+  adapterConfig: OpenclawAdapterConfig | HermesAdapterConfig;
   /** When set, retry an existing failed provision via /reprovision
    *  instead of POSTing a fresh deploy. Surfaced by parent resume
    *  detection and updated in-place if a fresh launch fails after the
-   *  DB row was already committed. */
+   *  DB row was already committed. Phase 0 reprovision is openclaw-only;
+   *  hermes always re-creates. */
   pendingAgentId: string | null;
   onPendingAgentIdChange: (next: string | null) => void;
   onBack: () => void;
@@ -28,8 +34,8 @@ export function StepCeo({
   companyName,
   ceoName,
   onCeoNameChange,
-  gatewayUrl,
-  apiKey,
+  adapterType,
+  adapterConfig,
   pendingAgentId,
   onPendingAgentIdChange,
   onBack,
@@ -45,7 +51,8 @@ export function StepCeo({
     await deploy.run({
       ceoName: trimmed,
       companyName,
-      adapterConfig: { gatewayUrl, apiKey },
+      adapterType,
+      adapterConfig,
       pendingAgentId,
     });
     // After the call, the hook may have updated pendingAgentId — sync
@@ -82,7 +89,7 @@ export function StepCeo({
           autoFocus={!pendingAgentId}
           value={ceoName}
           onChange={(e) => onCeoNameChange(e.target.value)}
-          placeholder="Aiden Park"
+          placeholder="Your CEO's name"
           maxLength={64}
           disabled={busy}
           className="rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-white/30 focus:border-white/25 focus:outline-none disabled:opacity-60"

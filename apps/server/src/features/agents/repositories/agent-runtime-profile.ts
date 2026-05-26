@@ -117,31 +117,6 @@ export async function setEnabledTools(args: {
 
 // ── Provisioning state + adapter wiring ──────────────────────────────
 
-// Persist OpenClaw provisioning result onto the runtime profile. Merges
-// returned IDs into adapter_config (preserving the existing config like
-// gatewayUrl / apiKey / deviceKeypair).
-export async function persistProvisionResult(args: {
-  deploymentId: string;
-  externalAgentId: string;
-  workspacePath: string;
-  deviceToken?: string;
-  existingAdapterConfig: Record<string, unknown>;
-}): Promise<void> {
-  await db
-    .update(agentRuntimeProfile)
-    .set({
-      externalAgentId: args.externalAgentId,
-      adapterConfig: {
-        ...args.existingAdapterConfig,
-        ...(args.deviceToken ? { deviceToken: args.deviceToken } : {}),
-        openclawAgentId: args.externalAgentId,
-        workspacePath: args.workspacePath,
-      },
-      updatedAt: new Date(),
-    })
-    .where(eq(agentRuntimeProfile.deploymentId, args.deploymentId));
-}
-
 export async function setProvisioningState(args: {
   deploymentId: string;
   state: AgentRuntimeProfileInsert["provisioningState"];

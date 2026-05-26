@@ -710,6 +710,14 @@ export const traces = pgTable(
     contextSnapshot: jsonb("context_snapshot"),
     usageJson: jsonb("usage_json"),
     resultJson: jsonb("result_json"),
+    // Snapshot of skills loaded into the agent at trace start —
+    // SkillUsageEntry[] from @occa/shared/types. Foundation for Phase 3
+    // reputation that needs to attribute task outcomes to specific
+    // skill versions. Default empty so non-task traces (chat, internal
+    // synthesis) stay zero-cost.
+    skillsUsed: jsonb("skills_used")
+      .notNull()
+      .default(sql`'[]'::jsonb`),
     sessionIdBefore: text("session_id_before"),
     sessionIdAfter: text("session_id_after"),
     externalTraceId: text("external_trace_id"),
@@ -1099,6 +1107,49 @@ export const approvals = pgTable(
   ],
 );
 
+// ── Notifications — operator inbox events ───────────────────────────
+// Append-only event stream. Every approval emits one, but notifications
+// also exist standalone (treasury readiness, anchor failures, etc).
+// `kind` is the discriminator; `payload` carries kind-specific data.
+// `link` is an in-app target the FE can deep-link to (e.g.
+// "approvals:<id>" or "chain:treasury"). Unread filter on (userId, readAt).
+export const notifications = pgTable(
+  "notifications",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    // Target user (operator). Notifications are scoped to the operator
+    // who owns the company; multi-recipient fanout can be modeled later
+    // by inserting multiple rows.
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(),
+    title: text("title").notNull(),
+    body: text("body"),
+    // Opaque kind-specific data (deploymentId, approvalId, amounts, etc).
+    payload: jsonb("payload")
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    // In-app deep link target. Format: "<window>:<id?>" — parsed by FE.
+    // Examples: "approvals:<uuid>", "chain:treasury", "agents:<uuid>".
+    link: text("link"),
+    readAt: timestamp("read_at", { withTimezone: true }),
+    dismissedAt: timestamp("dismissed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    // Primary query: list unread/recent for one user.
+    index("idx_notifications_user_created").on(t.userId, t.createdAt),
+    index("idx_notifications_user_unread").on(t.userId, t.readAt),
+    index("idx_notifications_company").on(t.companyId),
+  ],
+);
+
 // ── Deployment workspace files — OCCA-authored per-deployment markdown ─
 // Files live here as source of truth; OpenClaw holds a projection pushed
 // via `agents.files.set`. On deploy, one row per file is inserted from
@@ -1302,6 +1353,13 @@ export const chatThreads = pgTable(
       (): AnyPgColumn => chatThreads.id,
       { onDelete: "set null" },
     ),
+    // Bumped on `clearThread`. Appended to the adapter sessionKey so a
+    // clear forces every adapter onto a NEW per-session memory bucket.
+    // For OpenClaw this complements the explicit `sessions.delete` RPC;
+    // for stateless-leaning adapters (Hermes — no HTTP DELETE for the
+    // server-side session), it's the ONLY mechanism that breaks
+    // continuity with the prior conversation.
+    resetGeneration: integer("reset_generation").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

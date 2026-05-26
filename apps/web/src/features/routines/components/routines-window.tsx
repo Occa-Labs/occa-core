@@ -6,7 +6,7 @@
 // worker scheduler fires it on its next tick.
 
 import { useMemo, useState } from "react";
-import { CalendarClock, Pencil, Play, Plus, Trash2 } from "lucide-react";
+import { CalendarClock, Pause, Pencil, Play, Plus, Trash2 } from "lucide-react";
 import type { RoutineDTO } from "@occa/shared/types";
 import { AppWindow } from "@/components/ui/app-window";
 import { Badge } from "@/components/ui/badge";
@@ -217,6 +217,19 @@ export function RoutinesWindow({ agents, onClose }: RoutinesWindowProps) {
     setRunState((s) => ({ ...s, [id]: ok ? "fired" : "running" }));
   };
 
+  const handleTogglePause = async (routine: RoutineDTO) => {
+    const nextStatus = routine.status === "active" ? "paused" : "active";
+    try {
+      await patch(routine.id, { status: nextStatus });
+    } catch (err) {
+      // Surface failure inline so users know the toggle was rejected;
+      // the routine card still shows its old state because patch threw
+      // before mutating local routines state.
+      const msg = err instanceof ApiError ? `(${err.status})` : "";
+      setFormError(`Could not change routine status ${msg}`.trim());
+    }
+  };
+
   const handleDelete = async (id: string) => {
     const ok = await remove(id);
     if (ok && selectedId === id) setSelectedId(null);
@@ -273,6 +286,7 @@ export function RoutinesWindow({ agents, onClose }: RoutinesWindowProps) {
                 assignee={agentName(selected.assigneeAgentId)}
                 runState={runState[selected.id]}
                 onRun={() => handleRun(selected.id)}
+                onTogglePause={() => handleTogglePause(selected)}
                 onEdit={() => openEdit(selected)}
                 onDelete={() => handleDelete(selected.id)}
               />
@@ -351,6 +365,7 @@ function RoutineDetail({
   assignee,
   runState,
   onRun,
+  onTogglePause,
   onEdit,
   onDelete,
 }: {
@@ -358,10 +373,12 @@ function RoutineDetail({
   assignee: string;
   runState: "running" | "fired" | undefined;
   onRun: () => void;
+  onTogglePause: () => void;
   onEdit: () => void;
   onDelete: () => void;
 }) {
   const cronTrigger = routine.triggers.find((t) => t.kind === "cron");
+  const isPaused = routine.status === "paused";
 
   return (
     <div className="flex flex-col gap-5 p-6">
@@ -384,10 +401,24 @@ function RoutineDetail({
           variant="primary"
           size="sm"
           onClick={onRun}
-          disabled={runState === "running"}
+          disabled={runState === "running" || isPaused}
+          title={isPaused ? "Resume the routine before firing manually" : undefined}
         >
           <Play className="size-3.5" />
           {runState === "running" ? "Firing…" : "Run now"}
+        </Button>
+        <Button variant="secondary" size="sm" onClick={onTogglePause}>
+          {isPaused ? (
+            <>
+              <Play className="size-3.5" />
+              Resume
+            </>
+          ) : (
+            <>
+              <Pause className="size-3.5" />
+              Pause
+            </>
+          )}
         </Button>
         <Button variant="secondary" size="sm" onClick={onEdit}>
           <Pencil className="size-3.5" />

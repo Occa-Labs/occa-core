@@ -1,9 +1,9 @@
-// Background worker: installs/uninstalls skills on provisioned OpenClaw deployments.
-// Reads pending rows from deployment_skill_syncs, sends prompts to the agent via the
-// OpenClaw gateway WebSocket, and parses [[SKILL:INSTALLED]] /
+// Background worker: installs/uninstalls skills on provisioned deployments.
+// Reads pending rows from deployment_skill_syncs, sends prompts to the agent
+// via the active adapter's `sendPrompt`, and parses [[SKILL:INSTALLED]] /
 // [[SKILL:FAILED]] / [[SKILL:REMOVED]] markers from the agent reply.
 //
-// Each skill fires a long-lived sendAgentPrompt as a detached background promise.
+// Each skill fires a long-lived sendPrompt as a detached background promise.
 // inFlight prevents double-firing on subsequent ticks. Parallel across skills;
 // if the worker restarts, installing rows older than 5 min are automatically re-tried.
 
@@ -14,12 +14,7 @@ import {
   deploymentSkillSyncs,
   deployments,
 } from "@occa/shared/schema";
-import {
-  deleteAgentSession,
-  deserializeKeypair,
-  sendAgentPrompt,
-  type SerializedKeypair,
-} from "@occa/adapter-openclaw";
+import { getAdapter } from "./adapter-registry";
 import { db } from "./db";
 
 const TICK_INTERVAL_MS = 30_000;
@@ -111,27 +106,9 @@ type SyncRow = typeof deploymentSkillSyncs.$inferSelect;
 // (adapter wiring). Built once per tick via JOIN.
 interface AgentRow {
   id: string;
+  adapterType: string;
   adapterConfig: unknown;
   externalAgentId: string | null;
-}
-
-function agentGatewayConfig(agent: AgentRow) {
-  const cfg = (agent.adapterConfig ?? {}) as Record<string, unknown>;
-  if (
-    typeof cfg.gatewayUrl !== "string" ||
-    typeof cfg.apiKey !== "string" ||
-    !cfg.deviceKeypair ||
-    !agent.externalAgentId
-  ) return null;
-  return {
-    gatewayUrl: cfg.gatewayUrl as string,
-    apiKey: cfg.apiKey as string,
-    device: deserializeKeypair(cfg.deviceKeypair as SerializedKeypair),
-    openclawAgentId:
-      typeof cfg.openclawAgentId === "string"
-        ? cfg.openclawAgentId
-        : agent.externalAgentId,
-  };
 }
 
 // Returns the parsed marker so the caller can decide on follow-up actions
@@ -177,29 +154,28 @@ async function applyMarker(
 }
 
 // Drop the install-conversation session from the gateway after a terminal
-// outcome so the OpenClaw dashboard dropdown stays clean. Best-effort —
-// failures don't change the install result; we just log and move on. The
-// gateway protects the agent's main session from this RPC, so passing the
-// per-skill key here is always safe.
+// outcome so adapters that maintain session memory (OpenClaw) stay clean.
+// Best-effort — failures don't change the install result; we just log and
+// move on. For stateless adapters (Hermes) this is a no-op.
 async function cleanupInstallSession(
-  gw: NonNullable<ReturnType<typeof agentGatewayConfig>>,
+  agent: AgentRow,
   sessionKey: string,
 ): Promise<void> {
+  const adapter = getAdapter(agent.adapterType);
+  if (!adapter) return;
   try {
-    const result = await deleteAgentSession({
-      gatewayUrl: gw.gatewayUrl,
-      apiKey: gw.apiKey,
-      device: gw.device,
+    const result = await adapter.resetSession({
+      adapterConfig: (agent.adapterConfig ?? {}) as Record<string, unknown>,
       sessionKey,
     });
     if (!result.ok) {
       console.warn(
-        `[skill-sync] sessions.delete sessionKey=${sessionKey} failed: ${result.error}${result.reason ? ` — ${result.reason}` : ""}`,
+        `[skill-sync] resetSession sessionKey=${sessionKey} failed: ${result.error}${result.reason ? ` — ${result.reason}` : ""}`,
       );
     }
   } catch (err) {
     console.warn(
-      `[skill-sync] sessions.delete sessionKey=${sessionKey} crashed:`,
+      `[skill-sync] resetSession sessionKey=${sessionKey} crashed:`,
       err instanceof Error ? err.message : err,
     );
   }
@@ -222,8 +198,8 @@ async function processRow(
   agent: AgentRow,
   lib: SkillLibSummary,
 ): Promise<void> {
-  const gw = agentGatewayConfig(agent);
-  if (!gw) {
+  const adapter = getAdapter(agent.adapterType);
+  if (!adapter || !agent.externalAgentId) {
     await db.update(deploymentSkillSyncs).set({
       status: "failed", lastError: "agent_not_configured", updatedAt: new Date(),
     }).where(eq(deploymentSkillSyncs.id, syncRow.id));
@@ -237,7 +213,7 @@ async function processRow(
       ? buildPlatformSkillInstallPrompt(syncRow.skillKey, lib.markdown)
       : buildSkillInstallPrompt(syncRow.skillKey, lib.treeUrl ?? syncRow.skillKey);
 
-  const sessionKey = `agent:${gw.openclawAgentId}:${SKILL_SESSION_PREFIX}:${syncRow.skillKey.replace(/\//g, "-")}`;
+  const sessionKey = `agent:${agent.externalAgentId}:${SKILL_SESSION_PREFIX}:${syncRow.skillKey.replace(/\//g, "-")}`;
 
   await db.update(deploymentSkillSyncs).set({
     status: "installing",
@@ -246,12 +222,15 @@ async function processRow(
     updatedAt: new Date(),
   }).where(eq(deploymentSkillSyncs.id, syncRow.id));
 
-  console.log(`[skill-sync] firing agent=${syncRow.deploymentId} key=${syncRow.skillKey}`);
+  console.log(`[skill-sync] firing agent=${syncRow.deploymentId} key=${syncRow.skillKey} adapter=${agent.adapterType}`);
 
-  const result = await sendAgentPrompt(
-    { ...gw, sessionKey, message },
-    { waitTimeoutMs: SKILL_WAIT_TIMEOUT_MS },
-  );
+  const result = await adapter.sendPrompt({
+    adapterConfig: (agent.adapterConfig ?? {}) as Record<string, unknown>,
+    externalAgentId: agent.externalAgentId,
+    sessionKey,
+    message,
+    waitTimeoutMs: SKILL_WAIT_TIMEOUT_MS,
+  });
 
   if (!result.ok) {
     await db.update(deploymentSkillSyncs).set({
@@ -265,13 +244,13 @@ async function processRow(
   const marker = await applyMarker(syncRow, result.reply, lib.treeUrl);
   console.log(`[skill-sync] done agent=${syncRow.deploymentId} key=${syncRow.skillKey} reply=${result.reply.slice(0, 120)}`);
 
-  // Terminal outcome — drop the install session from the gateway so the
-  // OpenClaw dashboard dropdown doesn't accumulate one entry per skill.
-  // Skip cleanup when there's no recognised marker: the agent's reply was
-  // malformed but the prompt itself completed, so we treat this as a
-  // user-visible bug worth keeping the transcript around for.
+  // Terminal outcome — drop the install-conversation session so adapters
+  // with server-side memory (OpenClaw) don't accumulate one session per
+  // skill. Skip cleanup when no recognised marker arrived: the agent's
+  // reply was malformed but the prompt itself completed; keep the
+  // transcript around as a user-visible bug signal.
   if (marker === "installed" || marker === "removed" || marker === "failed") {
-    await cleanupInstallSession(gw, sessionKey);
+    await cleanupInstallSession(agent, sessionKey);
   }
 }
 
@@ -294,6 +273,7 @@ async function tick(): Promise<void> {
   const agentRows: AgentRow[] = await db
     .select({
       id: deployments.id,
+      adapterType: agentRuntimeProfile.adapterType,
       adapterConfig: agentRuntimeProfile.adapterConfig,
       externalAgentId: agentRuntimeProfile.externalAgentId,
     })

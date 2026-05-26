@@ -11,7 +11,6 @@
 import { Router } from "express";
 import selfActionsRouter from "./self-actions";
 import agentActionsRouter from "./agent-actions";
-import chatRouter from "./chat";
 import skillSyncsRouter from "./skill-syncs";
 import toolSyncsRouter from "./tool-syncs";
 import tracesRouter from "./traces";
@@ -26,7 +25,6 @@ router.use(selfActionsRouter);
 router.use(agentActionsRouter);
 
 // /:id-scoped — order between these doesn't matter (paths are distinct).
-router.use(chatRouter);
 router.use(skillSyncsRouter);
 router.use(toolSyncsRouter);
 router.use(tracesRouter);

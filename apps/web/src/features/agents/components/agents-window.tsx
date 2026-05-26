@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   Loader2,
-  MessageSquare,
   Pause,
   Play,
   Plus,
@@ -27,8 +26,6 @@ import { ToolsTab } from "./tools-tab";
 import { ActivityTab } from "./activity-tab";
 import { FilesTab } from "./files-tab";
 import { TracesTab } from "./traces-tab";
-import { WalletTab } from "./wallet-tab";
-import { ChatModal } from "./chat-modal";
 import { DeployAgentModal } from "./deploy-agent-modal";
 import { buildTree, type TreeNode } from "./hierarchy-tab";
 
@@ -51,7 +48,6 @@ type TabId =
   | "activity"
   | "traces"
   | "files"
-  | "wallet"
   | "settings";
 
 // Activity + Traces surfaces are WIP — kept visible (so the IA stays
@@ -65,7 +61,6 @@ const FEATURE_LOCKED = IS_PRODUCTION_MODE && !UNLOCK_PRODUCTION;
 
 const TABS: { id: TabId; label: string; disabled?: boolean }[] = [
   { id: "overview", label: "Overview" },
-  { id: "wallet", label: "Wallet" },
   { id: "skills", label: "Skills" },
   { id: "tools", label: "Tools" },
   { id: "activity", label: "Activity", disabled: FEATURE_LOCKED },
@@ -539,7 +534,6 @@ function AgentDetail({
   onReloadMe: () => Promise<void> | void;
 }) {
   const [tab, setTab] = useState<TabId>("overview");
-  const [chatOpen, setChatOpen] = useState(false);
   const [retireModalOpen, setRetireModalOpen] = useState(false);
   const [statusTogglePending, setStatusTogglePending] = useState(false);
   const [statusError, setStatusError] = useState<string | null>(null);
@@ -587,20 +581,6 @@ function AgentDetail({
             <StatusPill agent={agent} />
           </div>
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setChatOpen(true)}
-              disabled={FEATURE_LOCKED}
-              title={
-                FEATURE_LOCKED
-                  ? "Chat is not available in production preview"
-                  : undefined
-              }
-              className="flex items-center gap-1.5 rounded-md bg-white/8 hover:bg-white/12 px-3 py-1.5 text-xs font-medium text-white/80 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-white/8 disabled:hover:text-white/80"
-            >
-              <MessageSquare className="size-3" />
-              Chat
-            </button>
             {isLifecycleControllable && (
               <button
                 type="button"
@@ -672,10 +652,6 @@ function AgentDetail({
           <div className="h-full overflow-y-auto">
             <FilesTab agentId={agent.id} />
           </div>
-        ) : tab === "wallet" ? (
-          <div className="h-full min-h-0">
-            <WalletTab agent={agent} onReloadMe={onReloadMe} />
-          </div>
         ) : tab === "settings" ? (
           <div className="h-full overflow-y-auto">
             <SettingsTab
@@ -691,9 +667,6 @@ function AgentDetail({
         )}
       </div>
 
-      {chatOpen && (
-        <ChatModal agent={agent} onClose={() => setChatOpen(false)} />
-      )}
       <RetireAgentModal
         open={retireModalOpen}
         agent={agent}
@@ -868,6 +841,13 @@ function SettingsTab({
         </section>
       )}
 
+      {agent.adapterType === "hermes" && (
+        <HermesAdapterSection
+          agent={agent}
+          onReloadMe={onReloadMe}
+        />
+      )}
+
       <section className="space-y-3">
         <h3 className="text-xs font-semibold text-red-300/80 uppercase tracking-wider">
           Danger zone
@@ -904,6 +884,185 @@ function SettingsTab({
         )}
       </section>
     </div>
+  );
+}
+
+// Hermes-only adapter section in Settings. Rotate-bearer for the
+// runtime's API key without re-deploying the agent. Backend probes the
+// new bearer against the current gatewayUrl before persisting — the FE
+// trusts that and just surfaces the success / failure.
+function HermesAdapterSection({
+  agent,
+  onReloadMe,
+}: {
+  agent: AgentDTO;
+  onReloadMe: () => Promise<void> | void;
+}) {
+  const [modalOpen, setModalOpen] = useState(false);
+  return (
+    <>
+      <section className="space-y-3">
+        <h3 className="text-xs font-semibold text-white/55 uppercase tracking-wider">
+          Runtime adapter
+        </h3>
+        <p className="text-[12px] text-white/55">
+          {agent.name} runs on a Hermes HTTP gateway. Rotate the API
+          bearer when the runtime operator issues a new one — the new
+          key is probed against the existing gateway URL before the
+          rotation commits, so a bad key won&apos;t replace the working
+          one.
+        </p>
+        <button
+          type="button"
+          onClick={() => setModalOpen(true)}
+          className="rounded-md bg-white/8 hover:bg-white/12 px-3 py-1.5 text-xs font-medium text-white/80 hover:text-white transition-colors cursor-pointer"
+        >
+          Rotate bearer
+        </button>
+      </section>
+      <RotateBearerModal
+        open={modalOpen}
+        agent={agent}
+        onClose={() => setModalOpen(false)}
+        onRotated={async () => {
+          setModalOpen(false);
+          await onReloadMe();
+        }}
+      />
+    </>
+  );
+}
+
+function RotateBearerModal({
+  open,
+  agent,
+  onClose,
+  onRotated,
+}: {
+  open: boolean;
+  agent: AgentDTO;
+  onClose: () => void;
+  onRotated: () => Promise<void> | void;
+}) {
+  const [apiKey, setApiKey] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) {
+      setApiKey("");
+      setError(null);
+      setSubmitting(false);
+    }
+  }, [open]);
+
+  const onSubmit = useCallback(async () => {
+    const trimmed = apiKey.trim();
+    if (!trimmed || submitting) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await agentsApi.rotateBearer(agent.id, trimmed);
+      await onRotated();
+    } catch (err) {
+      const code =
+        err instanceof ApiError &&
+        err.body &&
+        typeof err.body === "object" &&
+        "error" in err.body
+          ? String((err.body as Record<string, unknown>).error)
+          : null;
+      const reason =
+        err instanceof ApiError &&
+        err.body &&
+        typeof err.body === "object" &&
+        "reason" in err.body
+          ? String((err.body as Record<string, unknown>).reason)
+          : null;
+      if (code === "gateway_unreachable") {
+        setError(
+          `Couldn't reach the runtime with that bearer${reason ? ` (${reason})` : ""}. Double-check the key and try again.`,
+        );
+      } else if (code === "rotate_bearer_not_supported_for_adapter") {
+        setError("This adapter doesn't support rotating the bearer.");
+      } else if (code === "agent_not_configured") {
+        setError("Agent has no runtime config yet.");
+      } else {
+        setError(
+          err instanceof Error ? err.message : "Failed to rotate bearer.",
+        );
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  }, [agent.id, apiKey, submitting, onRotated]);
+
+  const footer = (
+    <div className="flex items-center justify-end gap-3 px-5 py-3.5">
+      <button
+        type="button"
+        onClick={onClose}
+        disabled={submitting}
+        className="px-4 py-1.5 rounded-lg text-[12px] font-medium text-white/50 hover:text-white/80 transition-colors disabled:opacity-40 cursor-pointer"
+      >
+        Cancel
+      </button>
+      <button
+        type="button"
+        onClick={() => void onSubmit()}
+        disabled={submitting || apiKey.trim().length === 0}
+        className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-[12px] font-semibold text-white transition-all disabled:opacity-35 disabled:cursor-not-allowed cursor-pointer"
+        style={{
+          background:
+            submitting || apiKey.trim().length === 0
+              ? "rgba(255,255,255,0.08)"
+              : "linear-gradient(150deg, rgba(255,255,255,0.20) 0%, rgba(255,255,255,0.10) 100%)",
+        }}
+      >
+        {submitting ? (
+          <>
+            <Loader2 className="size-3.5 animate-spin" /> Probing…
+          </>
+        ) : (
+          "Probe & save"
+        )}
+      </button>
+    </div>
+  );
+
+  return (
+    <Modal open={open} onClose={onClose} title="Rotate bearer" footer={footer}>
+      <div className="px-5 py-5 space-y-4">
+        <p className="text-[12.5px] text-white/65 leading-relaxed">
+          Paste the new bearer token issued by the Hermes runtime for{" "}
+          <span className="text-white/90 font-medium">{agent.name}</span>.
+          OCCA probes the current gateway with this key before
+          overwriting the stored one — a bad token won&apos;t replace
+          the working one.
+        </p>
+        <div className="space-y-2">
+          <label className="block text-[11px] text-white/55">
+            New bearer token
+          </label>
+          <input
+            type="text"
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+            placeholder="hex64…"
+            autoComplete="off"
+            spellCheck={false}
+            disabled={submitting}
+            className="w-full rounded-xl bg-white/5 ring-1 ring-inset ring-white/10 focus:ring-white/22 focus:outline-none px-3.5 py-2.5 text-[13px] text-white/90 placeholder:text-white/22 font-mono transition disabled:opacity-50"
+          />
+        </div>
+        {error && (
+          <div className="flex items-start gap-2 rounded-md bg-red-500/10 px-3 py-2 text-[11px] text-red-300 ring-1 ring-inset ring-red-500/18">
+            <AlertTriangle className="size-3.5 shrink-0 mt-0.5" />
+            <span className="leading-relaxed">{error}</span>
+          </div>
+        )}
+      </div>
+    </Modal>
   );
 }
 

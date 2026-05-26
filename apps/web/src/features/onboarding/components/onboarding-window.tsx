@@ -14,11 +14,17 @@
 
 import { useMemo, useState } from "react";
 import { AppWindow } from "@/components/ui/app-window";
-import type { AgentDTO, CompanyDTO } from "@occa/shared/types";
+import type {
+  AdapterType,
+  AgentDTO,
+  CompanyDTO,
+  HermesAdapterConfig,
+  OpenclawAdapterConfig,
+} from "@occa/shared/types";
 import { getTier } from "@occa/shared/role-catalog";
 import { StepperHeader } from "./stepper-header";
 import { StepCompany } from "./step-company";
-import { StepGateway } from "./step-gateway";
+import { StepRuntime } from "./step-runtime";
 import { StepCeo } from "./step-ceo";
 
 interface OnboardingWindowProps {
@@ -33,12 +39,17 @@ interface OnboardingWindowProps {
 
 const STEPS = [
   { label: "Company" },
-  { label: "Gateway" },
+  { label: "Runtime" },
   { label: "CEO" },
 ] as const;
 
 const WINDOW_WIDTH = 560;
 const WINDOW_HEIGHT = 480;
+
+// Default to openclaw — it has the longer track record and richer
+// onboarding help content. Users can flip to Hermes inside the Runtime
+// step.
+const DEFAULT_ADAPTER: AdapterType = "openclaw";
 
 export function OnboardingWindow({ me, onDismiss }: OnboardingWindowProps) {
   // Resume detection runs once on mount — re-running on every me-refresh
@@ -51,8 +62,17 @@ export function OnboardingWindow({ me, onDismiss }: OnboardingWindowProps) {
   );
 
   const [companyName, setCompanyName] = useState(resume.companyName);
+  const [adapterType, setAdapterType] = useState<AdapterType>(DEFAULT_ADAPTER);
+  // OpenClaw form state — left in place so a user who switches adapters
+  // mid-flow can switch back without retyping.
   const [gatewayUrl, setGatewayUrl] = useState("wss://gateway.occa.team");
   const [apiKey, setApiKey] = useState("");
+  // Hermes form state — public HTTPS URL of the operator's Hermes VPS
+  // (running `hermes gateway` with API_SERVER_ENABLED) + the bearer
+  // token they set in API_SERVER_KEY. Mirror shape of OpenClaw, since
+  // both runtimes now authenticate the same way.
+  const [hermesGatewayUrl, setHermesGatewayUrl] = useState("");
+  const [hermesApiKey, setHermesApiKey] = useState("");
   const [ceoName, setCeoName] = useState(resume.ceoName);
   const [pendingAgentId, setPendingAgentId] = useState<string | null>(
     resume.pendingAgentId,
@@ -71,10 +91,18 @@ export function OnboardingWindow({ me, onDismiss }: OnboardingWindowProps) {
     setStepIndex(1);
   };
 
-  const handleGatewayContinue = () => {
+  const handleRuntimeContinue = () => {
     markCompleted(1);
     setStepIndex(2);
   };
+
+  // Pack the adapter config in the shape the deploy hook expects. This
+  // mirrors the server-side discriminated union — adapterType and the
+  // config object always agree on the same variant.
+  const adapterConfig: OpenclawAdapterConfig | HermesAdapterConfig =
+    adapterType === "openclaw"
+      ? { gatewayUrl, apiKey }
+      : { gatewayUrl: hermesGatewayUrl, apiKey: hermesApiKey };
 
   const center = useMemo(() => {
     if (typeof window === "undefined") return undefined;
@@ -109,12 +137,18 @@ export function OnboardingWindow({ me, onDismiss }: OnboardingWindowProps) {
             />
           )}
           {stepIndex === 1 && (
-            <StepGateway
+            <StepRuntime
+              adapterType={adapterType}
+              onAdapterTypeChange={setAdapterType}
               gatewayUrl={gatewayUrl}
               apiKey={apiKey}
               onGatewayUrlChange={setGatewayUrl}
               onApiKeyChange={setApiKey}
-              onContinue={handleGatewayContinue}
+              hermesGatewayUrl={hermesGatewayUrl}
+              hermesApiKey={hermesApiKey}
+              onHermesGatewayUrlChange={setHermesGatewayUrl}
+              onHermesApiKeyChange={setHermesApiKey}
+              onContinue={handleRuntimeContinue}
               onBack={() => setStepIndex(0)}
             />
           )}
@@ -123,8 +157,8 @@ export function OnboardingWindow({ me, onDismiss }: OnboardingWindowProps) {
               companyName={companyName}
               ceoName={ceoName}
               onCeoNameChange={setCeoName}
-              gatewayUrl={gatewayUrl}
-              apiKey={apiKey}
+              adapterType={adapterType}
+              adapterConfig={adapterConfig}
               pendingAgentId={pendingAgentId}
               onPendingAgentIdChange={setPendingAgentId}
               onBack={() => setStepIndex(1)}

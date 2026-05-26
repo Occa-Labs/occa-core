@@ -48,6 +48,20 @@ export function CeoChatWindow({
   const showEmpty =
     Boolean(ceoName) && hasLoadedOnce && messages.length === 0;
 
+  // The mutation only knows "pending" while the FE-issued POST is in
+  // flight on this tab. After a reload — or in any tab that didn't fire
+  // the send — the message list shows the user turn but no assistant
+  // reply yet, and the indicator disappears. Derive the same state from
+  // the thread itself so reloads still surface "CEO is thinking". Capped
+  // at the server-side adapter wait (10 min) so a crashed run doesn't
+  // pin the indicator forever.
+  const lastMsg = messages.length > 0 ? messages[messages.length - 1] : null;
+  const TURN_PENDING_WINDOW_MS = 10 * 60_000;
+  const replyPendingFromThread =
+    lastMsg?.role === "user" &&
+    Date.now() - new Date(lastMsg.createdAt).getTime() < TURN_PENDING_WINDOW_MS;
+  const showThinking = sendMutation.isPending || replyPendingFromThread;
+
   // Autoscroll the list to the bottom whenever a new message lands.
   useEffect(() => {
     const el = scrollRef.current;
@@ -107,7 +121,7 @@ export function CeoChatWindow({
         {messages.map((m) => (
           <ChatBubble key={m.id} message={m} />
         ))}
-        {sendMutation.isPending && (
+        {showThinking && (
           <ChatBubble
             message={{
               id: "thinking",
@@ -124,7 +138,7 @@ export function CeoChatWindow({
         <div className="glass-light rounded-xl px-3 py-2 focus-within:ring-1 focus-within:ring-white/20 transition-shadow">
           <textarea
             ref={taRef}
-            disabled={!ceoName || sendMutation.isPending}
+            disabled={!ceoName || showThinking}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
@@ -142,7 +156,7 @@ export function CeoChatWindow({
             <button
               type="button"
               disabled={
-                !ceoName || draft.trim().length === 0 || sendMutation.isPending
+                !ceoName || draft.trim().length === 0 || showThinking
               }
               onClick={() => void send()}
               className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium bg-white/10 hover:bg-white/15 text-white/85 disabled:opacity-40 transition-colors"
@@ -205,12 +219,21 @@ function extractError(err: unknown): string {
     typeof (err as { body?: { error?: unknown } }).body?.error === "string"
   ) {
     const code = (err as { body: { error: string } }).body.error;
+    if (code === "no_company")
+      return "You don't have a company yet. Finish onboarding first.";
     if (code === "no_ceo_deployed") return "No CEO deployed yet.";
     if (code === "agent_not_configured")
       return "CEO is not configured. Open the Agents window to finish setup.";
     if (code === "agent_not_provisioned")
       return "CEO is still provisioning. Try again in a moment.";
-    return code;
+    if (code === "invalid_body")
+      return "Couldn't send that message — please try again.";
+    // Adapter-level failures (gateway_*, prompt_*, etc.) are surfaced as
+    // a system chat message by the server, not an HTTP error, so they
+    // don't reach this branch. Anything else falling through here is an
+    // unexpected route-level failure — show a friendly fallback rather
+    // than leaking the raw code.
+    return "Something went wrong sending that message. Try again.";
   }
   return err instanceof Error ? err.message : "Failed to send.";
 }

@@ -42,7 +42,7 @@ import {
   buildCreateDeploymentInstruction,
   buildRegisterAgentIdentityInstruction,
   buildRetireDeploymentInstruction,
-  buildSetOperatingWalletInstruction,
+  buildSetReceivingAddressInstruction,
   COMPANY_STATUS,
   DEPLOYMENT_STATUS,
   deriveAgentIdentityPda,
@@ -243,16 +243,16 @@ async function main(): Promise<void> {
   );
   assert(depInfo !== null, "deploymentPda not on-chain after confirm");
 
-  // ── 5. setOperatingWallet ───────────────────────────────────────
-  const operatingWallet = Keypair.generate().publicKey;
-  const setIx = buildSetOperatingWalletInstruction({
+  // ── 5. setReceivingAddress ──────────────────────────────────────
+  const receivingAddress = Keypair.generate().publicKey;
+  const setIx = buildSetReceivingAddressInstruction({
     deploymentPda: deployIx.deploymentPda,
     owner: owner.publicKey,
-    newOperatingWallet: operatingWallet,
+    newReceivingAddress: receivingAddress,
   });
-  console.log(`[smoke] submitting setOperatingWallet …`);
+  console.log(`[smoke] submitting setReceivingAddress …`);
   const setSig = await submit(conn, setIx.instruction, operator, [owner]);
-  console.log(`[smoke]   wallet     = ${operatingWallet.toBase58()}`);
+  console.log(`[smoke]   address    = ${receivingAddress.toBase58()}`);
   console.log(`[smoke]   tx         = ${explorer(setSig)}`);
 
   // Verify by reading back the account. Deployment layout:
@@ -269,11 +269,11 @@ async function main(): Promise<void> {
     deployIx.deploymentPda,
     "confirmed",
   );
-  assert(updated !== null, "deployment disappeared after setOperatingWallet");
-  const opWalletOnChain = new PublicKey(updated.data.subarray(109, 141));
+  assert(updated !== null, "deployment disappeared after setReceivingAddress");
+  const recvAddrOnChain = new PublicKey(updated.data.subarray(109, 141));
   assert(
-    opWalletOnChain.equals(operatingWallet),
-    `operating_wallet mismatch: chain=${opWalletOnChain.toBase58()} expected=${operatingWallet.toBase58()}`,
+    recvAddrOnChain.equals(receivingAddress),
+    `receiving_address mismatch: chain=${recvAddrOnChain.toBase58()} expected=${receivingAddress.toBase58()}`,
   );
 
   // ── 6. retireDeployment (terminal) ──────────────────────────────

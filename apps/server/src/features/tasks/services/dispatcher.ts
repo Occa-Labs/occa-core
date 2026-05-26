@@ -39,6 +39,7 @@ import {
 import { childLogger } from "../../../lib/logger";
 import { getAdapter } from "../../../lib/adapter-registry";
 import { publishTraceEvent } from "../../../services/trace-events-bus";
+import { snapshotDeploymentSkills } from "../../../services/trace-skill-snapshot";
 import {
   nextStatusAfterDispatch,
   traceOutcomeFor,
@@ -644,6 +645,10 @@ async function openTrace({
   traceId,
   startedAt,
 }: OpenTraceArgs): Promise<void> {
+  const skillsUsed = await snapshotDeploymentSkills(
+    agentRow.id,
+    taskRow.companyId,
+  );
   await db.insert(traces).values({
     id: traceId,
     companyId: taskRow.companyId,
@@ -655,6 +660,7 @@ async function openTrace({
     actorId: taskRow.createdByUserId,
     status: "running",
     startedAt,
+    skillsUsed,
   });
   await db
     .update(tasks)

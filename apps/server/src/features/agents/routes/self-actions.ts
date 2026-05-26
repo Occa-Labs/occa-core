@@ -24,6 +24,7 @@ import { db } from "../../../infra/database/client";
 import { requireAgentToken } from "../../../middleware/agent-auth";
 import { approvalCreateBody } from "../domain/schemas";
 import { canDeploy } from "../services/deployment-hierarchy";
+import { notifyApprovalCreated } from "../../approvals/services/post-create";
 
 const router: Router = Router();
 
@@ -83,7 +84,11 @@ router.post(
           actionType: "delegate",
           payload: { ...dp, parentTaskId },
         })
-        .returning({ id: approvals.id });
+        .returning();
+
+      // Fire-and-forget — notification emit failure must not fail the
+      // approval submission. notifyApprovalCreated swallows + logs.
+      void notifyApprovalCreated(row);
 
       const body: AgentApprovalCreateResponse = { approvalId: row.id };
       res.status(StatusCodes.CREATED).json(body);

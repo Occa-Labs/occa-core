@@ -22,7 +22,12 @@ import { useQueryClient } from "@tanstack/react-query";
 import { agentsApi, ApiError } from "@/lib/api";
 import { ME_QUERY_KEY } from "@/hooks/use-me";
 import { CEO_ROLE } from "@occa/shared/role-catalog";
-import type { CreateAgentRequest, OpenclawAdapterConfig } from "@occa/shared/types";
+import type {
+  AdapterConfig,
+  AdapterType,
+  CreateAgentRequest,
+  OpenclawAdapterConfig,
+} from "@occa/shared/types";
 
 export type DeployStage =
   | "idle"
@@ -35,9 +40,11 @@ export type DeployStage =
 export interface DeployCeoInput {
   ceoName: string;
   companyName: string;
-  adapterConfig: OpenclawAdapterConfig;
+  adapterType: AdapterType;
+  adapterConfig: AdapterConfig;
   /** When set, retry an existing failed provision via the reprovision
-   *  endpoint instead of creating a fresh row. */
+   *  endpoint instead of creating a fresh row. OpenClaw-only in Phase 0
+   *  — the hermes branch always re-creates so we don't hit the 501. */
   pendingAgentId: string | null;
 }
 
@@ -102,18 +109,22 @@ export function useDeployCeo(): DeployCeoResult {
       };
 
       try {
-        if (input.pendingAgentId) {
+        // Reprovision retry is openclaw-only — the server returns 501 for
+        // hermes (no device-keypair state to refresh). On hermes we always
+        // re-create from scratch; the half-provisioned row from the prior
+        // attempt stays dangling but doesn't block this one.
+        if (input.pendingAgentId && input.adapterType === "openclaw") {
           await agentsApi.reprovisionStream(
             input.pendingAgentId,
             onStep,
             undefined,
-            { adapterConfig: input.adapterConfig },
+            { adapterConfig: input.adapterConfig as OpenclawAdapterConfig },
           );
         } else {
           const body: CreateAgentRequest = {
             name: input.ceoName,
             role: CEO_ROLE,
-            adapterType: "openclaw",
+            adapterType: input.adapterType,
             adapterConfig: input.adapterConfig,
             companyName: input.companyName,
           };

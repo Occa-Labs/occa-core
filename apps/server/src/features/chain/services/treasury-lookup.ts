@@ -94,7 +94,13 @@ export interface TreasuryState {
   balanceLamports: number;
   /** True once `init_treasury` has run (TreasuryAccount exists on chain). */
   initialized: boolean;
-  /** SOL discretionary budget for the current calendar month, lamports. */
+  /** SOL routine budget for the current calendar month, lamports. Used by
+   *  `disburse_routine` (auto-payouts). */
+  routineBudgetLamports: bigint;
+  /** SOL routine spend so far this period, lamports. */
+  routineSpentLamports: bigint;
+  /** SOL discretionary budget for the current calendar month, lamports.
+   *  Used by `disburse_discretionary` (operator-signed ad-hoc). */
   discretionaryBudgetLamports: bigint;
   /** SOL discretionary spend so far this period, lamports. */
   discretionarySpentLamports: bigint;
@@ -134,6 +140,8 @@ export async function fetchTreasuryState(
     return {
       ...base,
       initialized: false,
+      routineBudgetLamports: 0n,
+      routineSpentLamports: 0n,
       discretionaryBudgetLamports: 0n,
       discretionarySpentLamports: 0n,
       agentOperatingFeeBps: 0,
@@ -153,6 +161,8 @@ export async function fetchTreasuryState(
     return {
       ...base,
       initialized: false,
+      routineBudgetLamports: 0n,
+      routineSpentLamports: 0n,
       discretionaryBudgetLamports: 0n,
       discretionarySpentLamports: 0n,
       agentOperatingFeeBps: 0,
@@ -172,19 +182,21 @@ export async function fetchTreasuryState(
     const c = new Cursor(policyInfo.data, 8);
     c.skip(1); // version
     c.skip(32); // company
-    c.readVec(() => readAssetBudget(c)); // routine_budget
+    const routineBudget = c.readVec(() => readAssetBudget(c));
     const discretionaryBudget = c.readVec(() => readAssetBudget(c));
     c.skip(8); // privileged_threshold_lamports
     c.readVec(() => readAssetBudget(c)); // privileged_threshold_per_token
     c.readOptionPubkey(); // secondary_signer
     const feeBps = c.readU16();
     c.skip(8); // current_period_anchor
-    c.readVec(() => readAssetBudget(c)); // routine_spent
+    const routineSpent = c.readVec(() => readAssetBudget(c));
     const discretionarySpent = c.readVec(() => readAssetBudget(c));
 
     return {
       ...base,
       initialized: true,
+      routineBudgetLamports: solAmount(routineBudget),
+      routineSpentLamports: solAmount(routineSpent),
       discretionaryBudgetLamports: solAmount(discretionaryBudget),
       discretionarySpentLamports: solAmount(discretionarySpent),
       agentOperatingFeeBps: feeBps,
@@ -197,6 +209,8 @@ export async function fetchTreasuryState(
     return {
       ...base,
       initialized: false,
+      routineBudgetLamports: 0n,
+      routineSpentLamports: 0n,
       discretionaryBudgetLamports: 0n,
       discretionarySpentLamports: 0n,
       agentOperatingFeeBps: 0,

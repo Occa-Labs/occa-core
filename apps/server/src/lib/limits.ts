@@ -13,8 +13,10 @@ export const LIMITS = {
   LABEL: 128, // cron expression, hex IDs, generic labels (token name)
   TITLE: 200, // task title
   KEY: 256, // skill key, longer titles
+  HOST: 253, // hostname / FQDN (RFC 1035 max length)
   REASON: 500, // rejection / cancel / pause reason
   API_KEY: 512, // adapter API keys
+  FILE_PATH: 4_096, // absolute filesystem paths (Linux PATH_MAX)
   AUDIENCE: 1_000, // target audience text
   DESCRIPTION_SHORT: 2_000, // brand voice, audience descriptions, acceptance criteria
   DESCRIPTION: 4_000, // task description, comment body

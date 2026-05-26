@@ -36,6 +36,7 @@ import type {
   PauseCompanyRequest,
   ProbeRequest,
   ProbeResponse,
+  HermesProbeRequest,
   RoutineResponse,
   SendChatMessageRequest,
   SendChatMessageResponse,
@@ -121,6 +122,11 @@ export const meApi = {
 export const adaptersApi = {
   probeOpenclaw: (input: ProbeRequest) =>
     request<ProbeResponse>("/api/adapters/openclaw/probe", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  probeHermes: (input: HermesProbeRequest) =>
+    request<ProbeResponse>("/api/adapters/hermes/probe", {
       method: "POST",
       body: JSON.stringify(input),
     }),
@@ -383,7 +389,194 @@ export const chainApi = {
       `/api/chain/companies/${companyId}/disbursements/confirm`,
       { method: "POST", body: JSON.stringify(body) },
     ),
+  // ── Operations lifecycle (Disbursement + Anchor wallets) ──────────────
+  /** Phase 1: the operator's hot wallet plays the Disbursement + Anchor
+   *  signer role. FE pre-fills `signer` in register flows by reading this
+   *  endpoint. Returns 503 if the operator keypair isn't configured
+   *  server-side. */
+  getOperatorPubkey: () =>
+    request<{ pubkey: string }>(`/api/chain/operator/pubkey`),
+  getOperations: (companyId: string) =>
+    request<{ operations: OperationsAccountState[] }>(
+      `/api/chain/companies/${companyId}/operations`,
+    ),
+  prepareRegisterOperations: (
+    companyId: string,
+    body: RegisterOperationsBody,
+  ) =>
+    request<PreparedTx>(
+      `/api/chain/companies/${companyId}/operations/register/prepare`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  confirmRegisterOperations: (
+    companyId: string,
+    body: ConfirmOperationsBody,
+  ) =>
+    request<{ signature: string }>(
+      `/api/chain/companies/${companyId}/operations/register/confirm`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  prepareUpdateOperations: (
+    companyId: string,
+    body: UpdateOperationsBody,
+  ) =>
+    request<PreparedTx>(
+      `/api/chain/companies/${companyId}/operations/update/prepare`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  confirmUpdateOperations: (
+    companyId: string,
+    body: ConfirmOperationsBody,
+  ) =>
+    request<{ signature: string }>(
+      `/api/chain/companies/${companyId}/operations/update/confirm`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  prepareRevokeOperations: (
+    companyId: string,
+    body: LifecycleOperationsBody,
+  ) =>
+    request<PreparedTx>(
+      `/api/chain/companies/${companyId}/operations/revoke/prepare`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  confirmRevokeOperations: (
+    companyId: string,
+    body: ConfirmOperationsBody,
+  ) =>
+    request<{ signature: string }>(
+      `/api/chain/companies/${companyId}/operations/revoke/confirm`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  prepareCloseOperations: (
+    companyId: string,
+    body: LifecycleOperationsBody,
+  ) =>
+    request<PreparedTx>(
+      `/api/chain/companies/${companyId}/operations/close/prepare`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  confirmCloseOperations: (
+    companyId: string,
+    body: ConfirmOperationsBody,
+  ) =>
+    request<{ signature: string }>(
+      `/api/chain/companies/${companyId}/operations/close/confirm`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  // ── Routine payouts (autonomous, no wallet popup) ─────────────────────
+  runRoutinePayouts: (companyId: string) =>
+    request<RoutinePayoutSummary>(
+      `/api/chain/companies/${companyId}/payouts/run`,
+      { method: "POST", body: JSON.stringify({}) },
+    ),
+  // ── Daily anchors (read-only) ─────────────────────────────────────────
+  getCompanyAnchors: (companyId: string) =>
+    request<{ anchors: DailyAnchorRecord[] }>(
+      `/api/chain/companies/${companyId}/anchors`,
+    ),
+  // ── Company-wide tx list (read-only) ──────────────────────────────────
+  getCompanyTransactions: (
+    companyId: string,
+    params?: { limit?: number; before?: string },
+  ) => {
+    const qs = new URLSearchParams();
+    if (params?.limit) qs.set("limit", String(params.limit));
+    if (params?.before) qs.set("before", params.before);
+    const query = qs.toString();
+    return request<CompanyTransactionsResponse>(
+      `/api/chain/companies/${companyId}/transactions${query ? `?${query}` : ""}`,
+    );
+  },
 };
+
+export interface CompanyTransactionRecord {
+  signature: string;
+  slot: number;
+  blockTime: number | null;
+  action: string | null;
+  err: string | null;
+  signer: string | null;
+}
+
+export interface CompanyTransactionsResponse {
+  records: CompanyTransactionRecord[];
+  hasMore: boolean;
+}
+
+export interface DailyAnchorRecord {
+  pda: string;
+  deploymentPda: string;
+  agentName: string | null;
+  agentRole: string | null;
+  dayUnix: number;
+  merkleRoot: string;
+  taskCount: number;
+  committedAt: number;
+  committedBy: string;
+}
+
+// ── Operations + payouts request/response shapes ─────────────────────────
+
+export type OperationsKindString = "disbursement" | "anchor";
+
+export interface OperationsAccountState {
+  /** 0 = Disbursement, 1 = Anchor (matches OPERATIONS_KIND in occa-sdk). */
+  kind: 0 | 1;
+  pda: string;
+  exists: boolean;
+  signer: string | null;
+  /** Hex-encoded 8-byte Anchor discriminators (no 0x prefix). */
+  actionWhitelist: string[];
+  rateLimitPerPeriod: number;
+  signaturesThisPeriod: number;
+  /** Unix seconds as string (avoids JSON bigint loss). */
+  currentPeriodAnchor: string;
+  expiryUnix: string;
+  revoked: boolean;
+}
+
+export interface RegisterOperationsBody {
+  kind: OperationsKindString;
+  signer: string;
+  actionWhitelist: string[];
+  rateLimitPerPeriod: number;
+  expiryUnix: number;
+}
+
+export interface UpdateOperationsBody {
+  kind: OperationsKindString;
+  actionWhitelist?: string[];
+  rateLimitPerPeriod?: number;
+  expiryUnix?: number;
+}
+
+export interface LifecycleOperationsBody {
+  kind: OperationsKindString;
+}
+
+export interface ConfirmOperationsBody {
+  kind: OperationsKindString;
+  signedTransaction: string;
+  blockhash: string;
+  lastValidBlockHeight: number;
+}
+
+export interface RoutinePayoutResult {
+  deploymentId: string;
+  agentName: string;
+  invoiceIds: string[];
+  totalLamports: number;
+  signature: string | null;
+  error: string | null;
+}
+
+export interface RoutinePayoutSummary {
+  paidLamports: number;
+  paidInvoiceCount: number;
+  failureCount: number;
+  results: RoutinePayoutResult[];
+}
 
 export interface DisbursementPayableAgent {
   deploymentId: string;
@@ -407,6 +600,12 @@ export interface PendingDisbursementsResponse {
   estimatedFeeLamports: number;
   feeBps: number;
   treasuryBalanceLamports: number;
+  /** Minimum balance the Treasury PDA must keep to stay rent-exempt.
+   *  Disbursements that would drop balance below this revert on-chain
+   *  (`InsufficientFunds` 6025). */
+  rentExemptMinLamports: number;
+  /** balance - rentExemptMin. What's actually disbursable right now. */
+  usableBalanceLamports: number;
   /** Lamports as a string — JSON can't carry bigint. */
   budgetRemainingLamports: string;
 }
@@ -429,12 +628,15 @@ export interface TreasuryStateResponse {
   balanceLamports: number;
   initialized: boolean;
   /** Lamports as a string — JSON can't carry bigint. */
+  routineBudgetLamports: string;
+  routineSpentLamports: string;
   discretionaryBudgetLamports: string;
   discretionarySpentLamports: string;
   agentOperatingFeeBps: number;
 }
 
 export interface PrepareSetPolicyRequest {
+  routineBudgetLamports: number;
   discretionaryBudgetLamports: number;
 }
 
@@ -627,6 +829,11 @@ export const agentsApi = {
     request<AgentResponse>(`/api/agents/${id}/pause`, { method: "POST" }),
   activate: (id: string) =>
     request<AgentResponse>(`/api/agents/${id}/activate`, { method: "POST" }),
+  rotateBearer: (id: string, apiKey: string) =>
+    request<{ ok: boolean; latencyMs: number }>(
+      `/api/agents/${id}/adapter/rotate-bearer`,
+      { method: "POST", body: JSON.stringify({ apiKey }) },
+    ),
   syncSkills: (id: string, input: SyncAgentSkillsRequest) =>
     request<AgentResponse>(`/api/agents/${id}/skills/sync`, {
       method: "POST",
@@ -834,96 +1041,6 @@ export const agentsApi = {
       void pump();
     });
   },
-  chatStream: async (
-    id: string,
-    message: string,
-    conversationId: string,
-    onEvent: (evt: { stream: string; data: Record<string, unknown> }) => void,
-    signal?: AbortSignal,
-  ): Promise<string> => {
-    const token = getStoredToken();
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-    };
-    if (token) headers["Authorization"] = `Bearer ${token}`;
-    const res = await fetch(`${API_BASE}/api/agents/${id}/chat`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ message, conversationId }),
-      signal,
-    });
-    if (!res.ok) {
-      let body: unknown = null;
-      try {
-        body = await res.json();
-      } catch {
-        /* ignore */
-      }
-      throw new ApiError(res.status, body);
-    }
-    // Parse SSE stream
-    const reader = res.body!.getReader();
-    const decoder = new TextDecoder();
-    let buf = "";
-    let currentEvent = "";
-    let currentData = "";
-    return new Promise<string>((resolve, reject) => {
-      const pump = (): Promise<void> =>
-        reader
-          .read()
-          .then(({ done, value }) => {
-            if (done) {
-              resolve("");
-              return;
-            }
-            buf += decoder.decode(value, { stream: true });
-            const lines = buf.split("\n");
-            buf = lines.pop()!;
-            for (const line of lines) {
-              if (line === "") {
-                // Event boundary — dispatch accumulated block
-                if (currentData !== "") {
-                  try {
-                    const payload = JSON.parse(currentData) as Record<
-                      string,
-                      unknown
-                    >;
-                    if (currentEvent === "done") {
-                      resolve(
-                        typeof payload.reply === "string" ? payload.reply : "",
-                      );
-                      reader.cancel().catch(() => {});
-                      return;
-                    } else if (currentEvent === "error") {
-                      reject(new ApiError(502, payload));
-                      reader.cancel().catch(() => {});
-                      return;
-                    } else {
-                      onEvent(
-                        payload as {
-                          stream: string;
-                          data: Record<string, unknown>;
-                        },
-                      );
-                    }
-                  } catch {
-                    /* malformed JSON, skip */
-                  }
-                }
-                currentEvent = "";
-                currentData = "";
-              } else if (line.startsWith("event:")) {
-                currentEvent = line.slice(6).trim();
-              } else if (line.startsWith("data:")) {
-                currentData += line.slice(5).trim();
-              }
-            }
-            return pump();
-          })
-          .catch(reject);
-      void pump();
-    });
-  },
   listSkillSyncs: (id: string) =>
     request<ListAgentSkillSyncsResponse>(`/api/agents/${id}/skills/syncs`),
   resyncSkill: (id: string, skillKey: string, action?: AgentSkillSyncAction) =>
@@ -1055,6 +1172,32 @@ export const approvalsApi = {
     request<{ approval: ApprovalDTO }>(`/api/approvals/${id}`, {
       method: "PATCH",
       body: JSON.stringify({ payload }),
+    }),
+};
+
+export const notificationsApi = {
+  list: (opts?: { unread?: boolean; limit?: number }) => {
+    const qs = new URLSearchParams();
+    if (opts?.unread) qs.set("unread", "1");
+    if (opts?.limit !== undefined) qs.set("limit", String(opts.limit));
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return request<import("@occa/shared/types").ListNotificationsResponse>(
+      `/api/notifications${suffix}`,
+    );
+  },
+  markRead: (id: string) =>
+    request<import("@occa/shared/types").NotificationActionResponse>(
+      `/api/notifications/${id}/read`,
+      { method: "POST" },
+    ),
+  dismiss: (id: string) =>
+    request<import("@occa/shared/types").NotificationActionResponse>(
+      `/api/notifications/${id}/dismiss`,
+      { method: "POST" },
+    ),
+  readAll: () =>
+    request<{ updated: number }>(`/api/notifications/read-all`, {
+      method: "POST",
     }),
 };
 

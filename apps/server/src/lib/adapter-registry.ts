@@ -9,9 +9,11 @@
 // No other files need to change.
 
 import type { AgentAdapter } from "@occa/runtime-core";
+import { hermesAdapter } from "@occa/adapter-hermes";
 import { openclawAdapter } from "@occa/adapter-openclaw";
 
 const registry: Record<string, AgentAdapter> = {
+  hermes: hermesAdapter,
   openclaw: openclawAdapter,
 };
 

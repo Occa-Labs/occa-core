@@ -12,17 +12,7 @@ import { ERROR_CODES } from "@occa/shared/error-codes";
 import { StatusCodes } from "http-status-codes";
 import { and, eq, isNull } from "drizzle-orm";
 import { normalizeGatewayUrl } from "../../../lib/gateway-url";
-import {
-  deprovisionAgent,
-  deserializeKeypair,
-  generateEphemeralKeypair,
-  probeConnection,
-  provisionAgent,
-  seedWorkspace,
-  serializeKeypair,
-  validateDeviceKeypair,
-  type SerializedKeypair,
-} from "@occa/adapter-openclaw";
+import { getAdapter } from "../../../lib/adapter-registry";
 import {
   agentIdentities,
   agentRuntimeProfile,
@@ -31,11 +21,11 @@ import {
   deployments,
   users,
 } from "@occa/shared/schema";
-import { randomBytes } from "node:crypto";
 import type {
   CreateAgentResponse,
   ListAgentFilesResponse,
   ListAgentsResponse,
+  OpenclawAdapterConfig,
   UpdateAgentFileResponse,
   WorkspaceFileDTO,
 } from "@occa/shared/types";
@@ -63,6 +53,7 @@ import {
   renderWorkspaceFiles,
   roleLabelFor,
 } from "../../../lib/workspace-templates";
+import { runCreateFlow } from "../services/create-flow";
 import { assignSeatForCompany } from "../services/seat-assignment";
 import { ALL_DESKS } from "@occa/shared/seating";
 import { CEO_ROLE, getTier } from "@occa/shared/role-catalog";
@@ -81,6 +72,7 @@ import {
   createAgentBody,
   patchAgentBody,
   reprovisionAgentBody,
+  rotateBearerBody,
   updateAgentFileBody,
 } from "../domain/schemas";
 import {
@@ -92,16 +84,9 @@ import { log } from "./_shared";
 
 const router: Router = Router();
 
-// Synthetic placeholder for on-chain-bound `agent_pubkey`, `identity_pda`,
-// `deployment_pda` columns. NOT NULL UNIQUE in the schema; chain step
-// will overwrite with real Solana pubkey/PDA values.
-function synthPlaceholderKey(tag: string): string {
-  return `${tag}_${randomBytes(24).toString("hex")}`;
-}
-
-// Local helper — single-row read used by the create flow's gating (do
-// we need to demand a `companyName` from the caller?). The owner-scoped
-// deployment lookups go through `findOwnedByUserId` instead.
+// Local helper — single-row read used by GET / agent list when no
+// agent has been deployed yet (legitimate empty case). The
+// owner-scoped deployment lookups go through `findOwnedByUserId`.
 async function userCompanyId(userId: string): Promise<string | null> {
   const [row] = await db
     .select({ id: companies.id })
@@ -120,6 +105,11 @@ async function userCompanyId(userId: string): Promise<string | null> {
 // POST /api/agents — streams progress via SSE then emits "done" with the
 // created agent. Events: step {status:"running"|"done", step, label?} |
 // done {agent, company?} | error {message, step?}
+//
+// Body is a discriminated union by `adapterType`. Both branches go
+// through the unified `runCreateFlow` orchestrator — adapter-specific
+// differences (device pairing, gateway-restart, etc.) are handled
+// inside the AgentAdapter contract.
 router.post("/", requireAuth, async (req: Request, res: Response) => {
   const parsed = createAgentBody.safeParse(req.body);
   if (!parsed.success) {
@@ -131,525 +121,12 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
       });
     return;
   }
-  const userId = req.user!.userId;
-  const {
-    name,
-    role,
-    adapterType,
-    adapterConfig,
-    companyName,
-    parentAgentId,
-    taskRateLamports,
-  } = parsed.data;
-
-  const existingCompanyId = await userCompanyId(userId);
-  if (!existingCompanyId && !companyName) {
-    res
-      .status(StatusCodes.BAD_REQUEST)
-      .json({ error: ERROR_CODES.COMPANY_REQUIRED });
-    return;
-  }
-
-  // Switch to SSE from here — all subsequent errors are streamed.
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-  res.flushHeaders();
-
-  let closed = false;
-  req.on("close", () => {
-    closed = true;
+  await runCreateFlow({
+    req,
+    res,
+    userId: req.user!.userId,
+    parsedData: parsed.data,
   });
-
-  const emit = (eventName: string, data: unknown) => {
-    if (closed) return;
-    res.write(`event: ${eventName}\n`);
-    res.write(`data: ${JSON.stringify(data)}\n\n`);
-  };
-  const stepStart = (step: string, label: string) =>
-    emit("step", { status: "running", step, label });
-  const stepDone = (step: string) => emit("step", { status: "done", step });
-  const fail = (
-    message: string,
-    step?: string,
-    opts?: { agentId?: string; retryable?: boolean },
-  ) => {
-    emit("error", {
-      message,
-      step,
-      agentId: opts?.agentId,
-      retryable: opts?.retryable ?? false,
-    });
-    res.end();
-  };
-
-  // Load or lazily create a per-user persistent keypair so the SAME
-  // identity is used for the probe, validate, and provision calls.
-  // Effect: the user approves OpenClaw pairing exactly once — every
-  // subsequent connect (retry, launch, re-onboarding) reuses the
-  // already-approved device.
-  //
-  // Once paired, the gateway issues a deviceToken
-  // (hello-ok.auth.deviceToken) which is replayed on subsequent connects
-  // to skip re-pair prompts even across gateway restarts.
-  //
-  // Lookup priority (agents > pendingDeviceKeypair):
-  //   1. Any existing agent in this user's company — agents are the
-  //      source of truth for the paired device identity.
-  //   2. users.pendingDeviceKeypair — fallback only when no agent exists
-  //      yet (initial onboarding). Earlier code prioritized this and
-  //      drifted: stale fresh keypair stuck here while real paired one
-  //      lived on agents → second hire kept failing pairing.
-  //   3. Generate fresh + persist (first-ever onboarding).
-  type StoredDeviceState = SerializedKeypair & { deviceToken?: string };
-
-  let keypair;
-  let deviceToken: string | undefined;
-
-  // Pairing is per-(gatewayUrl, deviceId). Pull all runtime profiles in
-  // user's company and filter by *normalized* gatewayUrl in JS — stored
-  // URLs are `wss://...` (post adapter scheme rewrite) while probe input
-  // is usually `https://...` with possible trailing slash, so a SQL `=`
-  // would miss.
-  const userProfiles = await db
-    .select({ adapterConfig: agentRuntimeProfile.adapterConfig })
-    .from(agentRuntimeProfile)
-    .innerJoin(companies, eq(agentRuntimeProfile.companyId, companies.id))
-    .where(
-      and(
-        eq(companies.ownerUserId, userId),
-        eq(companies.kind, "user"),
-        isNull(companies.deletedAt),
-      ),
-    );
-  const probeKey = normalizeGatewayUrl(adapterConfig.gatewayUrl);
-  const existingProfile = userProfiles.find((row) => {
-    const cfg = row.adapterConfig as Record<string, unknown> | undefined;
-    const stored = cfg?.gatewayUrl;
-    return (
-      typeof stored === "string" && normalizeGatewayUrl(stored) === probeKey
-    );
-  });
-  const agentCfg = existingProfile?.adapterConfig as
-    | Record<string, unknown>
-    | undefined;
-  const agentKeypair = agentCfg?.deviceKeypair as
-    | SerializedKeypair
-    | null
-    | undefined;
-  const agentKeypairValid =
-    !!agentKeypair &&
-    typeof agentKeypair.deviceId === "string" &&
-    typeof agentKeypair.publicKey === "string" &&
-    typeof agentKeypair.privateKeyHex === "string";
-
-  if (agentKeypairValid) {
-    keypair = deserializeKeypair(agentKeypair);
-    deviceToken =
-      typeof agentCfg?.deviceToken === "string"
-        ? agentCfg.deviceToken
-        : undefined;
-  } else {
-    const [userRow] = await db
-      .select({ pendingDeviceKeypair: users.pendingDeviceKeypair })
-      .from(users)
-      .where(eq(users.id, userId))
-      .limit(1);
-    const stored = userRow?.pendingDeviceKeypair as
-      | StoredDeviceState
-      | null
-      | undefined;
-    if (stored?.deviceId) {
-      keypair = deserializeKeypair(stored);
-      deviceToken = stored.deviceToken;
-    } else {
-      keypair = await generateEphemeralKeypair();
-      await db
-        .update(users)
-        .set({ pendingDeviceKeypair: serializeKeypair(keypair) })
-        .where(eq(users.id, userId));
-    }
-  }
-
-  // Validate gateway access using the persistent device + replay token.
-  const probe = await probeConnection(adapterConfig, {
-    device: keypair,
-    deviceToken,
-  });
-  if (!probe.ok) {
-    fail(`adapter_probe_failed: ${probe.error}`);
-    return;
-  }
-  if (probe.info?.deviceToken) deviceToken = probe.info.deviceToken;
-
-  const validate = await validateDeviceKeypair(adapterConfig, keypair, {
-    deviceToken,
-  });
-  if (!validate.ok) {
-    fail(
-      `validate_failed: ${validate.error}${validate.reason ? ` — ${validate.reason}` : ""}`,
-    );
-    return;
-  }
-  if (validate.deviceToken) deviceToken = validate.deviceToken;
-
-  const serialized = serializeKeypair(keypair);
-
-  // Step 1: DB transaction — insert identity → deployment → runtime profile.
-  stepStart("creating_record", "Creating deployment record");
-  let companyRow: typeof companies.$inferSelect | null = null;
-  let identityRow: typeof agentIdentities.$inferSelect;
-  let deploymentRow: typeof deployments.$inferSelect;
-  try {
-    const tx = await db.transaction(async (t) => {
-      let cid = existingCompanyId;
-      let createdCompanyRow: typeof companies.$inferSelect | null = null;
-      if (!cid) {
-        const [inserted] = await t
-          .insert(companies)
-          .values({ ownerUserId: userId, name: companyName!, kind: "user" })
-          .returning();
-        createdCompanyRow = inserted;
-        cid = inserted.id;
-      }
-      // Assign 3D seat — pure algorithm against the current occupied set.
-      // Done inside the transaction so a concurrent deploy on the same
-      // company can't pick the same desk before we commit.
-      const workstationId = await assignSeatForCompany({
-        companyId: cid,
-        role,
-      });
-      if (!workstationId) {
-        throw new Error("office_full");
-      }
-
-      // identity owner_wallet is NOT NULL but companies.owner_wallet is
-      // nullable until chain registration — fall back to a placeholder
-      // marker so the constraint holds. Chain step overwrites both.
-      const [companyForOwner] = await t
-        .select({ ownerWallet: companies.ownerWallet })
-        .from(companies)
-        .where(eq(companies.id, cid))
-        .limit(1);
-      const ownerWallet =
-        companyForOwner?.ownerWallet ?? `placeholder:${cid}`;
-
-      const [iRow] = await t
-        .insert(agentIdentities)
-        .values({
-          ownerUserId: userId,
-          agentPubkey: synthPlaceholderKey("ag_pk"),
-          identityPda: synthPlaceholderKey("ag_pda"),
-          ownerWallet,
-          name,
-        })
-        .returning();
-
-      // Per-company `MAX(deployment_index)+1`. Serialized via the unique
-      // `(company_id, deployment_index)` index — concurrent deploys race
-      // against the constraint and the loser would surface a unique
-      // violation here, which the catch below maps to the same error path
-      // as company-already-exists.
-      const sibs = await t
-        .select({ idx: deployments.deploymentIndex })
-        .from(deployments)
-        .where(eq(deployments.companyId, cid));
-      const nextIdx =
-        sibs.length === 0 ? 0 : Math.max(...sibs.map((r) => r.idx)) + 1;
-
-      // Resolve parent. Priority:
-      //   1. Caller passed `parentAgentId` (Deploy modal parent picker)
-      //      → look up its deployment_index, verify same company, use it.
-      //   2. CEO role → null (top of the chart).
-      //   3. Else auto-resolve from catalog (canonical head → CEO → null).
-      let parentIdx: number | null = null;
-      if (parentAgentId) {
-        const [parentRow] = await t
-          .select({
-            id: deployments.id,
-            companyId: deployments.companyId,
-            deploymentIndex: deployments.deploymentIndex,
-            status: deployments.status,
-          })
-          .from(deployments)
-          .where(eq(deployments.id, parentAgentId))
-          .limit(1);
-        if (!parentRow || parentRow.companyId !== cid) {
-          throw new Error("parent_not_in_company");
-        }
-        if (parentRow.status !== "active") {
-          throw new Error("parent_not_active");
-        }
-        parentIdx = parentRow.deploymentIndex;
-      } else if (role !== CEO_ROLE) {
-        parentIdx = await resolveAutoParentIndex({
-          companyId: cid,
-          role,
-        });
-      }
-
-      const [dRow] = await t
-        .insert(deployments)
-        .values({
-          companyId: cid,
-          agentIdentityId: iRow.id,
-          deploymentPda: synthPlaceholderKey("dep_pda"),
-          deploymentIndex: nextIdx,
-          role,
-          status: "active",
-          parentDeploymentIndex: parentIdx,
-        })
-        .returning();
-
-      await t.insert(agentRuntimeProfile).values({
-        deploymentId: dRow.id,
-        companyId: cid,
-        adapterType,
-        adapterConfig: {
-          gatewayUrl: adapterConfig.gatewayUrl,
-          apiKey: adapterConfig.apiKey,
-          deviceKeypair: serialized,
-          ...(deviceToken ? { deviceToken } : {}),
-        },
-        provisioningState: "pending",
-        workstationId,
-        taskRateLamports: taskRateLamports ?? null,
-      });
-
-      return { iRow, dRow, createdCompanyRow };
-    });
-    identityRow = tx.iRow;
-    deploymentRow = tx.dRow;
-    companyRow = tx.createdCompanyRow;
-  } catch (err) {
-    if (
-      typeof err === "object" &&
-      err !== null &&
-      "code" in err &&
-      (err as { code?: string }).code === PG_ERROR_CODES.UNIQUE_VIOLATION
-    ) {
-      fail("company_already_exists", "creating_record");
-      return;
-    }
-    fail(err instanceof Error ? err.message : "db_error", "creating_record");
-    return;
-  }
-  stepDone("creating_record");
-
-  // Step 2: Provision on gateway (may emit gateway_restart substep)
-  stepStart("provisioning", "Provisioning on gateway");
-  const companyId = deploymentRow.companyId;
-  const externalAgentId = buildExternalAgentId(
-    deploymentRow.id,
-    deploymentRow.role,
-    identityRow.name,
-  );
-  const workspacePath = buildWorkspacePath(externalAgentId);
-
-  let restartStepEmitted = false;
-  const provision = await provisionAgent(
-    {
-      gatewayUrl: adapterConfig.gatewayUrl,
-      apiKey: adapterConfig.apiKey,
-      device: keypair,
-      deviceToken,
-      desiredId: externalAgentId,
-      workspacePath,
-    },
-    {
-      onStep: (event) => {
-        if (event === "restart_detected") {
-          stepDone("provisioning");
-          stepStart("gateway_restart", "Waiting for gateway restart");
-          restartStepEmitted = true;
-        } else if (event === "restart_verified") {
-          stepDone("gateway_restart");
-          stepStart("provisioning", "Verifying provision");
-        }
-      },
-    },
-  );
-  if (provision.ok && provision.deviceToken)
-    deviceToken = provision.deviceToken;
-
-  if (!provision.ok) {
-    const currentStep = restartStepEmitted ? "gateway_restart" : "provisioning";
-    fail(
-      `provision_failed: ${provision.error}${provision.reason ? ` — ${provision.reason}` : ""}`,
-      currentStep,
-      { agentId: deploymentRow.id, retryable: true },
-    );
-    return;
-  }
-  stepDone("provisioning");
-
-  await db
-    .update(agentRuntimeProfile)
-    .set({
-      externalAgentId: provision.externalAgentId,
-      adapterConfig: {
-        gatewayUrl: adapterConfig.gatewayUrl,
-        apiKey: adapterConfig.apiKey,
-        deviceKeypair: serialized,
-        ...(deviceToken ? { deviceToken } : {}),
-        openclawAgentId: provision.externalAgentId,
-        workspacePath: provision.workspacePath,
-      },
-      provisioningState: "ready",
-      updatedAt: new Date(),
-    })
-    .where(eq(agentRuntimeProfile.deploymentId, deploymentRow.id));
-
-  // Step 3: Seed workspace files
-  stepStart("seeding_workspace", "Seeding workspace files");
-  const occaApiUrl =
-    process.env.OCCA_API_URL ??
-    `http://localhost:${process.env.PORT ?? "3002"}`;
-  const now = new Date();
-  let rendered: Awaited<ReturnType<typeof renderWorkspaceFiles>>;
-  try {
-    rendered = await renderWorkspaceFiles({
-      agent: { name: identityRow.name, role, roleLabel: roleLabelFor(role) },
-      company: { name: companyRow ? companyRow.name : "" },
-      runtime: {
-        externalAgentId: provision.externalAgentId,
-        workspacePath: provision.workspacePath,
-        createdAt: now.toISOString(),
-        todayIso: now.toISOString().slice(0, 10),
-        apiUrl: occaApiUrl,
-      },
-    });
-  } catch (err) {
-    log.error({ err }, "renderWorkspaceFiles failed");
-    fail(
-      err instanceof Error ? err.message : "workspace_template_render_failed",
-      "seeding_workspace",
-      { agentId: deploymentRow.id, retryable: true },
-    );
-    return;
-  }
-
-  if (!companyRow) {
-    const [existing] = await db
-      .select()
-      .from(companies)
-      .where(eq(companies.id, companyId))
-      .limit(1);
-    if (existing) {
-      for (const f of rendered) {
-        f.content = f.content.replace(
-          /\{\{\s*company\.name\s*\}\}/g,
-          existing.name,
-        );
-      }
-    }
-  }
-
-  const seed = await seedWorkspace({
-    gatewayUrl: adapterConfig.gatewayUrl,
-    apiKey: adapterConfig.apiKey,
-    device: keypair,
-    externalAgentId: provision.externalAgentId,
-    files: rendered.map((f) => ({ filename: f.filename, content: f.content })),
-  });
-  if (!seed.ok) {
-    fail(
-      `seed_failed: ${seed.error}${seed.reason ? ` — ${seed.reason}` : ""}`,
-      "seeding_workspace",
-      { agentId: deploymentRow.id, retryable: true },
-    );
-    return;
-  }
-
-  const syncedAt = new Date();
-  try {
-    await db.insert(deploymentWorkspaceFiles).values(
-      rendered.map((f) => ({
-        deploymentId: deploymentRow.id,
-        companyId,
-        filename: f.filename,
-        content: f.content,
-        source: "template" as const,
-        templateOrigin: f.templateOrigin,
-        syncedAt,
-      })),
-    );
-  } catch (err) {
-    log.error({ err }, "persist workspace files failed");
-    fail(
-      err instanceof Error ? err.message : "workspace_files_persist_failed",
-      "seeding_workspace",
-      { agentId: deploymentRow.id, retryable: true },
-    );
-    return;
-  }
-  stepDone("seeding_workspace");
-
-  // Step 4: Auto-assign skills + enqueue installs (non-critical).
-  // skills feature still uses the `agentId` field name pre-migration —
-  // the value here is the deployment UUID.
-  stepStart("assigning_skills", "Assigning skills");
-  try {
-    const keys = await autoAssignSkillsToNewAgent(
-      deploymentRow.id,
-      deploymentRow.role,
-      companyId,
-    );
-    if (keys.length > 0) {
-      await enqueueSkillSyncs({
-        deploymentId: deploymentRow.id,
-        companyId,
-        skillKeys: keys,
-      });
-    }
-  } catch (err) {
-    log.error({ err }, "auto-assign / enqueue skills failed");
-  }
-  stepDone("assigning_skills");
-
-  // Keypair has migrated to runtime profile adapter_config — drop the
-  // pending copy so a future onboarding (e.g. second wallet) starts with
-  // a clean slate instead of inheriting a stale identity.
-  await db
-    .update(users)
-    .set({ pendingDeviceKeypair: null })
-    .where(eq(users.id, userId));
-
-  const companyProfileRow = companyRow
-    ? await findCompanyProfileByCompanyId(companyRow.id)
-    : null;
-
-  // Post-deploy reparent: if this deploy created a head, slide any
-  // existing specialists currently parented under CEO whose canonical
-  // parent is this head's role under the new head. Silent no-op for
-  // non-head roles or when no eligible specialists exist.
-  let reparentedCount: number | undefined;
-  if (getTier(role) === "head") {
-    try {
-      const result = await reparentOnHeadDeploy({
-        companyId: deploymentRow.companyId,
-        newHeadDeploymentId: deploymentRow.id,
-        newHeadRole: role,
-        newHeadDeploymentIndex: deploymentRow.deploymentIndex,
-      });
-      reparentedCount = result.movedCount;
-    } catch (err) {
-      log.warn(
-        { err, deploymentId: deploymentRow.id, role },
-        "reparentOnHeadDeploy threw — deploy succeeds, hierarchy may be stale",
-      );
-    }
-  }
-
-  const body: CreateAgentResponse = {
-    agent: await hydrateDeploymentDTO(deploymentRow),
-    company: companyRow
-      ? toCompanyDTO(companyRow, companyProfileRow)
-      : undefined,
-    reparentedCount,
-  };
-  emit("done", body);
-  res.end();
 });
 
 // POST /api/agents/:id/reprovision — retry provisioning + seeding from
@@ -674,7 +151,15 @@ router.post(
         });
       return;
     }
-    const overrideConfig = parsedBody.data.adapterConfig;
+    // Reprovision in Phase 0 only supports the openclaw adapter (the
+    // device-keypair + gateway-restart pipeline that follows is openclaw-
+    // specific). Hermes agents fall through to a 501 below once we've
+    // loaded the runtime profile and can read the adapter type.
+    // TODO(adapter-multi): land hermes reprovision when the openclaw
+    // path is refactored behind `getAdapter()`.
+    const overrideConfig = parsedBody.data.adapterConfig as
+      | OpenclawAdapterConfig
+      | undefined;
 
     const deploymentRecord = await findOwnedByUserId({
       userId: req.user!.userId,
@@ -698,42 +183,52 @@ router.post(
         .json({ error: ERROR_CODES.AGENT_NOT_CONFIGURED });
       return;
     }
+    if (profile.adapterType !== "openclaw") {
+      // Reprovision is openclaw-specific: it covers the
+      // device-rekey-and-restart-the-gateway pipeline that Hermes
+      // doesn't have. For Hermes, the bearer-rotation endpoint
+      // (/:id/adapter/rotate-bearer) covers the equivalent
+      // operational case. UI guides the user there instead.
+      res
+        .status(StatusCodes.NOT_IMPLEMENTED)
+        .json({ error: "reprovision_not_supported_for_adapter" });
+      return;
+    }
+
+    const adapter = getAdapter(profile.adapterType);
+    if (!adapter) {
+      res
+        .status(StatusCodes.INTERNAL_SERVER_ERROR)
+        .json({ error: ERROR_CODES.INTERNAL_ERROR });
+      return;
+    }
 
     let cfg = (profile.adapterConfig ?? {}) as Record<string, unknown>;
 
-    // Recovery re-pair: caller supplied fresh creds. Mint a new device
-    // keypair (chain has identity + deployment but Tier 3 is gone),
-    // probe the gateway, then write everything back to the runtime
-    // profile. Skip the CEO-fallback branch entirely — this path is
-    // explicit and self-sufficient.
+    // Recovery re-pair: caller supplied fresh creds. Hand them straight
+    // to `prepareCredentials` with NO `deviceKeypair` in the baseConfig
+    // — that signals the adapter to mint a new one and validate it
+    // against the supplied gateway. Skip the CEO-fallback branch
+    // entirely — this path is explicit and self-sufficient.
     if (overrideConfig) {
-      const newKeypair = await generateEphemeralKeypair();
-      const probe = await probeConnection(overrideConfig, {
-        device: newKeypair,
+      const prepared = await adapter.prepareCredentials({
+        gatewayUrl: overrideConfig.gatewayUrl,
+        apiKey: overrideConfig.apiKey,
       });
-      if (!probe.ok) {
+      if (!prepared.ok) {
         res
           .status(StatusCodes.BAD_GATEWAY)
-          .json({ error: ERROR_CODES.GATEWAY_UNREACHABLE });
+          .json({
+            error: ERROR_CODES.GATEWAY_UNREACHABLE,
+            reason: prepared.error,
+          });
         return;
       }
-      const issuedDeviceToken = probe.info?.deviceToken;
-      const validate = await validateDeviceKeypair(overrideConfig, newKeypair, {
-        deviceToken: issuedDeviceToken,
-      });
-      if (!validate.ok) {
-        res
-          .status(StatusCodes.BAD_GATEWAY)
-          .json({ error: ERROR_CODES.GATEWAY_UNREACHABLE });
-        return;
-      }
-      const finalDeviceToken = validate.deviceToken ?? issuedDeviceToken;
       const merged: Record<string, unknown> = {
         ...cfg,
         gatewayUrl: overrideConfig.gatewayUrl,
         apiKey: overrideConfig.apiKey,
-        deviceKeypair: serializeKeypair(newKeypair),
-        ...(finalDeviceToken ? { deviceToken: finalDeviceToken } : {}),
+        ...prepared.configPatch,
       };
       cfg = merged;
       await db
@@ -816,14 +311,6 @@ router.post(
       );
     }
 
-    const gatewayUrl = cfg.gatewayUrl as string;
-    const apiKey = cfg.apiKey as string;
-    const keypair = deserializeKeypair(cfg.deviceKeypair as SerializedKeypair);
-    // Replay the previously-issued device token (if any) so the gateway
-    // resolves the existing pair instead of asking the user to approve
-    // again.
-    let deviceToken: string | undefined =
-      typeof cfg.deviceToken === "string" ? cfg.deviceToken : undefined;
     const externalAgentId =
       profile.externalAgentId ??
       buildExternalAgentId(
@@ -864,28 +351,22 @@ router.post(
     // Step: provisioning
     stepStart("provisioning", "Provisioning on gateway");
     let restartStepEmitted = false;
-    const provision = await provisionAgent(
-      {
-        gatewayUrl,
-        apiKey,
-        device: keypair,
-        deviceToken,
-        desiredId: externalAgentId,
-        workspacePath,
+    const provision = await adapter.provision({
+      adapterConfig: cfg,
+      desiredExternalId: externalAgentId,
+      workspacePath,
+      onEvent: (event) => {
+        if (event.kind !== "step") return;
+        if (event.status === "running" && event.step === "gateway_restart") {
+          stepDone("provisioning");
+          stepStart(event.step, event.label ?? "Waiting for gateway restart");
+          restartStepEmitted = true;
+        } else if (event.status === "done" && event.step === "gateway_restart") {
+          stepDone(event.step);
+          stepStart("provisioning", "Verifying provision");
+        }
       },
-      {
-        onStep: (event) => {
-          if (event === "restart_detected") {
-            stepDone("provisioning");
-            stepStart("gateway_restart", "Waiting for gateway restart");
-            restartStepEmitted = true;
-          } else if (event === "restart_verified") {
-            stepDone("gateway_restart");
-            stepStart("provisioning", "Verifying provision");
-          }
-        },
-      },
-    );
+    });
     if (!provision.ok) {
       const currentStep = restartStepEmitted
         ? "gateway_restart"
@@ -897,18 +378,16 @@ router.post(
       return;
     }
     stepDone("provisioning");
-    if (provision.deviceToken) deviceToken = provision.deviceToken;
 
+    const provisionedAdapterConfig: Record<string, unknown> = {
+      ...cfg,
+      ...provision.configPatch,
+    };
     await db
       .update(agentRuntimeProfile)
       .set({
         externalAgentId: provision.externalAgentId,
-        adapterConfig: {
-          ...cfg,
-          ...(deviceToken ? { deviceToken } : {}),
-          openclawAgentId: provision.externalAgentId,
-          workspacePath: provision.workspacePath,
-        },
+        adapterConfig: provisionedAdapterConfig,
         updatedAt: new Date(),
       })
       .where(eq(agentRuntimeProfile.deploymentId, deploymentRecord.id));
@@ -953,10 +432,8 @@ router.post(
       return;
     }
 
-    const seed = await seedWorkspace({
-      gatewayUrl,
-      apiKey,
-      device: keypair,
+    const seed = await adapter.seedWorkspace({
+      adapterConfig: provisionedAdapterConfig,
       externalAgentId: provision.externalAgentId,
       files: rendered.map((f) => ({
         filename: f.filename,
@@ -1146,33 +623,30 @@ router.patch(
       return;
     }
 
-    // Best-effort push the single file to the gateway. Missing creds or
-    // an unprovisioned agent skip the push, return the DB write with a
-    // sync warning.
+    // Best-effort push the single file to the agent runtime. Unprovisioned
+    // agent or missing adapter skips the push and returns the DB write
+    // with a sync warning.
     const profile = await findRuntimeProfile(existing.id);
     const cfg = (profile?.adapterConfig as Record<string, unknown>) ?? {};
-    const gatewayUrl =
-      typeof cfg.gatewayUrl === "string" ? cfg.gatewayUrl : undefined;
-    const apiKey = typeof cfg.apiKey === "string" ? cfg.apiKey : undefined;
-    const deviceKeypair = cfg.deviceKeypair as SerializedKeypair | undefined;
     const externalAgentId = profile?.externalAgentId ?? null;
+    const fileAdapter = profile?.adapterType
+      ? getAdapter(profile.adapterType)
+      : null;
 
-    let pushResult:
-      | Awaited<ReturnType<typeof seedWorkspace>>
-      | null = null;
-    if (gatewayUrl && apiKey && deviceKeypair && externalAgentId) {
+    let pushResult: Awaited<
+      ReturnType<NonNullable<typeof fileAdapter>["seedWorkspace"]>
+    > | null = null;
+    if (fileAdapter && externalAgentId) {
       try {
-        pushResult = await seedWorkspace({
-          gatewayUrl,
-          apiKey,
-          device: deserializeKeypair(deviceKeypair),
+        pushResult = await fileAdapter.seedWorkspace({
+          adapterConfig: cfg,
           externalAgentId,
           files: [{ filename, content: parsed.data.content }],
         });
       } catch (err) {
         log.warn(
           { err, deploymentId: existing.id, filename },
-          "workspace file edit: gateway push threw",
+          "workspace file edit: adapter push threw",
         );
       }
     }
@@ -1249,10 +723,13 @@ router.patch("/:id", requireAuth, async (req: Request, res: Response) => {
     const profile = await findRuntimeProfile(existing.id);
     const existingConfig =
       (profile?.adapterConfig as Record<string, unknown>) ?? {};
+    // Spread the whole incoming config so this works for any adapter
+    // shape — both openclaw and hermes use `{ gatewayUrl, apiKey }`.
+    // Per-adapter validation of the shape against the agent's actual
+    // adapterType lives in the zod schema.
     profilePatch.adapterConfig = {
       ...existingConfig,
-      gatewayUrl: parsed.data.adapterConfig.gatewayUrl,
-      apiKey: parsed.data.adapterConfig.apiKey,
+      ...parsed.data.adapterConfig,
     };
   }
 
@@ -1412,6 +889,90 @@ router.post("/:id/pause", requireAuth, async (req: Request, res: Response) => {
 
 // POST /api/agents/:id/activate — reverse of /pause. Sets status back
 // to "active". Idempotent (calling on an already-active agent is a no-op).
+// POST /api/agents/:id/adapter/rotate-bearer — Hermes-only.
+// Replaces the runtime bearer in adapter_config after a successful
+// probe against the existing gatewayUrl. Lets the user rotate the API
+// key for a deployed Hermes agent without re-doing the deploy flow.
+//
+// OpenClaw's bearer is bound to the paired device identity — rotating
+// it has different lifecycle implications (re-pairing, gateway side
+// state) and goes through `/:id/reprovision` instead. Returns 501 for
+// non-hermes adapters.
+router.post(
+  "/:id/adapter/rotate-bearer",
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const parsed = rotateBearerBody.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(StatusCodes.BAD_REQUEST).json({
+        error: ERROR_CODES.INVALID_BODY,
+        detail: parsed.error.flatten(),
+      });
+      return;
+    }
+    const existing = await findOwnedByUserId({
+      userId: req.user!.userId,
+      deploymentId: req.params.id,
+    });
+    if (!existing) {
+      res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.NOT_FOUND });
+      return;
+    }
+    const profile = await findRuntimeProfile(existing.id);
+    if (!profile) {
+      res
+        .status(StatusCodes.BAD_REQUEST)
+        .json({ error: ERROR_CODES.AGENT_NOT_CONFIGURED });
+      return;
+    }
+    if (profile.adapterType !== "hermes") {
+      res
+        .status(StatusCodes.NOT_IMPLEMENTED)
+        .json({ error: "rotate_bearer_not_supported_for_adapter" });
+      return;
+    }
+    const cfg = (profile.adapterConfig ?? {}) as Record<string, unknown>;
+    if (typeof cfg.gatewayUrl !== "string") {
+      res
+        .status(StatusCodes.BAD_REQUEST)
+        .json({ error: ERROR_CODES.AGENT_NOT_CONFIGURED });
+      return;
+    }
+
+    const adapter = getAdapter("hermes");
+    if (!adapter) {
+      res
+        .status(StatusCodes.INTERNAL_SERVER_ERROR)
+        .json({ error: ERROR_CODES.INTERNAL_ERROR });
+      return;
+    }
+
+    // Probe with the new key BEFORE touching the row — refuse to
+    // overwrite a working bearer with one that can't authenticate.
+    const probe = await adapter.probeConnection({
+      gatewayUrl: cfg.gatewayUrl,
+      apiKey: parsed.data.apiKey,
+    });
+    if (!probe.ok) {
+      res.status(StatusCodes.BAD_GATEWAY).json({
+        error: ERROR_CODES.GATEWAY_UNREACHABLE,
+        reason: probe.error,
+      });
+      return;
+    }
+
+    await db
+      .update(agentRuntimeProfile)
+      .set({
+        adapterConfig: { ...cfg, apiKey: parsed.data.apiKey },
+        updatedAt: new Date(),
+      })
+      .where(eq(agentRuntimeProfile.deploymentId, existing.id));
+
+    res.json({ ok: true, latencyMs: probe.latencyMs });
+  },
+);
+
 router.post("/:id/activate", requireAuth, async (req: Request, res: Response) => {
   const existing = await findOwnedByUserId({
     userId: req.user!.userId,
@@ -1449,35 +1010,23 @@ router.delete("/:id", requireAuth, async (req: Request, res: Response) => {
 
   const profile = await findRuntimeProfile(existing.id);
   const config = (profile?.adapterConfig ?? {}) as Record<string, unknown>;
-  const gatewayUrl =
-    typeof config.gatewayUrl === "string" ? config.gatewayUrl : null;
-  const apiKey = typeof config.apiKey === "string" ? config.apiKey : null;
-  const deviceKeypair = config.deviceKeypair;
   const externalAgentId = profile?.externalAgentId ?? null;
+  const deleteAdapter = profile?.adapterType
+    ? getAdapter(profile.adapterType)
+    : null;
 
-  // Best-effort gateway cleanup. Only attempt when we have everything we
-  // need to talk to OpenClaw; legacy rows (pre-1:1 mapping) won't have
-  // an externalAgentId and their config is shared with siblings, so
-  // deprovision would delete nothing useful anyway.
-  if (gatewayUrl && apiKey && deviceKeypair && externalAgentId) {
+  // Best-effort runtime-side cleanup. Only attempt when we have an
+  // externalAgentId and a registered adapter; legacy rows (pre-1:1
+  // mapping) won't have an externalAgentId and their config is shared
+  // with siblings, so deprovision would delete nothing useful anyway.
+  // Each adapter decides what "deprovision" means: OpenClaw drops the
+  // gateway agent + workspace; Hermes is a no-op (no per-agent state).
+  if (deleteAdapter && externalAgentId) {
     try {
-      const device = deserializeKeypair(deviceKeypair as SerializedKeypair);
-      const result = await deprovisionAgent({
-        gatewayUrl,
-        apiKey,
-        device,
+      await deleteAdapter.deprovision({
+        adapterConfig: config,
         externalAgentId,
       });
-      if (!result.ok) {
-        log.warn(
-          {
-            deploymentId: existing.id,
-            externalAgentId,
-            reason: result.reason ?? result.error,
-          },
-          "deprovision failed",
-        );
-      }
     } catch (err) {
       log.warn({ err, deploymentId: existing.id }, "deprovision threw");
     }

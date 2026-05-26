@@ -29,7 +29,7 @@ import {
   syncTaskOnTraceStart,
   syncTaskOnTraceSucceeded,
 } from "./task-sync";
-import { executeRoutineDelegations } from "./delegation";
+import { executeWorkerDelegations } from "./delegation";
 
 const TICK_INTERVAL_MS = 2_000;
 const DEFAULT_CONCURRENCY = 4;
@@ -520,11 +520,15 @@ async function executeClaim(trace: ClaimedTrace): Promise<void> {
     typeof wp.routineTitle === "string" ? wp.routineTitle : undefined;
   const routineMandate =
     typeof wp.routineMandate === "string" ? wp.routineMandate : undefined;
-  // A routine-woken orchestrator gets its team roster inline so it has
-  // valid `targetAgentId` values for `[[OCCA:DELEGATE]]`.
-  const subordinates = routineTitle
-    ? await loadSubordinates(trace.companyId, agent.deploymentIndex)
-    : [];
+  // The agent gets its team roster inline so it has valid `targetAgentId`
+  // values for `[[OCCA:DELEGATE]]`. Loaded for every wake, not just
+  // routine ones, because continuation traces can also legitimately emit
+  // DELEGATE and the worker fallback handler (executeWorkerDelegations
+  // below) needs the same subordinate list to validate against.
+  const subordinates = await loadSubordinates(
+    trace.companyId,
+    agent.deploymentIndex,
+  );
   // Recent coverage — lets a routine-woken orchestrator vary the slate.
   const recentCoverage = routineTitle
     ? await loadRecentCoverage(trace.companyId)
@@ -671,21 +675,24 @@ async function executeClaim(trace: ClaimedTrace): Promise<void> {
     });
   }
 
-  // Routine-wake delegation: a routine carries no task, so the server's
-  // task-bound DELEGATE handler never runs. Execute the orchestrator's
-  // [[OCCA:DELEGATE]] blocks here so the work lands as real OCCA tasks.
-  if (status === "succeeded" && routineTitle) {
+  // Worker-path DELEGATE handling. Any trace dispatched by the worker
+  // (routine wake or continuation) bypasses the server's task-bound
+  // DELEGATE handler — execute the agent's [[OCCA:DELEGATE]] blocks here
+  // so the work lands as real OCCA child tasks. The handler emits its
+  // own audit rows with the real outcome so the timeline is accurate.
+  if (status === "succeeded") {
     const reply =
       typeof resultJson?.text === "string" ? resultJson.text : "";
     if (reply.trim()) {
-      await executeRoutineDelegations(reply, {
+      await executeWorkerDelegations(reply, {
         companyId: trace.companyId,
         agentId: trace.agentId,
         parentTaskId: trace.taskId ?? null,
         subordinates,
+        traceId: trace.id,
       }).catch((err) => {
         console.error(
-          "[worker:dispatcher] routine delegation failed:",
+          "[worker:dispatcher] worker delegation failed:",
           err instanceof Error ? err.message : err,
         );
       });

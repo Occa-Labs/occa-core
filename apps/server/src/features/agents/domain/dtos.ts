@@ -20,6 +20,7 @@ import type {
   AgentSkillSyncDTO,
   AgentSkillSyncStatus,
   LivenessState,
+  SkillUsageEntry,
   TraceDTO,
   TraceStatus,
   TraceUsage,
@@ -67,6 +68,7 @@ export function toTraceDTO(row: typeof traces.$inferSelect): TraceDTO {
     usage: (row.usageJson as TraceUsage | null) ?? null,
     resultJson: (row.resultJson as Record<string, unknown> | null) ?? null,
     sessionIdAfter: row.sessionIdAfter ?? null,
+    skillsUsed: (row.skillsUsed as SkillUsageEntry[]) ?? [],
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };

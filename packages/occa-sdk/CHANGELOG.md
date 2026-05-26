@@ -5,6 +5,61 @@ All notable changes to `occa-sdk` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-05-26
+
+Phase 1 close-out coverage. SDK now exposes the full Treasury operations
+lifecycle, the autonomous routine payout path, the over-threshold
+privileged payout path, and the daily anchor commit used by the Registry
+audit trail. `SetPolicy` gains the second-signer / threshold fields that
+back the privileged disbursement class.
+
+No breaking changes — all additions. Existing `buildSetPolicyInstruction`
+callers keep working: the new `secondarySigner` and `privilegedThreshold`
+params default to "no change" when omitted.
+
+### Added
+
+#### Treasury — operations lifecycle
+Operations accounts hold the per-company signer-capability metadata
+(Disbursement vs Anchor). Both kinds share the same lifecycle builders:
+
+- `buildRegisterCompanyOperationsInstruction(...)`
+- `buildUpdateOperationsCapabilityInstruction(...)`
+- `buildRevokeOperationsInstruction(...)`
+- `buildCloseOperationsInstruction(...)`
+- `OPERATIONS_KIND` enum (`Disbursement` | `Anchor`) + `OperationsKind` type
+- `deriveOperationsPda(companyPda, kind)`
+
+#### Treasury — payouts
+- `buildDisburseRoutineInstruction(...)` — flagship autonomous payout
+  signed by the registered Disbursement Wallet; settles within the
+  per-month routine budget set by `SetPolicy`
+- `buildDisbursePrivilegedInstruction(...)` — over-threshold disbursement
+  requiring controlling authority + Disbursement Wallet co-signature
+
+#### Treasury — protocol fees
+- `buildInitProtocolFeeAccountInstruction(...)` — one-time singleton
+  initializer for the protocol fee collection PDA
+
+#### Registry — daily anchor
+- `buildCommitDailyAnchorInstruction(...)` — commit a per-deployment
+  per-UTC-day Merkle root of canonical trace bytes
+- `deriveDailyAnchorPda(deploymentPda, dayIndex)`
+- `DailyAnchorAccount` entry in `ACCOUNT_DISCRIMINATOR`
+
+### Changed
+
+- **`buildSetPolicyInstruction`** params extended with optional
+  `secondarySigner` (three-valued: `undefined` = no change, `null` =
+  clear, `PublicKey` = set), `privilegedThresholdLamports` (`bigint`),
+  and `privilegedThresholdPerToken` (`AssetBudget[]`). Existing calls
+  compile and behave identically — the previous hard-coded `None` is
+  now the default when these are omitted.
+- **Treasury IDL** synced to the redeployed program covering the new
+  operations + privileged disbursement instructions and accounts.
+- **`devnet-smoke`** script updated for the prior
+  `set_operating_wallet` → `set_receiving_address` rename.
+
 ## [0.3.0] - 2026-05-16
 
 Treasury program support. The SDK now covers the **Treasury program** in
@@ -176,6 +231,7 @@ Initial release. Provided PDA helpers, instruction builders, and types for the O
 - Initial IDL bundle for Registry program v1
 - Devnet smoke script
 
+[0.4.0]: https://github.com/Occa-Labs/occa-core/compare/occa-sdk@0.3.0...occa-sdk@0.4.0
 [0.3.0]: https://github.com/Occa-Labs/occa-core/compare/occa-sdk@0.2.1...occa-sdk@0.3.0
 [0.2.1]: https://github.com/Occa-Labs/occa-core/compare/occa-sdk@0.2.0...occa-sdk@0.2.1
 [0.2.0]: https://github.com/Occa-Labs/occa-core/compare/occa-sdk@0.1.0...occa-sdk@0.2.0

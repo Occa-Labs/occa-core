@@ -1,0 +1,1 @@
+ALTER TABLE "traces" ADD COLUMN "skills_used" jsonb DEFAULT '[]'::jsonb NOT NULL;

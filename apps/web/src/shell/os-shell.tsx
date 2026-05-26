@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { UseMeResult } from "@/hooks/use-me";
 import {
+  Anchor,
   Brain,
   Building2,
   CalendarClock,
@@ -26,6 +27,7 @@ import { TaskManager } from "@/features/tasks/components/task-manager";
 import { AgentsWindow } from "@/features/agents/components/agents-window";
 import { ApprovalsWindow } from "@/features/approvals/components/approvals-window";
 import { CompanyWindow } from "@/features/companies/components/company-window";
+import { ChainWindow } from "@/features/chain/components/chain-window";
 import { OrgChartWindow } from "@/features/agents/components/org-chart-window";
 import { WorkflowsWindow } from "@/features/workflows/components/workflows-window";
 import { RoutinesWindow } from "@/features/routines/components/routines-window";
@@ -86,6 +88,10 @@ interface OsShellProps {
   /** Called when the Approvals window is closed so the parent can drop the
    *  pending-id state. */
   onClearPendingApproval?: () => void;
+  /** When set, OsShell auto-opens the Chain window pre-selecting this
+   *  section. Driven by treasury-readiness notification clicks. */
+  pendingChainSection?: string | null;
+  onClearPendingChain?: () => void;
 }
 
 // OS chrome: dock + windows. The first-run flow (onboarding wizard,
@@ -107,6 +113,8 @@ export function OsShell({
   onToggleWalkRecord,
   pendingApprovalId = null,
   onClearPendingApproval,
+  pendingChainSection = null,
+  onClearPendingChain,
 }: OsShellProps) {
   const { status: authStatus } = useAuth();
   const authenticated = authStatus === "authenticated";
@@ -117,6 +125,7 @@ export function OsShell({
     | "approvals"
     | "chats"
     | "company"
+    | "chain"
     | "company-brain"
     | "documents"
     | "skills"
@@ -148,6 +157,11 @@ export function OsShell({
     if (pendingApprovalId) setActiveWindow("approvals");
   }, [pendingApprovalId]);
 
+  // Deep-link to the Chain window via notification (e.g. treasury readiness).
+  useEffect(() => {
+    if (pendingChainSection) setActiveWindow("chain");
+  }, [pendingChainSection]);
+
   // Closing the AgentsWindow always clears upstream focus so the camera
   // can return to idle. Local agent-focus (set by OrgChart click) also
   // clears so a subsequent theater click isn't shadowed.
@@ -161,6 +175,11 @@ export function OsShell({
     setActiveWindow(null);
     onClearPendingApproval?.();
   }, [onClearPendingApproval]);
+
+  const closeChainWindow = useCallback(() => {
+    setActiveWindow(null);
+    onClearPendingChain?.();
+  }, [onClearPendingChain]);
 
   if (!authenticated || !me.company) return null;
 
@@ -183,6 +202,9 @@ export function OsShell({
       // Toggling ApprovalsWindow off drops any pending deep-link target so
       // the next open starts on the natural first-pending row.
       if (id === "approvals" && next === null) onClearPendingApproval?.();
+      // Same for Chain — close drops the pending section so a later
+      // manual open lands on the default tab.
+      if (id === "chain" && next === null) onClearPendingChain?.();
       return next;
     });
   };
@@ -197,6 +219,12 @@ export function OsShell({
             label: "Company",
             active: activeWindow === "company",
             onClick: () => toggle("company"),
+          },
+          {
+            icon: <Anchor className="size-5" />,
+            label: "Chain",
+            active: activeWindow === "chain",
+            onClick: () => toggle("chain"),
           },
           {
             icon: <CheckSquare className="size-5" />,
@@ -332,6 +360,23 @@ export function OsShell({
       )}
       {activeWindow === "company" && (
         <CompanyWindow companyId={me.company.id} onClose={close} />
+      )}
+      {activeWindow === "chain" && (
+        <ChainWindow
+          company={me.company}
+          agents={me.agents}
+          onReloadMe={me.reload}
+          onClose={closeChainWindow}
+          initialSection={
+            (pendingChainSection ?? undefined) as
+              | "registry"
+              | "treasury"
+              | "anchors"
+              | "transactions"
+              | "agents"
+              | undefined
+          }
+        />
       )}
       {activeWindow === "company-brain" && <BrainWindow onClose={close} />}
       {activeWindow === "documents" && <DocumentsWindow onClose={close} />}

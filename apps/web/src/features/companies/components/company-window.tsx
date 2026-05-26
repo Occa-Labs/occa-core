@@ -3,13 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
-  Anchor,
   BarChart3,
   Building2,
-  Check,
-  Coins,
-  Copy,
-  ExternalLink,
   Globe,
   Mail,
   Mic,
@@ -29,15 +24,6 @@ import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useCompany } from "@/features/companies/api/use-company";
-import { TreasuryPane } from "./treasury-pane";
-import {
-  CLUSTER_LABEL,
-  explorerAddressUrl,
-  explorerTxUrl,
-  shortenAddress,
-  solscanAddressUrl,
-  solscanTxUrl,
-} from "@/lib/solana-explorer";
 import type {
   CompanyDTO,
   UpdateCompanyRequest,
@@ -61,8 +47,6 @@ type SectionId =
   | "contact"
   | "presence"
   | "crypto"
-  | "chain"
-  | "treasury"
   | "overview";
 
 const SECTIONS: Array<{
@@ -72,8 +56,6 @@ const SECTIONS: Array<{
   hint: string;
 }> = [
   { id: "identity", label: "Identity", icon: Building2, hint: "Name, tagline, niche" },
-  { id: "chain", label: "On-chain", icon: Anchor, hint: "Registry, PDA, signatures" },
-  { id: "treasury", label: "Treasury", icon: Coins, hint: "Balance, budget, fees" },
   { id: "voice", label: "Voice", icon: Mic, hint: "Editorial coverage + tone" },
   { id: "mission", label: "Mission", icon: Target, hint: "Mission, vision, audience" },
   { id: "output", label: "Output", icon: Sparkles, hint: "Offering + services" },
@@ -254,11 +236,7 @@ export function CompanyWindow({
   const isPaused = !!company?.pausedAt;
   const isReadOnly = isPaused;
   const isEditing = editingSection === active && !isReadOnly;
-  const canEdit =
-    !isReadOnly &&
-    active !== "overview" &&
-    active !== "chain" &&
-    active !== "treasury";
+  const canEdit = !isReadOnly && active !== "overview";
   const paneEditProps = {
     canEdit,
     editing: isEditing,
@@ -358,10 +336,7 @@ export function CompanyWindow({
 
             {company && form && (
               <>
-                {isPaused &&
-                  active !== "overview" &&
-                  active !== "chain" &&
-                  active !== "treasury" && (
+                {isPaused && active !== "overview" && (
                   <Alert variant="warning" className="mb-4">
                     <p className="font-semibold text-amber-300">
                       Read-only — company is paused
@@ -686,17 +661,6 @@ export function CompanyWindow({
                         placeholder="Solana, Ethereum, Base…"
                       />
                     </Field>
-                  </Pane>
-                )}
-
-                {active === "chain" && <ChainPane company={company} />}
-
-                {active === "treasury" && (
-                  <Pane
-                    title="Treasury"
-                    desc="On-chain company funds, monthly disbursement budget, and Agent Operating Fee."
-                  >
-                    <TreasuryPane company={company} />
                   </Pane>
                 )}
 
@@ -1222,153 +1186,3 @@ function Stat({
   );
 }
 
-// ── On-chain pane ────────────────────────────────────────────────────────────
-
-function ChainPane({ company }: { company: CompanyDTO }) {
-  const anchored = !!company.companyPda;
-
-  return (
-    <Pane
-      title="On-chain Registry"
-      desc="The Solana account that proves ownership of this company. Chain is the source of truth — DB only caches it."
-    >
-      {anchored ? (
-        <Card variant="recessed" padding="sm">
-          <div className="flex items-center gap-2 text-[12px] text-emerald-300">
-            <Anchor className="size-3.5" />
-            <span className="font-medium">Anchored on {CLUSTER_LABEL}</span>
-          </div>
-        </Card>
-      ) : (
-        <Alert variant="warning">
-          <p className="font-semibold text-amber-300">Not anchored yet</p>
-          <p className="mt-1 text-[11px] text-amber-200/70">
-            This company exists in the local database but hasn't been written
-            to Solana. Anchor it to make ownership portable across devices.
-          </p>
-        </Alert>
-      )}
-
-      <ChainRow
-        label="Address (PDA)"
-        value={company.companyPda}
-        kind="address"
-      />
-      <ChainRow
-        label="Owner wallet"
-        value={company.ownerWallet}
-        kind="address"
-      />
-      <ChainRow
-        label="Create transaction"
-        value={company.chainTxSignature}
-        kind="tx"
-      />
-      <ChainRow
-        label="Nonce"
-        value={
-          company.chainNonce !== null && company.chainNonce !== undefined
-            ? String(company.chainNonce)
-            : null
-        }
-        kind="raw"
-        hint="PDA derivation counter"
-      />
-    </Pane>
-  );
-}
-
-function ChainRow({
-  label,
-  value,
-  kind,
-  hint,
-}: {
-  label: string;
-  value: string | null;
-  kind: "address" | "tx" | "raw";
-  hint?: string;
-}) {
-  return (
-    <Field label={label} hint={hint}>
-      {value === null ? (
-        <FieldView value="" />
-      ) : (
-        <div className="flex items-center gap-2 rounded-lg bg-white/5 border border-white/10 px-3 py-1.5">
-          <code className="flex-1 min-w-0 truncate text-[12px] font-mono text-white/85">
-            {kind === "raw" ? value : shortenAddress(value, 6, 6)}
-          </code>
-          <CopyButton value={value} />
-          {kind !== "raw" && (
-            <>
-              <ExplorerLink
-                href={
-                  kind === "address"
-                    ? solscanAddressUrl(value)
-                    : solscanTxUrl(value)
-                }
-                label="Solscan"
-              />
-              <ExplorerLink
-                href={
-                  kind === "address"
-                    ? explorerAddressUrl(value)
-                    : explorerTxUrl(value)
-                }
-                label="Explorer"
-              />
-            </>
-          )}
-        </div>
-      )}
-    </Field>
-  );
-}
-
-function CopyButton({ value }: { value: string }) {
-  const [copied, setCopied] = useState(false);
-  useEffect(() => {
-    if (!copied) return;
-    const t = window.setTimeout(() => setCopied(false), 1200);
-    return () => window.clearTimeout(t);
-  }, [copied]);
-  const onClick = async () => {
-    try {
-      await navigator.clipboard.writeText(value);
-      setCopied(true);
-    } catch {
-      // Clipboard API blocked (insecure context, etc.) — silent failure
-      // is OK; the value is still visible/selectable in the row.
-    }
-  };
-  return (
-    <button
-      type="button"
-      onClick={() => void onClick()}
-      className="shrink-0 rounded-md p-1 text-white/45 hover:bg-white/10 hover:text-white/80 transition-colors"
-      aria-label={copied ? "Copied" : "Copy"}
-      title={copied ? "Copied" : "Copy"}
-    >
-      {copied ? (
-        <Check className="size-3 text-emerald-300" />
-      ) : (
-        <Copy className="size-3" />
-      )}
-    </button>
-  );
-}
-
-function ExplorerLink({ href, label }: { href: string; label: string }) {
-  return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noreferrer noopener"
-      className="shrink-0 inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] text-white/55 hover:bg-white/10 hover:text-white/85 transition-colors"
-      title={`Open in ${label}`}
-    >
-      <ExternalLink className="size-2.5" />
-      {label}
-    </a>
-  );
-}

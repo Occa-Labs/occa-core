@@ -26,6 +26,7 @@ import { eq } from "drizzle-orm";
 import { deployments, traces } from "@occa/shared/schema";
 import { extractActionBlocks, stripOccaMarkers } from "@occa/shared/markers";
 import { getTier } from "@occa/shared/role-catalog";
+import { adapterErrorMessage } from "../../../lib/adapter-error-messages";
 import { childLogger } from "../../../lib/logger";
 import { db } from "../../../infra/database/client";
 import { getAdapter } from "../../../lib/adapter-registry";
@@ -181,7 +182,7 @@ export async function sendUserTurn(
   // Detect "first turn of this session" BEFORE inserting the user msg —
   // if the thread is empty right now, this is a fresh session (either
   // brand-new or post-clear). First turn gets the heavy preamble; later
-  // turns ride on the gateway's preserved per-sessionKey context and
+  // turns ride on the adapter's preserved per-sessionKey context and
   // send only the raw user content. Saves ~500 tokens per turn after
   // the first.
   const isFirstTurn =
@@ -190,7 +191,7 @@ export async function sendUserTurn(
       deploymentId: ceo.id,
     })) === null;
 
-  const threadId = await resolveUserCeoThreadId({
+  const { id: threadId, resetGeneration } = await resolveUserCeoThreadId({
     companyId: args.companyId,
     ceoDeploymentId: ceo.id,
   });
@@ -260,7 +261,11 @@ export async function sendUserTurn(
   // interactive session and any background synthesis reports land in the
   // SAME conversation memory. Reset happens via `deleteAgentSession` on
   // thread clear, not via a key suffix. See `lib/session-keys`.
-  const sessionKey = threadSessionKey(profile.externalAgentId, threadId);
+  const sessionKey = threadSessionKey(
+    profile.externalAgentId,
+    threadId,
+    resetGeneration,
+  );
   const result = await adapter.sendPrompt({
     adapterConfig: cfg,
     externalAgentId: profile.externalAgentId,
@@ -290,7 +295,7 @@ export async function sendUserTurn(
       companyId: args.companyId,
       deploymentId: ceo.id,
       role: "system",
-      content: `CEO is unreachable right now (${result.error}). Try again in a moment.`,
+      content: adapterErrorMessage({ code: result.error, subject: "Your CEO" }),
       createdTaskId: null,
       traceId,
     });

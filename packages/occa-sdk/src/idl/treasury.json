@@ -1,0 +1,1627 @@
+{
+  "address": "occaxyVLnurdjedWCBPrvDCCto8wGYadtTZ3nAmcVzh",
+  "metadata": {
+    "name": "treasury",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "OCCA Treasury — TreasuryAccount, PolicyAccount, OperationsAccount, ProtocolFeeAccount on Solana"
+  },
+  "instructions": [
+    {
+      "name": "close_operations",
+      "docs": [
+        "Close a revoked OperationsAccount and refund rent to the controlling",
+        "authority. Must be revoked first (terminal-state precondition makes",
+        "the rotation flow explicit + auditable)."
+      ],
+      "discriminator": [
+        2,
+        52,
+        136,
+        225,
+        80,
+        230,
+        222,
+        120
+      ],
+      "accounts": [
+        {
+          "name": "company",
+          "docs": [
+            "`controlling_authority` signer check happens in handler."
+          ]
+        },
+        {
+          "name": "controlling_authority",
+          "docs": [
+            "Receives rent refund."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "operations",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "disburse_discretionary",
+      "docs": [
+        "Discretionary-class disbursement to an agent's receiving address.",
+        "Signed by controlling authority (= company.owner). Used for ad-hoc",
+        "agent payouts outside of recurring routine flow.",
+        "",
+        "Same validation as routine except: no operations account, no rate",
+        "limit, no whitelist check. Budget check uses `discretionary_*`",
+        "counters. Fee always applies (intra-company agent destination)."
+      ],
+      "discriminator": [
+        102,
+        176,
+        14,
+        127,
+        210,
+        4,
+        96,
+        175
+      ],
+      "accounts": [
+        {
+          "name": "company"
+        },
+        {
+          "name": "controlling_authority",
+          "signer": true
+        },
+        {
+          "name": "treasury",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "company"
+              }
+            ]
+          }
+        },
+        {
+          "name": "policy",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  108,
+                  105,
+                  99,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "company"
+              }
+            ]
+          }
+        },
+        {
+          "name": "deployment"
+        },
+        {
+          "name": "destination",
+          "writable": true
+        },
+        {
+          "name": "protocol_fee_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  95,
+                  102,
+                  101,
+                  101,
+                  115
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "mint",
+          "type": "pubkey"
+        },
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "disburse_privileged",
+      "docs": [
+        "Privileged-class disbursement. Destination unrestricted: may be an",
+        "agent receiving address (fee applies) or any external pubkey (no fee).",
+        "Signed by controlling authority. Above-threshold amounts additionally",
+        "require the secondary signer registered in policy.",
+        "",
+        "`is_agent_destination`: if `true`, caller MUST pass the agent's",
+        "`Deployment` as `deployment` and the destination must equal",
+        "`deployment.receiving_address`. Fee deducted per §11.1.",
+        "If `false`, `deployment` should be omitted; no fee applies.",
+        "",
+        "No budget check — privileged class is unbudgeted by design (§3.2 has",
+        "no privileged_budget field)."
+      ],
+      "discriminator": [
+        173,
+        78,
+        248,
+        158,
+        76,
+        46,
+        88,
+        167
+      ],
+      "accounts": [
+        {
+          "name": "company"
+        },
+        {
+          "name": "controlling_authority",
+          "signer": true
+        },
+        {
+          "name": "secondary_signer",
+          "docs": [
+            "Required only when `amount > policy.privileged_threshold_lamports`",
+            "AND a `secondary_signer` is registered. Pass `None` for below-threshold",
+            "disbursements. Pubkey verified against `policy.secondary_signer` in handler."
+          ],
+          "signer": true,
+          "optional": true
+        },
+        {
+          "name": "treasury",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "company"
+              }
+            ]
+          }
+        },
+        {
+          "name": "policy",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  108,
+                  105,
+                  99,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "company"
+              }
+            ]
+          }
+        },
+        {
+          "name": "deployment",
+          "docs": [
+            "Pass `Some(deployment_account)` when `is_agent_destination = true`.",
+            "Pass `None` for external destinations."
+          ],
+          "optional": true
+        },
+        {
+          "name": "destination",
+          "docs": [
+            "`deployment.receiving_address` only when `is_agent_destination = true`."
+          ],
+          "writable": true
+        },
+        {
+          "name": "protocol_fee_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  95,
+                  102,
+                  101,
+                  101,
+                  115
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "mint",
+          "type": "pubkey"
+        },
+        {
+          "name": "amount",
+          "type": "u64"
+        },
+        {
+          "name": "is_agent_destination",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "disburse_routine",
+      "docs": [
+        "Routine-class disbursement to an agent's receiving address.",
+        "Signed by `OperationsAccount[Disbursement].signer` (operator-held key,",
+        "OCCA never holds the privkey). Per design §2, the FE constructs a",
+        "batched tx of multiple `disburse_routine` ixs (one per agent) and",
+        "the operator signs it manually each pay period.",
+        "",
+        "Validation pipeline (§4.4 row 1 + §7):",
+        "1. Mint is in `treasury.accepted_assets`.",
+        "2. Phase 1: mint == `SOL_PSEUDO_MINT` (SPL deferred per §2).",
+        "3. Destination matches `Deployment.receiving_address` and the",
+        "Deployment belongs to the same company.",
+        "4. OperationsAccount is not revoked, not expired.",
+        "5. This ix's discriminator is in `ops.action_whitelist`.",
+        "6. Lazy-rollover both `policy.current_period_anchor` and",
+        "`ops.current_period_anchor` to current month start.",
+        "7. `ops.signatures_this_period < ops.rate_limit_per_period`.",
+        "8. `routine_budget_per_month[mint] - routine_spent_this_period[mint] >= amount + fee`.",
+        "",
+        "Fee: always applies (intra-company agent destination per §11.1).",
+        "`fee = amount * agent_operating_fee_bps / 10_000`.",
+        "`gross = amount + fee` debited from treasury; `amount` to destination,",
+        "`fee` to ProtocolFeeAccount."
+      ],
+      "discriminator": [
+        45,
+        152,
+        225,
+        130,
+        133,
+        73,
+        62,
+        202
+      ],
+      "accounts": [
+        {
+          "name": "company"
+        },
+        {
+          "name": "treasury",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "company"
+              }
+            ]
+          }
+        },
+        {
+          "name": "policy",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  108,
+                  105,
+                  99,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "company"
+              }
+            ]
+          }
+        },
+        {
+          "name": "operations",
+          "writable": true
+        },
+        {
+          "name": "operations_signer",
+          "docs": [
+            "Disbursement Wallet — operator-held only. Pubkey verified via the",
+            "`operations.signer == operations_signer.key()` constraint above."
+          ],
+          "signer": true
+        },
+        {
+          "name": "deployment",
+          "docs": [
+            "Registry-owned Deployment whose `receiving_address` must equal",
+            "`destination.key()`. Field decoding done in handler."
+          ]
+        },
+        {
+          "name": "destination",
+          "docs": [
+            "Net amount lands here. Marked `mut` so its lamports balance can be",
+            "updated by direct manipulation (treasury PDA is owned by this program,",
+            "not System, so we can't use SystemProgram::transfer)."
+          ],
+          "writable": true
+        },
+        {
+          "name": "protocol_fee_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  95,
+                  102,
+                  101,
+                  101,
+                  115
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "mint",
+          "type": "pubkey"
+        },
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "init_protocol_fee_account",
+      "docs": [
+        "One-time singleton init for the protocol-wide fee accumulator. Called",
+        "once at program deployment by the upgrade authority. The `governance`",
+        "pubkey passed in is the long-lived withdrawal authority (e.g. a",
+        "multisig / DAO key) — it may differ from the deployer's upgrade key.",
+        "",
+        "Seeds: `[\"protocol_fees\"]` — singleton.",
+        "",
+        "Authorization: signer must equal the program's upgrade authority,",
+        "verified by reading the program's ProgramData PDA",
+        "(`upgrade_authority_address`). Prevents anyone from calling this ix",
+        "and pinning their own governance key on a fresh deploy."
+      ],
+      "discriminator": [
+        214,
+        27,
+        184,
+        174,
+        155,
+        79,
+        141,
+        114
+      ],
+      "accounts": [
+        {
+          "name": "protocol_fee_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  95,
+                  102,
+                  101,
+                  101,
+                  115
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "docs": [
+            "Upgrade authority of this program. Pays rent + signs."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "program",
+          "docs": [
+            "This program's executable account — used to derive ProgramData PDA."
+          ],
+          "address": "occaxyVLnurdjedWCBPrvDCCto8wGYadtTZ3nAmcVzh"
+        },
+        {
+          "name": "program_data",
+          "docs": [
+            "ProgramData PDA — verifies `authority` is the actual upgrade authority."
+          ]
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "governance",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "init_treasury",
+      "docs": [
+        "Atomically create the TreasuryAccount + PolicyAccount PDA pair bound",
+        "to a CompanyAccount. Per design doc §6, both accounts are initialized",
+        "together so a company never exists in a state where treasury is set",
+        "but policy is not (or vice versa).",
+        "",
+        "Seeds:",
+        "• treasury: `[\"treasury\", company_pda]`",
+        "• policy:   `[\"policy\",   company_pda]`",
+        "",
+        "Phase 1 defaults (per §2 + §3.2):",
+        "• treasury.accepted_assets = `[SOL_PSEUDO_MINT]` — SPL mints added",
+        "later via Privileged-class `set_policy`.",
+        "• policy budgets = empty (nothing disbursable until operator calls",
+        "`set_policy`).",
+        "• policy.privileged_threshold_lamports = `u64::MAX` — secondary",
+        "signer never required by default.",
+        "• policy.agent_operating_fee_bps = `DEFAULT_AGENT_OPERATING_FEE_BPS`",
+        "(300 bps = 3%).",
+        "• policy.current_period_anchor = 0 — lazy-initialized on first",
+        "disbursement.",
+        "",
+        "Authorization model (M5): canonical invocation is via CPI from",
+        "`registry::create_company`. Direct calls remain technically allowed",
+        "— there is no controlling-authority check here because Anchor does",
+        "not flush `Account<T>` mutations to the underlying data buffer until",
+        "handler exit, so reading `company.owner` mid-CPI returns stale bytes.",
+        "The omitted check is *safe* because:",
+        "1. Defaults written by this ix are identical regardless of caller.",
+        "2. PDA seeds pin treasury+policy to the company; re-init is impossible.",
+        "3. All subsequent operations (`set_policy`, `disburse_*`,",
+        "`register_*`) verify controlling_authority against `company.owner`.",
+        "The worst an attacker can do is burn rent (~0.005 SOL) to pre-init a",
+        "stranger's treasury with the same defaults the legitimate owner would",
+        "have gotten anyway."
+      ],
+      "discriminator": [
+        105,
+        152,
+        173,
+        51,
+        158,
+        151,
+        49,
+        14
+      ],
+      "accounts": [
+        {
+          "name": "company",
+          "docs": [
+            "CompanyAccount this treasury+policy bind to. Program-owner match",
+            "enforced — must be a real Registry-owned account, not a forgery."
+          ]
+        },
+        {
+          "name": "treasury",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "company"
+              }
+            ]
+          }
+        },
+        {
+          "name": "policy",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  108,
+                  105,
+                  99,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "company"
+              }
+            ]
+          }
+        },
+        {
+          "name": "payer",
+          "docs": [
+            "Pays rent for both PDAs. Direct call: operator hot wallet. CPI from",
+            "`registry::create_company`: the same `payer` account from registry's",
+            "outer ix is forwarded through."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "register_company_operations",
+      "docs": [
+        "Register a company-scoped operations key (Disbursement | Anchor).",
+        "Privileged class — signed by controlling authority (= company.owner).",
+        "",
+        "Seeds: `[\"operations\", company_pda, &[kind.as_byte()]]`.",
+        "Up to 2 per company: one Disbursement, one Anchor (§3.3).",
+        "",
+        "Phase 1 scope: company-scoped only. `register_agent_operations` is",
+        "deferred to Phase 2+ per design §2 — per-agent operations keys are",
+        "not needed until marketplace settlement.",
+        "",
+        "`action_whitelist`: 8-byte Anchor instruction discriminators allowed",
+        "to be signed by this key. Caller is responsible for computing them",
+        "off-chain (e.g. `sha256(\"global:disburse_routine\")[0..8]`). Expected",
+        "values per design §3.3:",
+        "• Disbursement: `[disburse_routine]`",
+        "• Anchor:       `[commit_daily_anchor]` (lives in Registry program)",
+        "",
+        "`expiry_unix`: `0` for no expiry, otherwise must be in the future.",
+        "`rate_limit_per_period`: max signatures per calendar month (lazily",
+        "rolled over inside the ix being signed, in M4+)."
+      ],
+      "discriminator": [
+        212,
+        173,
+        142,
+        23,
+        28,
+        221,
+        55,
+        99
+      ],
+      "accounts": [
+        {
+          "name": "company",
+          "docs": [
+            "`controlling_authority` signer check happens in handler."
+          ]
+        },
+        {
+          "name": "controlling_authority",
+          "docs": [
+            "Controlling Authority — must equal `CompanyAccount.owner`."
+          ],
+          "signer": true
+        },
+        {
+          "name": "operations",
+          "writable": true
+        },
+        {
+          "name": "payer",
+          "docs": [
+            "Pays rent. Typically the operator hot wallet."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "kind",
+          "type": {
+            "defined": {
+              "name": "OperationsKind"
+            }
+          }
+        },
+        {
+          "name": "signer",
+          "type": "pubkey"
+        },
+        {
+          "name": "action_whitelist",
+          "type": {
+            "vec": {
+              "array": [
+                "u8",
+                8
+              ]
+            }
+          }
+        },
+        {
+          "name": "rate_limit_per_period",
+          "type": "u32"
+        },
+        {
+          "name": "expiry_unix",
+          "type": "i64"
+        }
+      ]
+    },
+    {
+      "name": "revoke_operations",
+      "docs": [
+        "Mark an OperationsAccount revoked. Terminal flag — once set, no",
+        "further signatures via this account are accepted (M4+ disburse",
+        "handlers reject `ops.revoked == true`). Privileged class.",
+        "",
+        "Rotation flow: `revoke_operations` → `close_operations` (refunds",
+        "rent) → `register_company_operations` with the new signer pubkey."
+      ],
+      "discriminator": [
+        141,
+        196,
+        241,
+        103,
+        182,
+        146,
+        117,
+        183
+      ],
+      "accounts": [
+        {
+          "name": "company",
+          "docs": [
+            "`controlling_authority` signer check happens in handler."
+          ]
+        },
+        {
+          "name": "controlling_authority",
+          "signer": true
+        },
+        {
+          "name": "operations",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "set_policy",
+      "docs": [
+        "Update policy fields and/or treasury's accepted-asset list.",
+        "Privileged class (§4.2 + §7) — signed by controlling authority.",
+        "",
+        "Each field in `params` is `Option<T>`: `None` = no change, `Some(v)`",
+        "= set. `secondary_signer` is `Option<Option<Pubkey>>` so the caller",
+        "can distinguish \"leave unchanged\" (outer `None`), \"clear\" (outer",
+        "`Some(None)`), and \"set\" (outer `Some(Some(pk))`).",
+        "",
+        "Validation: fee bps ≤ 10_000; vec lengths ≤ MAX_*; mint uniqueness",
+        "inside any single vec. Period rollover is NOT performed here — spent",
+        "counters are only touched by disbursement instructions (M4+)."
+      ],
+      "discriminator": [
+        40,
+        133,
+        12,
+        157,
+        235,
+        202,
+        2,
+        132
+      ],
+      "accounts": [
+        {
+          "name": "company",
+          "docs": [
+            "CompanyAccount this policy/treasury belong to."
+          ]
+        },
+        {
+          "name": "controlling_authority",
+          "docs": [
+            "Controlling Authority — must equal `CompanyAccount.owner`."
+          ],
+          "signer": true
+        },
+        {
+          "name": "treasury",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "company"
+              }
+            ]
+          }
+        },
+        {
+          "name": "policy",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  108,
+                  105,
+                  99,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "company"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "SetPolicyParams"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "update_operations_capability",
+      "docs": [
+        "Modify an OperationsAccount's whitelist / rate limit / expiry without",
+        "rotating the signer pubkey. Privileged class.",
+        "",
+        "Each field of `params` is `Option<T>`: `None` = leave unchanged.",
+        "To rotate the `signer` pubkey, the operator must `revoke_operations`",
+        "→ `close_operations` → `register_company_operations` with the new",
+        "pubkey. This forces an audit trail across pubkey rotation events.",
+        "",
+        "Allowed on expired ops (operator can extend expiry to revive).",
+        "Rejected on revoked ops (terminal state — must close + recreate)."
+      ],
+      "discriminator": [
+        21,
+        13,
+        197,
+        41,
+        92,
+        229,
+        142,
+        202
+      ],
+      "accounts": [
+        {
+          "name": "company",
+          "docs": [
+            "`controlling_authority` signer check happens in handler."
+          ]
+        },
+        {
+          "name": "controlling_authority",
+          "signer": true
+        },
+        {
+          "name": "operations",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "UpdateOperationsCapabilityParams"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "OperationsAccount",
+      "discriminator": [
+        185,
+        55,
+        148,
+        90,
+        151,
+        227,
+        104,
+        158
+      ]
+    },
+    {
+      "name": "PolicyAccount",
+      "discriminator": [
+        218,
+        201,
+        183,
+        164,
+        156,
+        127,
+        81,
+        175
+      ]
+    },
+    {
+      "name": "ProtocolFeeAccount",
+      "discriminator": [
+        5,
+        171,
+        24,
+        9,
+        150,
+        135,
+        135,
+        201
+      ]
+    },
+    {
+      "name": "TreasuryAccount",
+      "discriminator": [
+        204,
+        140,
+        18,
+        173,
+        90,
+        152,
+        134,
+        123
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "CompanyOwnerMismatch",
+      "msg": "company account is not owned by the Registry program"
+    },
+    {
+      "code": 6001,
+      "name": "InvalidCompanyAccount",
+      "msg": "company account data is malformed or too short"
+    },
+    {
+      "code": 6002,
+      "name": "IncompatibleCompanyVersion",
+      "msg": "company account version is not supported by this program"
+    },
+    {
+      "code": 6003,
+      "name": "InvalidProgramData",
+      "msg": "ProgramData account does not match this program"
+    },
+    {
+      "code": 6004,
+      "name": "NotUpgradeAuthority",
+      "msg": "signer is not the program's upgrade authority"
+    },
+    {
+      "code": 6005,
+      "name": "UnauthorizedSigner",
+      "msg": "signer is not authorized for this instruction"
+    },
+    {
+      "code": 6006,
+      "name": "PolicyMismatch",
+      "msg": "policy/treasury does not match company"
+    },
+    {
+      "code": 6007,
+      "name": "TooManyEntries",
+      "msg": "vector exceeds maximum length"
+    },
+    {
+      "code": 6008,
+      "name": "DuplicateMint",
+      "msg": "duplicate mint in vector"
+    },
+    {
+      "code": 6009,
+      "name": "InvalidFeeBps",
+      "msg": "fee bps exceeds 10000 (100%)"
+    },
+    {
+      "code": 6010,
+      "name": "InvalidSigner",
+      "msg": "operations account signer cannot be the default pubkey"
+    },
+    {
+      "code": 6011,
+      "name": "EmptyWhitelist",
+      "msg": "operations account requires at least one whitelisted action"
+    },
+    {
+      "code": 6012,
+      "name": "ExpiryInPast",
+      "msg": "expiry timestamp must be in the future or zero"
+    },
+    {
+      "code": 6013,
+      "name": "OperationsRevoked",
+      "msg": "operations account is revoked"
+    },
+    {
+      "code": 6014,
+      "name": "AlreadyRevoked",
+      "msg": "operations account is already revoked"
+    },
+    {
+      "code": 6015,
+      "name": "NotRevoked",
+      "msg": "operations account must be revoked before closing"
+    },
+    {
+      "code": 6016,
+      "name": "WrongOperationsKind",
+      "msg": "operations account kind does not match instruction expectation"
+    },
+    {
+      "code": 6017,
+      "name": "OperationsExpired",
+      "msg": "operations account is past its expiry"
+    },
+    {
+      "code": 6018,
+      "name": "DiscriminatorNotWhitelisted",
+      "msg": "instruction discriminator is not whitelisted on operations account"
+    },
+    {
+      "code": 6019,
+      "name": "RateLimitExceeded",
+      "msg": "rate limit for operations account is exhausted this period"
+    },
+    {
+      "code": 6020,
+      "name": "ZeroAmount",
+      "msg": "disbursement amount must be greater than zero"
+    },
+    {
+      "code": 6021,
+      "name": "SplNotSupported",
+      "msg": "SPL token disbursement is not yet supported (Phase 1 SOL only)"
+    },
+    {
+      "code": 6022,
+      "name": "AssetNotAllowListed",
+      "msg": "mint is not in treasury accepted_assets list"
+    },
+    {
+      "code": 6023,
+      "name": "AssetNotBudgeted",
+      "msg": "no budget configured for this asset"
+    },
+    {
+      "code": 6024,
+      "name": "BudgetExceeded",
+      "msg": "budget remaining is insufficient for this disbursement"
+    },
+    {
+      "code": 6025,
+      "name": "InsufficientFunds",
+      "msg": "treasury balance is insufficient (rent-exempt minimum protected)"
+    },
+    {
+      "code": 6026,
+      "name": "ArithmeticOverflow",
+      "msg": "arithmetic overflow"
+    },
+    {
+      "code": 6027,
+      "name": "InvalidDeploymentAccount",
+      "msg": "deployment account data is malformed or too short"
+    },
+    {
+      "code": 6028,
+      "name": "IncompatibleDeploymentVersion",
+      "msg": "deployment account version is not supported by this program"
+    },
+    {
+      "code": 6029,
+      "name": "DeploymentCompanyMismatch",
+      "msg": "deployment does not belong to this company"
+    },
+    {
+      "code": 6030,
+      "name": "DestinationMismatch",
+      "msg": "destination does not match deployment.receiving_address"
+    },
+    {
+      "code": 6031,
+      "name": "ReceivingAddressUnset",
+      "msg": "deployment.receiving_address has not been set"
+    },
+    {
+      "code": 6032,
+      "name": "SecondarySignerRequired",
+      "msg": "disbursement above threshold requires secondary signer"
+    },
+    {
+      "code": 6033,
+      "name": "SecondarySignerMismatch",
+      "msg": "provided secondary signer does not match policy.secondary_signer"
+    },
+    {
+      "code": 6034,
+      "name": "MissingDeploymentForAgentDestination",
+      "msg": "agent destination flag set but no deployment account provided"
+    }
+  ],
+  "types": [
+    {
+      "name": "AssetBudget",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "mint",
+            "docs": [
+              "SPL mint pubkey — `SOL_PSEUDO_MINT` for SOL."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "docs": [
+              "Amount in lamports (SOL) or base units (SPL)."
+            ],
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "OperationsAccount",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "version",
+            "type": "u8"
+          },
+          {
+            "name": "company",
+            "type": "pubkey"
+          },
+          {
+            "name": "kind",
+            "docs": [
+              "What kind of operations key this is (Disbursement | Anchor).",
+              "Also encoded into the PDA seed so each company can host one of each."
+            ],
+            "type": {
+              "defined": {
+                "name": "OperationsKind"
+              }
+            }
+          },
+          {
+            "name": "signer",
+            "docs": [
+              "Pubkey of the registered wallet:",
+              "• Disbursement: operator-held only — OCCA never holds the privkey.",
+              "• Anchor: shared session key — operator + OCCA both hold privkey,",
+              "either can sign `commit_daily_anchor` (capability-scoped)."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "action_whitelist",
+            "docs": [
+              "Whitelist of allowed instruction discriminators (8-byte Anchor",
+              "discriminators). Defaults set at registration:",
+              "• Disbursement: `[disburse_routine]`",
+              "• Anchor:       `[commit_daily_anchor]` (lives in Registry program)"
+            ],
+            "type": {
+              "vec": {
+                "array": [
+                  "u8",
+                  8
+                ]
+              }
+            }
+          },
+          {
+            "name": "rate_limit_per_period",
+            "type": "u32"
+          },
+          {
+            "name": "signatures_this_period",
+            "type": "u32"
+          },
+          {
+            "name": "current_period_anchor",
+            "docs": [
+              "Unix timestamp of start-of-current-month UTC. `0` = uninitialized."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "expiry_unix",
+            "docs": [
+              "Hard expiry (unix timestamp). `0` = no expiry."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "revoked",
+            "docs": [
+              "Once true, all future signatures via this account are rejected.",
+              "Rotation flow: revoke → close → re-create with new `signer`."
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "OperationsKind",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Disbursement"
+          },
+          {
+            "name": "Anchor"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PolicyAccount",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "version",
+            "type": "u8"
+          },
+          {
+            "name": "company",
+            "type": "pubkey"
+          },
+          {
+            "name": "routine_budget_per_month",
+            "docs": [
+              "Max disbursable per calendar month via Routine class (auto-signed by",
+              "OperationsAccount[Disbursement])."
+            ],
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "AssetBudget"
+                }
+              }
+            }
+          },
+          {
+            "name": "discretionary_budget_per_month",
+            "docs": [
+              "Max disbursable per calendar month via Discretionary class",
+              "(operator-signed, e.g. ad-hoc agent payouts)."
+            ],
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "AssetBudget"
+                }
+              }
+            }
+          },
+          {
+            "name": "privileged_threshold_lamports",
+            "docs": [
+              "Privileged disbursements above this lamport amount require both",
+              "controlling authority + secondary signer. Default `u64::MAX` (no",
+              "threshold trip until operator opts in)."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "privileged_threshold_per_token",
+            "docs": [
+              "Per-SPL-token equivalent of `privileged_threshold_lamports`. Empty",
+              "vec = no per-token threshold configured."
+            ],
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "AssetBudget"
+                }
+              }
+            }
+          },
+          {
+            "name": "secondary_signer",
+            "docs": [
+              "Secondary signer pubkey. `None` = unconfigured; any threshold-crossing",
+              "privileged ix will reject until set."
+            ],
+            "type": {
+              "option": "pubkey"
+            }
+          },
+          {
+            "name": "agent_operating_fee_bps",
+            "docs": [
+              "Fee in basis points (300 = 3%). Mutable via `set_policy`. Routes to",
+              "`ProtocolFeeAccount` when destination is a `Deployment.receiving_address`",
+              "under the same company."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "current_period_anchor",
+            "docs": [
+              "Unix timestamp of start-of-current-month UTC. `0` = uninitialized;",
+              "first disbursement after init lazy-rolls to current month start."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "routine_spent_this_period",
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "AssetBudget"
+                }
+              }
+            }
+          },
+          {
+            "name": "discretionary_spent_this_period",
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "AssetBudget"
+                }
+              }
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ProtocolFeeAccount",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "version",
+            "type": "u8"
+          },
+          {
+            "name": "governance",
+            "docs": [
+              "Long-lived withdrawal authority — typically a DAO / multisig key,",
+              "distinct from the program's upgrade authority. Settable only at init."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "balances",
+            "docs": [
+              "Per-asset accumulated fee balances."
+            ],
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "AssetBudget"
+                }
+              }
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SetPolicyParams",
+      "docs": [
+        "Parameter bag for `set_policy`. Each field is `Option<T>`: `None` =",
+        "\"leave unchanged\", `Some(v)` = \"set to v\". `secondary_signer` is doubly",
+        "optional (outer = include in update; inner = new value, with `None` =",
+        "clear and `Some(pk)` = set)."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "routine_budget_per_month",
+            "type": {
+              "option": {
+                "vec": {
+                  "defined": {
+                    "name": "AssetBudget"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "name": "discretionary_budget_per_month",
+            "type": {
+              "option": {
+                "vec": {
+                  "defined": {
+                    "name": "AssetBudget"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "name": "privileged_threshold_lamports",
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "privileged_threshold_per_token",
+            "type": {
+              "option": {
+                "vec": {
+                  "defined": {
+                    "name": "AssetBudget"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "name": "secondary_signer",
+            "type": {
+              "option": {
+                "option": "pubkey"
+              }
+            }
+          },
+          {
+            "name": "agent_operating_fee_bps",
+            "type": {
+              "option": "u16"
+            }
+          },
+          {
+            "name": "accepted_assets",
+            "type": {
+              "option": {
+                "vec": "pubkey"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "TreasuryAccount",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "version",
+            "type": "u8"
+          },
+          {
+            "name": "company",
+            "type": "pubkey"
+          },
+          {
+            "name": "accepted_assets",
+            "docs": [
+              "Token mints allow-listed for inflow/outflow accounting. SOL is",
+              "represented as `SOL_PSEUDO_MINT` (lamports custodied directly on this",
+              "PDA). SPL mints are custodied via per-mint Associated Token Accounts",
+              "authored by this PDA."
+            ],
+            "type": {
+              "vec": "pubkey"
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "UpdateOperationsCapabilityParams",
+      "docs": [
+        "Parameter bag for `update_operations_capability`. `None` = leave field",
+        "unchanged. To set `expiry_unix` to \"no expiry\", pass `Some(0)` (sentinel)."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "action_whitelist",
+            "type": {
+              "option": {
+                "vec": {
+                  "array": [
+                    "u8",
+                    8
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "name": "rate_limit_per_period",
+            "type": {
+              "option": "u32"
+            }
+          },
+          {
+            "name": "expiry_unix",
+            "type": {
+              "option": "i64"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

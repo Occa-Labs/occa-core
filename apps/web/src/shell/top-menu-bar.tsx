@@ -1,15 +1,16 @@
 "use client";
 
 import { WalletConnectOverlay } from "@/features/auth/components/wallet-connect-overlay";
-import { NotificationCenter } from "@/components/notification-center";
+import { NotificationCenter } from "@/features/notifications/components/notification-center";
+import type { ParsedNotificationLink } from "@/features/notifications/utils";
 import { OccaLogo } from "@/components/icons/occa-logo";
 import { ChainBadge } from "./chain-badge";
 import { FpsIndicator } from "./fps-indicator";
 import { ViewModeToggle } from "./view-mode-toggle";
 
 interface TopMenuBarProps {
-  /** Mirrors NotificationCenter — only render the bell when the company
-   *  data + approval polling are valid (post-onboarding, authenticated). */
+  /** Mirrors NotificationCenter — only render the bell when company data
+   *  + notification polling are valid (post-onboarding, authenticated). */
   notificationsEnabled: boolean;
   /** Current 3D vs 2D mode + setter, hoisted from page so the value
    *  persists across the OsShell mount. */
@@ -19,9 +20,9 @@ interface TopMenuBarProps {
    *  controls scene rendering inside OsShell — exposing it during
    *  onboarding/kickoff implies a feature that doesn't apply yet. */
   viewModeToggleEnabled: boolean;
-  /** "Open in Approvals" deep-link from notification card — handed up to
-   *  page.tsx which threads it into OsShell. */
-  onOpenApprovals?: (approvalId: string) => void;
+  /** Notification deep-link dispatcher. Fired when a notification card is
+   *  clicked and carries a parseable link. */
+  onNavigate?: (parsed: ParsedNotificationLink) => void;
 }
 
 // macOS-style top menu bar. Spans the full width: OCCA logo pinned to
@@ -33,7 +34,7 @@ export function TopMenuBar({
   viewMode3d,
   onToggleViewMode,
   viewModeToggleEnabled,
-  onOpenApprovals,
+  onNavigate,
 }: TopMenuBarProps) {
   return (
     <div className="fixed inset-x-3 top-2 z-110 flex items-center justify-between text-white/70 pointer-events-none">
@@ -58,7 +59,7 @@ export function TopMenuBar({
         <NotificationCenter
           enabled={notificationsEnabled}
           embedded
-          onOpenApprovals={onOpenApprovals}
+          onNavigate={onNavigate}
         />
         <WalletConnectOverlay embedded />
       </div>

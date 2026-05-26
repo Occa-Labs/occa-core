@@ -80,6 +80,9 @@ export const ERROR_CODES = {
   SIDE_EFFECT_FAILED: "side_effect_failed",
   UNSUPPORTED_ACTION_TYPE: "unsupported_action_type",
 
+  // Notification
+  NOTIFICATION_NOT_FOUND: "notification_not_found",
+
   // Agent action HTTP back-channel (POST /api/agents/me/actions/emit)
   TASK_DEPTH_EXCEEDED: "task_depth_exceeded",
   TASK_CHILDREN_EXCEEDED: "task_children_exceeded",

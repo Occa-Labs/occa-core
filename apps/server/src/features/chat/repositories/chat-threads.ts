@@ -16,15 +16,26 @@ const log = childLogger("repositories:chat-threads");
 
 export type ChatThreadRow = typeof chatThreads.$inferSelect;
 
-// Returns the id of the user_ceo thread for this (company, ceoDeployment)
-// pair, creating it lazily on first call. user_id is populated from
-// companies.owner_user_id so cascade synthesis knows who the recipient is.
+// Returns the id + resetGeneration of the user_ceo thread for this
+// (company, ceoDeployment) pair, creating it lazily on first call.
+// user_id is populated from companies.owner_user_id so cascade
+// synthesis knows who the recipient is. Callers use resetGeneration
+// when deriving the adapter sessionKey via `threadSessionKey()` so a
+// `clearThread` reset rotates onto a fresh per-session bucket.
+export interface UserCeoThreadHandle {
+  id: string;
+  resetGeneration: number;
+}
+
 export async function resolveUserCeoThreadId(args: {
   companyId: string;
   ceoDeploymentId: string;
-}): Promise<string> {
+}): Promise<UserCeoThreadHandle> {
   const existing = await db
-    .select({ id: chatThreads.id })
+    .select({
+      id: chatThreads.id,
+      resetGeneration: chatThreads.resetGeneration,
+    })
     .from(chatThreads)
     .where(
       and(
@@ -34,7 +45,7 @@ export async function resolveUserCeoThreadId(args: {
       ),
     )
     .limit(1);
-  if (existing[0]) return existing[0].id;
+  if (existing[0]) return existing[0];
 
   const [company] = await db
     .select({ ownerUserId: companies.ownerUserId })
@@ -59,12 +70,18 @@ export async function resolveUserCeoThreadId(args: {
       target: [chatThreads.companyId, chatThreads.deploymentId],
       where: sql`kind = 'user_ceo'`,
     })
-    .returning({ id: chatThreads.id });
-  if (inserted) return inserted.id;
+    .returning({
+      id: chatThreads.id,
+      resetGeneration: chatThreads.resetGeneration,
+    });
+  if (inserted) return inserted;
 
   // Race lost — fetch the winning insert.
   const [winner] = await db
-    .select({ id: chatThreads.id })
+    .select({
+      id: chatThreads.id,
+      resetGeneration: chatThreads.resetGeneration,
+    })
     .from(chatThreads)
     .where(
       and(
@@ -79,7 +96,27 @@ export async function resolveUserCeoThreadId(args: {
       `resolveUserCeoThreadId: insert returned nothing and lookup found no row`,
     );
   }
-  return winner.id;
+  return winner;
+}
+
+// Increment the thread's reset_generation, forcing the next call to
+// `threadSessionKey()` to produce a NEW per-session bucket. Returns the
+// new generation. Idempotent in the sense that calling it twice in a
+// row simply yields a higher number — no extra cleanup needed.
+export async function bumpThreadResetGeneration(
+  threadId: string,
+): Promise<number> {
+  const [row] = await db
+    .update(chatThreads)
+    .set({ resetGeneration: sql`${chatThreads.resetGeneration} + 1` })
+    .where(eq(chatThreads.id, threadId))
+    .returning({ resetGeneration: chatThreads.resetGeneration });
+  if (!row) {
+    throw new Error(
+      `bumpThreadResetGeneration: thread ${threadId} not found`,
+    );
+  }
+  return row.resetGeneration;
 }
 
 // Opens a new agent_dm thread between two deployments and posts the

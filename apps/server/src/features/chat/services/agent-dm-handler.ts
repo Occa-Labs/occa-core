@@ -179,7 +179,7 @@ export async function processAgentDmTurn(
   }
 
   // isFirstTurn = no prior assistant reply in this thread. Drives the
-  // gateway sessionKey suffix + whether we send the heavy preamble.
+  // adapter sessionKey suffix + whether we send the heavy preamble.
   const isFirstTurn = !history.some((m) => m.role === "assistant");
 
   const caller = await resolveCallerIdentity(thread.callerDeploymentId);
@@ -228,7 +228,11 @@ export async function processAgentDmTurn(
   // One gateway session per thread — shared with synthesis (see
   // `lib/session-keys`). The old `:dm:` key diverged from synthesis's
   // `:thread:` key, splitting the conversation memory.
-  const sessionKey = threadSessionKey(profile.externalAgentId, threadId);
+  const sessionKey = threadSessionKey(
+    profile.externalAgentId,
+    threadId,
+    thread.resetGeneration,
+  );
   const result = await adapter.sendPrompt({
     adapterConfig: cfg,
     externalAgentId: profile.externalAgentId,

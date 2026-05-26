@@ -234,33 +234,13 @@ export async function syncTaskOnTraceSucceeded(args: {
     });
   }
 
-  // DELEGATE / BLOCK markers — partial parity. Worker detects + audits
-  // them so the timeline shows the agent attempted the action, but the
-  // actual side-effects (approval insert for DELEGATE, blockedByTaskIds
-  // update for BLOCK, hierarchy validation, mention wake) live in the
-  // server's services/delegation/markers/handlers and aren't reachable
-  // from here yet. Documented as a known limitation in
-  // occa/docs/agent-protocol.md. Closing the gap fully needs the handlers
-  // extracted from services/delegation/markers/ into a worker-importable
-  // module that takes db + canDeploy + createTaskComment as DI deps.
-  for (const block of emittedActionBlocks) {
-    if (block.token !== "DELEGATE" && block.token !== "BLOCK") continue;
-    void appendTaskEventBestEffort({
-      companyId: row.companyId,
-      taskId: args.taskId,
-      eventType: "agent_action_emitted",
-      actorType: "agent",
-      actorId: args.agentId,
-      payload: {
-        actionType: block.token,
-        channel: "block_marker",
-        outcome: "ignored",
-        reason: "worker_path_detection_only",
-        actionPayload: block.body ?? null,
-      },
-      traceId: args.traceId,
-    });
-  }
+  // DELEGATE markers are handled by executeWorkerDelegations in
+  // dispatcher.ts, which emits its own audit per block with the real
+  // outcome (delegated / ignored:<reason>). Nothing to do here.
+  //
+  // BLOCK markers have no worker-side handler yet (0 occurrences in
+  // prod history at cleanup time). When one fires, port handleBlockBlock
+  // from apps/server/src/services/delegation/markers/handlers.ts.
 }
 
 // Generic terminal-failure sync. Mirrors syncTaskOnTraceSucceeded but for
