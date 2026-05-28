@@ -50,6 +50,18 @@ import {
   renderChatPrompt,
   ContextNotFoundError,
 } from "../../../services/memory";
+import {
+  handleAssignRoutineBlock,
+  handleBindToolBlock,
+  handleDispatchRoutineBlock,
+  handleInstallSkillBlock,
+  handleToggleChannelBlock,
+  handleToggleRoutineBlock,
+  handleToggleWorkflowBlock,
+  handleUnbindToolBlock,
+  handleUninstallSkillBlock,
+} from "../../../services/delegation/markers/handlers";
+import type { ActionBlockOutcome } from "../../../services/delegation/markers/schemas";
 
 const log = childLogger("services:chat-handler");
 
@@ -479,6 +491,55 @@ export async function sendUserTurn(
     }
   }
 
+  // OS-mutation markers are Auto-tier: CEO emits the marker, the
+  // handler applies the mutation immediately, and a short receipt is
+  // appended to the assistant reply. Multiple blocks per turn are
+  // allowed (one marker = one tuple). Handler dispatch is by token.
+  const osMutationReceipts: string[] = [];
+  const baseArgs = {
+    agentId: ceo.id,
+    agentRole: ceo.role,
+    companyId: args.companyId,
+    currentTaskId: "",
+    traceId,
+  };
+  for (const block of blocks) {
+    let outcome: ActionBlockOutcome | null = null;
+    switch (block.token) {
+      case "INSTALL_SKILL":
+        outcome = await handleInstallSkillBlock({ block, ...baseArgs });
+        break;
+      case "UNINSTALL_SKILL":
+        outcome = await handleUninstallSkillBlock({ block, ...baseArgs });
+        break;
+      case "BIND_TOOL":
+        outcome = await handleBindToolBlock({ block, ...baseArgs });
+        break;
+      case "UNBIND_TOOL":
+        outcome = await handleUnbindToolBlock({ block, ...baseArgs });
+        break;
+      case "TOGGLE_CHANNEL":
+        outcome = await handleToggleChannelBlock({ block, ...baseArgs });
+        break;
+      case "TOGGLE_WORKFLOW":
+        outcome = await handleToggleWorkflowBlock({ block, ...baseArgs });
+        break;
+      case "TOGGLE_ROUTINE":
+        outcome = await handleToggleRoutineBlock({ block, ...baseArgs });
+        break;
+      case "DISPATCH_ROUTINE":
+        outcome = await handleDispatchRoutineBlock({ block, ...baseArgs });
+        break;
+      case "ASSIGN_ROUTINE":
+        outcome = await handleAssignRoutineBlock({ block, ...baseArgs });
+        break;
+    }
+    if (outcome) {
+      const line = formatOsMutationReceipt(outcome);
+      if (line) osMutationReceipts.push(line);
+    }
+  }
+
   const cleanReply = stripOccaMarkers(result.reply);
 
   // Inline-deliverable suppression guard. Chat-mode CEO replies are
@@ -493,10 +554,21 @@ export async function sendUserTurn(
   // clarify reply but trip on anything resembling a deliverable
   // (a tweet thread, a draft, a research brief). Pure prose with no
   // marker AND >1200 stripped chars is almost always a bypass.
-  const INLINE_DELIVERABLE_THRESHOLD = 1_200;
+  // Threshold sized to comfortably accommodate legitimate CEO surface-
+  // area replies — listing the installable-skill catalog, summarising
+  // the team, explaining a routing decision — while still tripping on a
+  // genuine deliverable bypass (a tweet thread, a draft, a research
+  // brief). Pre-CEO-Runs-OS this was 1200, which collateral-damaged
+  // catalog listings; raised to 2500 once status / list questions
+  // became a first-class chat use case. Prompt-side brevity rule
+  // (render/chat.ts STATUS / LIST REPLIES) keeps most info answers
+  // well under this anyway.
+  const INLINE_DELIVERABLE_THRESHOLD = 2_500;
   const didCreateTask = createdTask !== null;
+  const didMutateOs = osMutationReceipts.length > 0;
   const suppressInlineDeliverable =
     !didCreateTask &&
+    !didMutateOs &&
     cleanReply.length > INLINE_DELIVERABLE_THRESHOLD;
   let finalContent: string;
   if (suppressInlineDeliverable) {
@@ -520,7 +592,10 @@ export async function sendUserTurn(
       `synthesized result lands back here on completion.`,
     ].join("\n");
   } else {
-    finalContent = cleanReply.length > 0 ? cleanReply : "(empty reply)";
+    const parts = [cleanReply, ...osMutationReceipts].filter(
+      (s) => s.length > 0,
+    );
+    finalContent = parts.length > 0 ? parts.join("\n\n") : "(empty reply)";
   }
 
   const assistantMsg = await insertMessage({
@@ -544,4 +619,187 @@ export async function sendUserTurn(
     .where(eq(traces.id, traceId));
 
   return { kind: "ok", user: userMsg, assistant: assistantMsg, createdTask };
+}
+
+// Receipt copy mapped from the Auto-tier OS-mutation handler outcomes
+// (INSTALL_SKILL / UNINSTALL_SKILL / BIND_TOOL / UNBIND_TOOL). Empty
+// string = no user-visible line (e.g. permission_denied is silent so a
+// non-CEO emitter can't probe the surface from chat).
+function formatOsMutationReceipt(outcome: ActionBlockOutcome): string {
+  switch (outcome.kind) {
+    case "skill_installed":
+      return outcome.alreadyInstalled
+        ? `✓ "${outcome.skillName}" already installed on ${outcome.deploymentName}.`
+        : `✓ Installed "${outcome.skillName}" on ${outcome.deploymentName}. Active on next task.`;
+    case "skill_uninstalled":
+      return outcome.removed
+        ? `✓ Uninstalled "${outcome.skillKey}" from ${outcome.deploymentName}. Removed on next task.`
+        : `✓ "${outcome.skillKey}" was not installed on ${outcome.deploymentName}.`;
+    case "skill_install_rejected":
+      switch (outcome.reason) {
+        case "skill_not_found":
+          return `× Skill "${outcome.skillKey}" not found in catalog.`;
+        case "role_not_allowed":
+          return `× Skill "${outcome.skillKey}" not allowed for this agent's role.`;
+        case "cross_company_skill":
+          return `× Skill "${outcome.skillKey}" does not belong to this company.`;
+        case "target_retired":
+          return `× Target agent is retired.`;
+        case "invalid_body":
+          return `× INSTALL_SKILL payload invalid.`;
+        case "permission_denied":
+          return "";
+      }
+      return "";
+    case "skill_uninstall_rejected":
+      switch (outcome.reason) {
+        case "target_not_in_company":
+          return `× Target agent does not belong to this company.`;
+        case "target_retired":
+          return `× Target agent is retired.`;
+        case "invalid_body":
+          return `× UNINSTALL_SKILL payload invalid.`;
+        case "permission_denied":
+          return "";
+      }
+      return "";
+    case "tool_bound":
+      return outcome.alreadyBound
+        ? `✓ "${outcome.toolLabel}" already bound to ${outcome.deploymentName}.`
+        : `✓ Bound "${outcome.toolLabel}" to ${outcome.deploymentName}. Available on next task.`;
+    case "tool_unbound": {
+      const label = outcome.toolLabel ?? outcome.toolId;
+      return outcome.removed
+        ? `✓ Unbound "${label}" from ${outcome.deploymentName}.`
+        : `✓ "${label}" was not bound to ${outcome.deploymentName}.`;
+    }
+    case "tool_bind_rejected":
+      switch (outcome.reason) {
+        case "tool_not_found":
+          return `× Tool not found in this company's tool list.`;
+        case "role_not_allowed":
+          return `× Tool not allowed for this agent's role.`;
+        case "cross_company_tool":
+          return `× Tool does not belong to this company.`;
+        case "target_retired":
+          return `× Target agent is retired.`;
+        case "invalid_body":
+          return `× BIND_TOOL payload invalid.`;
+        case "permission_denied":
+          return "";
+      }
+      return "";
+    case "tool_unbind_rejected":
+      switch (outcome.reason) {
+        case "target_not_in_company":
+          return `× Target agent does not belong to this company.`;
+        case "target_retired":
+          return `× Target agent is retired.`;
+        case "invalid_body":
+          return `× UNBIND_TOOL payload invalid.`;
+        case "permission_denied":
+          return "";
+      }
+      return "";
+    case "channel_toggled":
+      if (outcome.alreadyAtTarget) {
+        return outcome.enabled
+          ? `✓ ${outcome.channelType} already enabled.`
+          : `✓ ${outcome.channelType} already disabled.`;
+      }
+      return outcome.enabled
+        ? `✓ ${outcome.channelType} enabled.`
+        : `✓ ${outcome.channelType} disabled.`;
+    case "channel_toggle_rejected":
+      switch (outcome.reason) {
+        case "channel_not_connected":
+          return `× ${outcome.channelType} is not connected. Connect it from the Channels window first.`;
+        case "invalid_body":
+          return `× TOGGLE_CHANNEL payload invalid.`;
+        case "permission_denied":
+          return "";
+      }
+      return "";
+    case "workflow_toggled":
+      if (outcome.alreadyAtTarget) {
+        return outcome.enabled
+          ? `✓ Workflow "${outcome.workflowName}" already enabled.`
+          : `✓ Workflow "${outcome.workflowName}" already disabled.`;
+      }
+      return outcome.enabled
+        ? `✓ Workflow "${outcome.workflowName}" enabled.`
+        : `✓ Workflow "${outcome.workflowName}" disabled.`;
+    case "workflow_toggle_rejected":
+      switch (outcome.reason) {
+        case "workflow_not_found":
+          return `× Workflow "${outcome.workflowYamlId}" not found.`;
+        case "invalid_body":
+          return `× TOGGLE_WORKFLOW payload invalid.`;
+        case "permission_denied":
+          return "";
+      }
+      return "";
+    case "routine_toggled":
+      if (outcome.alreadyAtTarget) {
+        return outcome.active
+          ? `✓ Routine "${outcome.routineTitle}" already active.`
+          : `✓ Routine "${outcome.routineTitle}" already paused.`;
+      }
+      return outcome.active
+        ? `✓ Routine "${outcome.routineTitle}" resumed.`
+        : `✓ Routine "${outcome.routineTitle}" paused.`;
+    case "routine_toggle_rejected":
+      switch (outcome.reason) {
+        case "routine_not_found":
+          return `× Routine not found.`;
+        case "routine_archived":
+          return `× Routine is archived. Restore it from the Routines window before toggling.`;
+        case "invalid_body":
+          return `× TOGGLE_ROUTINE payload invalid.`;
+        case "permission_denied":
+          return "";
+      }
+      return "";
+    case "routine_dispatched":
+      return `✓ Dispatched "${outcome.routineTitle}" — Task #${outcome.taskNumber} is running now.`;
+    case "routine_dispatch_rejected":
+      switch (outcome.reason) {
+        case "routine_not_found":
+          return `× Routine not found.`;
+        case "routine_not_active":
+          return `× Routine is paused or archived. Resume it before dispatching.`;
+        case "no_assignee":
+          return `× Routine has no assignee — set one in the Routines window first.`;
+        case "already_running":
+          return `× A manual dispatch of this routine already ran in the last 5 minutes.`;
+        case "invalid_body":
+          return `× DISPATCH_ROUTINE payload invalid.`;
+        case "permission_denied":
+          return "";
+      }
+      return "";
+    case "routine_assigned": {
+      const targetLabel = outcome.assigneeName ?? "(none, cleared)";
+      if (outcome.alreadyAtTarget) {
+        return `✓ Routine "${outcome.routineTitle}" already assigned to ${targetLabel}.`;
+      }
+      return `✓ Routine "${outcome.routineTitle}" reassigned to ${targetLabel}.`;
+    }
+    case "routine_assign_rejected":
+      switch (outcome.reason) {
+        case "routine_not_found":
+          return `× Routine not found.`;
+        case "assignee_not_in_company":
+          return `× Assignee deployment does not belong to this company.`;
+        case "assignee_retired":
+          return `× Target assignee is retired.`;
+        case "invalid_body":
+          return `× ASSIGN_ROUTINE payload invalid.`;
+        case "permission_denied":
+          return "";
+      }
+      return "";
+    default:
+      return "";
+  }
 }

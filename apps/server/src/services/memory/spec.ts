@@ -112,6 +112,77 @@ export interface ContextSkill {
   markdown: string;
 }
 
+// CEO Runs OS surface — installable skill catalog + per-deployment
+// installed snapshot. Populated only when the calling agent is CEO tier;
+// renderers gate on `spec.ceoOps !== undefined`. Keeps non-CEO prompts
+// free of operator-mutation noise.
+export interface ContextInstallableSkill {
+  key: string;
+  name: string;
+  description: string | null;
+  // Empty array = unrestricted (any role may install). Non-empty =
+  // whitelist of agent roles the skill is bindable to.
+  allowedRoles: string[];
+}
+export interface ContextInstallableTool {
+  // UUID — what BIND_TOOL.toolId references.
+  id: string;
+  type: string;
+  label: string;
+  // active | paused | failed. Renderer can hint at non-active status
+  // so CEO doesn't bind to a known-broken tool.
+  status: string;
+  allowedRoles: string[];
+}
+// Per-channel runtime state visible to CEO. Credentials excluded —
+// CEO must never see token material. Status mirrors the adapter-side
+// state so the catalog can hint "this one is in error".
+export interface ContextChannelState {
+  channelType: string;
+  enabled: boolean;
+  chatEnabled: boolean;
+  notifEnabled: boolean;
+  status: string; // off | connecting | connected | error
+}
+// Workflow state visible to CEO. yamlText is intentionally omitted —
+// CEO doesn't need to see the source to flip the runtime switch, and
+// inlining a 500-line yaml inflates the prompt for no behavior gain.
+export interface ContextWorkflowState {
+  yamlId: string;
+  name: string;
+  description: string | null;
+  enabled: boolean;
+}
+
+// Routine state — CEO addresses by UUID since routines have no slug.
+// triggerSummary aggregates enabled triggers ("cron: 0 9 * * * (UTC)",
+// "manual only") so CEO can describe cadence without us shipping every
+// trigger row.
+export interface ContextRoutineState {
+  id: string;
+  title: string;
+  description: string | null;
+  status: string; // "active" | "paused" | terminal states
+  assigneeDeploymentId: string | null;
+  triggerSummary: string;
+}
+export interface ContextCeoOps {
+  installableSkills: ContextInstallableSkill[];
+  installableTools: ContextInstallableTool[];
+  // deploymentId → desiredSkills[]. Empty arrays included so a
+  // deployment without any installed skill still appears (lets CEO see
+  // who is "blank slate" at a glance).
+  installedByDeployment: Record<string, string[]>;
+  // deploymentId → enabledTools[] (UUIDs into companyTools).
+  boundToolsByDeployment: Record<string, string[]>;
+  // Channels are CEO-only by schema design — single list, not a per-
+  // deployment map.
+  channels: ContextChannelState[];
+  // All workflows for this company. CEO can toggle any of them.
+  workflows: ContextWorkflowState[];
+  routines: ContextRoutineState[];
+}
+
 // Per-run server callback credentials. Minted fresh in the dispatcher
 // before every wake and injected here so the renderer can emit the
 // canonical `OCCA runtime:` preamble (apiUrl + bearer apiKey + agentId +
@@ -214,5 +285,8 @@ export interface ContextSpec {
   // trace context (e.g. CEO chat preview) leave this undefined and the
   // renderer falls back to "see your wake preamble" pointer text.
   runtimeEnv?: ContextRuntimeEnv;
+  // CEO Runs OS context (catalog + installed-map). Present only when
+  // the calling deployment is CEO tier.
+  ceoOps?: ContextCeoOps;
   surface: SurfacePayload;
 }

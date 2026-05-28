@@ -10,9 +10,18 @@ import {
   type ActionBlockOutcome,
 } from "./schemas";
 import {
+  handleAssignRoutineBlock,
+  handleBindToolBlock,
   handleBlockBlock,
   handleDelegateBlock,
+  handleDispatchRoutineBlock,
+  handleInstallSkillBlock,
   handleReportBlock,
+  handleToggleChannelBlock,
+  handleToggleRoutineBlock,
+  handleToggleWorkflowBlock,
+  handleUnbindToolBlock,
+  handleUninstallSkillBlock,
   type ActionBlockDeps,
   type ActionBlockHandlerArgs,
 } from "./handlers";
@@ -102,6 +111,24 @@ async function routeBlock(
       return handleBlockBlock(args);
     case "REPORT":
       return handleReportBlock(args);
+    case "INSTALL_SKILL":
+      return handleInstallSkillBlock(args);
+    case "UNINSTALL_SKILL":
+      return handleUninstallSkillBlock(args);
+    case "BIND_TOOL":
+      return handleBindToolBlock(args);
+    case "UNBIND_TOOL":
+      return handleUnbindToolBlock(args);
+    case "TOGGLE_CHANNEL":
+      return handleToggleChannelBlock(args);
+    case "TOGGLE_WORKFLOW":
+      return handleToggleWorkflowBlock(args);
+    case "TOGGLE_ROUTINE":
+      return handleToggleRoutineBlock(args);
+    case "DISPATCH_ROUTINE":
+      return handleDispatchRoutineBlock(args);
+    case "ASSIGN_ROUTINE":
+      return handleAssignRoutineBlock(args);
     default:
       log.warn({ token }, "unknown action-block token, ignored");
       return { kind: "ignored", reason: "unknown_token" };

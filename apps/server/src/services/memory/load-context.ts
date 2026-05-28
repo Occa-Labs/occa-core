@@ -32,6 +32,7 @@ import { loadOrg } from "./stores/org";
 import { loadKnowledge } from "./stores/semantic";
 import { loadHistory } from "./stores/episodic";
 import { loadSkills } from "./stores/skills";
+import { loadCeoOps } from "./stores/ceo-ops";
 import { loadWorkspaceFiles } from "./stores/workspace-files";
 import type {
   ContextRuntimeEnv,
@@ -52,27 +53,42 @@ export async function loadContext(args: {
   // Identity first — everything downstream is scoped by its companyId.
   const { agent, company } = await loadIdentity(args.deploymentId);
 
-  const [org, knowledge, history, skills, workspaceFiles] = await Promise.all([
-    loadOrg({
-      deploymentId: args.deploymentId,
-      companyId: company.id,
-    }),
-    // Knowledge is visibility-filtered to the agent's tier; history is
-    // branched by surface. Both are optional — renderers handle absence.
-    loadKnowledge({
-      companyId: company.id,
-      agentTier: agent.tier,
-    }),
-    loadHistory({
-      companyId: company.id,
-      surface: args.surface,
-    }),
-    loadSkills({
-      deploymentId: args.deploymentId,
-      companyId: company.id,
-    }),
-    loadWorkspaceFiles({ deploymentId: args.deploymentId }),
-  ]);
+  // CEO Runs OS context only when the calling agent is CEO. Adds the
+  // installable skill / tool catalogs, per-deployment installed
+  // snapshot, and the CEO's connected channels so the OS markers
+  // ([[OCCA:INSTALL_SKILL]], [[OCCA:BIND_TOOL]], [[OCCA:TOGGLE_CHANNEL]]
+  // etc.) have the data to ground against.
+  const ceoOpsPromise =
+    agent.tier === "ceo"
+      ? loadCeoOps({
+          companyId: company.id,
+          ceoDeploymentId: args.deploymentId,
+        })
+      : undefined;
+
+  const [org, knowledge, history, skills, workspaceFiles, ceoOps] =
+    await Promise.all([
+      loadOrg({
+        deploymentId: args.deploymentId,
+        companyId: company.id,
+      }),
+      // Knowledge is visibility-filtered to the agent's tier; history is
+      // branched by surface. Both are optional — renderers handle absence.
+      loadKnowledge({
+        companyId: company.id,
+        agentTier: agent.tier,
+      }),
+      loadHistory({
+        companyId: company.id,
+        surface: args.surface,
+      }),
+      loadSkills({
+        deploymentId: args.deploymentId,
+        companyId: company.id,
+      }),
+      loadWorkspaceFiles({ deploymentId: args.deploymentId }),
+      ceoOpsPromise,
+    ]);
 
   return {
     agent,
@@ -83,6 +99,7 @@ export async function loadContext(args: {
     skills,
     workspaceFiles,
     runtimeEnv: args.runtimeEnv,
+    ceoOps,
     surface: args.surface,
   };
 }

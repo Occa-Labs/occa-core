@@ -130,6 +130,271 @@ function formatWorkspaceFiles(spec: ContextSpec): string | null {
   return lines.join("\n");
 }
 
+// CEO Runs OS — renders the installable skill / tool catalog + per-
+// deployment installed snapshot. Returns null when the caller isn't CEO
+// (the loader leaves `ceoOps` undefined). State and marker spec are
+// returned separately so the caller can place them at the right slots
+// in the preamble (state near team, marker spec with the other marker
+// examples).
+function formatCeoOpsState(spec: ContextSpec): string | null {
+  if (!spec.ceoOps) return null;
+  const {
+    installableSkills,
+    installableTools,
+    installedByDeployment,
+    boundToolsByDeployment,
+  } = spec.ceoOps;
+  const lines: string[] = [];
+
+  if (installableSkills.length === 0) {
+    lines.push(
+      `INSTALLABLE SKILL CATALOG: (empty — no skills imported into this company yet)`,
+    );
+  } else {
+    lines.push(
+      `INSTALLABLE SKILL CATALOG (use 'key' as INSTALL_SKILL.skillKey):`,
+    );
+    for (const s of installableSkills) {
+      lines.push(`- key: ${s.key}`);
+      lines.push(`  name: ${s.name}`);
+      if (s.description) lines.push(`  description: ${s.description}`);
+      const roleNote =
+        s.allowedRoles.length === 0 ? "(any)" : s.allowedRoles.join(", ");
+      lines.push(`  allowedRoles: ${roleNote}`);
+    }
+  }
+
+  lines.push(``);
+  if (installableTools.length === 0) {
+    lines.push(
+      `BINDABLE TOOL CATALOG: (empty — no tools configured for this company yet)`,
+    );
+  } else {
+    lines.push(`BINDABLE TOOL CATALOG (use 'id' as BIND_TOOL.toolId):`);
+    for (const t of installableTools) {
+      lines.push(`- id: ${t.id}`);
+      lines.push(`  label: ${t.label}`);
+      lines.push(`  type: ${t.type}`);
+      if (t.status !== "active") {
+        lines.push(`  status: ${t.status} (binding allowed but invocation will fail)`);
+      }
+      const roleNote =
+        t.allowedRoles.length === 0 ? "(any)" : t.allowedRoles.join(", ");
+      lines.push(`  allowedRoles: ${roleNote}`);
+    }
+  }
+
+  // Build a name lookup so the installed-map shows human names. CEO is
+  // not in spec.org.team (team excludes self), so prepend agent itself
+  // — CEO can install skills on its own deployment.
+  const nameById = new Map<string, string>();
+  nameById.set(spec.agent.id, spec.agent.name);
+  for (const m of spec.org.team) nameById.set(m.id, m.name);
+
+  // Tool label lookup for the bound-tools section (CEO sees labels not
+  // UUIDs).
+  const toolLabelById = new Map<string, string>();
+  for (const t of installableTools) toolLabelById.set(t.id, t.label);
+
+  lines.push(``);
+  lines.push(`INSTALLED SKILLS PER AGENT:`);
+  const ids = Object.keys(installedByDeployment).sort();
+  if (ids.length === 0) {
+    lines.push(`- (no active deployments)`);
+  } else {
+    for (const id of ids) {
+      const name = nameById.get(id) ?? "(unknown)";
+      const list = installedByDeployment[id];
+      const skillList = list.length > 0 ? list.join(", ") : "(none)";
+      lines.push(`- ${name} (id ${id}): ${skillList}`);
+    }
+  }
+
+  lines.push(``);
+  lines.push(`BOUND TOOLS PER AGENT:`);
+  if (ids.length === 0) {
+    lines.push(`- (no active deployments)`);
+  } else {
+    for (const id of ids) {
+      const name = nameById.get(id) ?? "(unknown)";
+      const list = boundToolsByDeployment[id] ?? [];
+      const labels =
+        list.length > 0
+          ? list.map((tid) => toolLabelById.get(tid) ?? tid).join(", ")
+          : "(none)";
+      lines.push(`- ${name} (id ${id}): ${labels}`);
+    }
+  }
+
+  lines.push(``);
+  if (spec.ceoOps.channels.length === 0) {
+    lines.push(
+      `YOUR CHANNELS: (none connected — operator sets these up in the Channels window)`,
+    );
+  } else {
+    lines.push(`YOUR CHANNELS:`);
+    for (const c of spec.ceoOps.channels) {
+      const flags = [
+        c.enabled ? "enabled" : "disabled",
+        `status=${c.status}`,
+      ].join(", ");
+      lines.push(`- ${c.channelType} — ${flags}`);
+    }
+  }
+
+  lines.push(``);
+  if (spec.ceoOps.workflows.length === 0) {
+    lines.push(`COMPANY WORKFLOWS: (none defined yet)`);
+  } else {
+    lines.push(`COMPANY WORKFLOWS (use 'yamlId' as TOGGLE_WORKFLOW.workflowYamlId):`);
+    for (const w of spec.ceoOps.workflows) {
+      const state = w.enabled ? "enabled" : "disabled";
+      const desc = w.description ? ` — ${w.description}` : "";
+      lines.push(`- yamlId: ${w.yamlId}`);
+      lines.push(`  name: ${w.name} (${state})${desc}`);
+    }
+  }
+
+  lines.push(``);
+  if (spec.ceoOps.routines.length === 0) {
+    lines.push(`COMPANY ROUTINES: (none defined yet)`);
+  } else {
+    lines.push(`COMPANY ROUTINES (use 'id' as TOGGLE_ROUTINE.routineId):`);
+    for (const r of spec.ceoOps.routines) {
+      const assignee =
+        r.assigneeDeploymentId !== null
+          ? (nameById.get(r.assigneeDeploymentId) ?? "(unknown agent)")
+          : "(unassigned)";
+      const desc = r.description ? ` — ${r.description}` : "";
+      lines.push(`- id: ${r.id}`);
+      lines.push(
+        `  title: ${r.title} (${r.status}, ${r.triggerSummary}, assignee: ${assignee})${desc}`,
+      );
+    }
+  }
+
+  return lines.join("\n");
+}
+
+function formatInstallSkillMarkerSpec(spec: ContextSpec): string | null {
+  if (!spec.ceoOps) return null;
+  return [
+    `INSTALL_SKILL MARKER (use when the owner asks to install a skill on an agent):`,
+    `- Look up the target agent's deployment uuid from YOUR ACTIVE TEAM above (or use your own id if installing on yourself).`,
+    `- Look up the exact skill key from INSTALLABLE SKILL CATALOG above. Do NOT invent keys — if the catalog is empty for the owner's request, say so and stop.`,
+    `- One marker per (agent, skill). Multiple markers per reply are allowed when the owner asks for several installs at once.`,
+    `- This is auto-executed. Do not ask for confirmation. Do not write a fake "✓" in your prose — the runtime appends the receipt automatically.`,
+    `- Skill activates on the target agent's NEXT task, not retroactively.`,
+    ``,
+    `[[OCCA:INSTALL_SKILL]]`,
+    `{`,
+    `  "deploymentId": "<deployment uuid from YOUR ACTIVE TEAM above>",`,
+    `  "skillKey": "<key from INSTALLABLE SKILL CATALOG above>"`,
+    `}`,
+    `[[/OCCA:INSTALL_SKILL]]`,
+    ``,
+    `UNINSTALL_SKILL MARKER (use when the owner asks to remove a skill from an agent):`,
+    `- Same shape as INSTALL_SKILL. Look up the deployment uuid from YOUR ACTIVE TEAM and use the exact skill key from the INSTALLED SKILLS PER AGENT list above.`,
+    `- Auto-executed, idempotent — if the key isn't on the agent the runtime returns a "wasn't installed" ack with no error.`,
+    `- Removal takes effect on the target agent's NEXT task.`,
+    ``,
+    `[[OCCA:UNINSTALL_SKILL]]`,
+    `{`,
+    `  "deploymentId": "<deployment uuid from YOUR ACTIVE TEAM above>",`,
+    `  "skillKey": "<key currently installed on that deployment>"`,
+    `}`,
+    `[[/OCCA:UNINSTALL_SKILL]]`,
+    ``,
+    `BIND_TOOL MARKER (use when the owner asks to give an agent access to a tool):`,
+    `- Look up the target agent's deployment uuid from YOUR ACTIVE TEAM above.`,
+    `- Look up the tool UUID ('id') from BINDABLE TOOL CATALOG above. NEVER invent UUIDs — if the catalog is empty for the owner's request, say so and stop.`,
+    `- One marker per (agent, tool). Multiple markers per reply are allowed.`,
+    `- Auto-executed. Tool becomes available to the agent on its NEXT task.`,
+    `- Tool credentials are NOT set via this marker — operator configures them in the Tools window. You can only bind tools that are already provisioned.`,
+    ``,
+    `[[OCCA:BIND_TOOL]]`,
+    `{`,
+    `  "deploymentId": "<deployment uuid from YOUR ACTIVE TEAM above>",`,
+    `  "toolId": "<id from BINDABLE TOOL CATALOG above>"`,
+    `}`,
+    `[[/OCCA:BIND_TOOL]]`,
+    ``,
+    `UNBIND_TOOL MARKER (use when the owner asks to remove a tool from an agent):`,
+    `- Same shape as BIND_TOOL. Use the tool UUID from BOUND TOOLS PER AGENT list above.`,
+    `- Auto-executed, idempotent.`,
+    ``,
+    `[[OCCA:UNBIND_TOOL]]`,
+    `{`,
+    `  "deploymentId": "<deployment uuid from YOUR ACTIVE TEAM above>",`,
+    `  "toolId": "<id currently bound to that deployment>"`,
+    `}`,
+    `[[/OCCA:UNBIND_TOOL]]`,
+    ``,
+    `TOGGLE_CHANNEL MARKER (use when the owner asks to turn a channel on or off):`,
+    `- Use the channelType string from YOUR CHANNELS above (e.g. "telegram").`,
+    `- 'enabled: true' turns the channel back on, 'enabled: false' silences it. Credentials stay intact either way — operator can toggle back without re-setting up.`,
+    `- Auto-executed, idempotent (re-emitting the same value just re-confirms).`,
+    `- If the channel is NOT in YOUR CHANNELS yet, do NOT emit. Tell the owner they need to connect it from the Channels window first; credentials are never set via chat.`,
+    ``,
+    `[[OCCA:TOGGLE_CHANNEL]]`,
+    `{`,
+    `  "channelType": "<channelType from YOUR CHANNELS above>",`,
+    `  "enabled": true | false`,
+    `}`,
+    `[[/OCCA:TOGGLE_CHANNEL]]`,
+    ``,
+    `TOGGLE_WORKFLOW MARKER (use when the owner asks to enable or pause a workflow):`,
+    `- Use the workflow yamlId from COMPANY WORKFLOWS above.`,
+    `- 'enabled: true' resumes the workflow, 'enabled: false' pauses it. YAML definition stays intact — operator can resume without re-defining.`,
+    `- Auto-executed, idempotent.`,
+    `- If yamlId is NOT in COMPANY WORKFLOWS, do NOT emit. Tell the owner the workflow doesn't exist yet — they need to create it from the Workflows window.`,
+    ``,
+    `[[OCCA:TOGGLE_WORKFLOW]]`,
+    `{`,
+    `  "workflowYamlId": "<yamlId from COMPANY WORKFLOWS above>",`,
+    `  "enabled": true | false`,
+    `}`,
+    `[[/OCCA:TOGGLE_WORKFLOW]]`,
+    ``,
+    `TOGGLE_ROUTINE MARKER (use when the owner asks to pause or resume a routine):`,
+    `- Use the routine id (UUID) from COMPANY ROUTINES above. Routines have no slug; the UUID is the address.`,
+    `- 'active: true' resumes, 'active: false' pauses. Triggers and assignee stay intact — only the routine status flips.`,
+    `- Auto-executed, idempotent.`,
+    `- Archived routines cannot be flipped from chat; tell the owner to restore from the Routines window first.`,
+    ``,
+    `[[OCCA:TOGGLE_ROUTINE]]`,
+    `{`,
+    `  "routineId": "<id from COMPANY ROUTINES above>",`,
+    `  "active": true | false`,
+    `}`,
+    `[[/OCCA:TOGGLE_ROUTINE]]`,
+    ``,
+    `DISPATCH_ROUTINE MARKER (use when the owner asks to FIRE a routine NOW, ahead of its schedule):`,
+    `- This is CONFIRM-TIER. Follow CONFIRM + EMIT FLOW above: restate what you'd run, ask "Want me to fire it now?", and ONLY emit once the owner says yes/go/proceed.`,
+    `- Routine must already be active and have an assignee. Paused/archived routines must be resumed first; unassigned routines need an assignee in the Routines window.`,
+    `- A wrapper task is created and the assignee wakes up immediately to execute. Production impact — agent run consumes resources.`,
+    `- The runtime de-dupes manual dispatches within a 5-minute window. If you ask twice quickly, the second one is rejected as already_running.`,
+    ``,
+    `[[OCCA:DISPATCH_ROUTINE]]`,
+    `{`,
+    `  "routineId": "<id from COMPANY ROUTINES above>"`,
+    `}`,
+    `[[/OCCA:DISPATCH_ROUTINE]]`,
+    ``,
+    `ASSIGN_ROUTINE MARKER (use when the owner asks to change who runs a routine):`,
+    `- Use the routine id (UUID) from COMPANY ROUTINES above, and the deployment uuid of the new assignee from YOUR ACTIVE TEAM above.`,
+    `- Pass 'assigneeDeploymentId: null' to clear the assignee — the routine effectively pauses on next firing.`,
+    `- Auto-executed, idempotent. In-flight wrapper tasks already dispatched stay with their current assignee; only future firings move.`,
+    ``,
+    `[[OCCA:ASSIGN_ROUTINE]]`,
+    `{`,
+    `  "routineId": "<id from COMPANY ROUTINES above>",`,
+    `  "assigneeDeploymentId": "<deployment uuid from YOUR ACTIVE TEAM, or null>"`,
+    `}`,
+    `[[/OCCA:ASSIGN_ROUTINE]]`,
+  ].join("\n");
+}
+
 function formatCompanyProfile(spec: ContextSpec): string | null {
   const p = spec.company.profile;
   const lines: string[] = [];
@@ -152,6 +417,8 @@ function renderFirstTurnPrompt(spec: ContextSpec, userMessage: string): string {
   const brainBlock = formatCompanyBrain(spec);
   const recentWorkBlock = formatRecentWork(spec);
   const workspaceFilesBlock = formatWorkspaceFiles(spec);
+  const ceoOpsStateBlock = formatCeoOpsState(spec);
+  const installSkillSpecBlock = formatInstallSkillMarkerSpec(spec);
   return [
     RUNTIME_MEMORY_OVERRIDE,
     ``,
@@ -167,10 +434,19 @@ function renderFirstTurnPrompt(spec: ContextSpec, userMessage: string): string {
     ``,
     formatGaps(spec.org.gaps),
     ``,
+    ...(ceoOpsStateBlock ? [ceoOpsStateBlock, ``] : []),
     `HOW TO REPLY:`,
     `- BEGIN your very first reply by acknowledging your identity in your own persona voice (e.g. "Hey — ${spec.agent.name} here." or similar). DO NOT ask "who am I" or "who are you" — you already know.`,
     `- Use your CEO voice from SOUL above: direct, action-oriented, no corporate warm-up, no exclamation points unless something is on fire.`,
     `- For ambiguous requests, ask 1-2 sharp clarifying questions. Multi-turn dialogue is normal and expected.`,
+    ``,
+    `STATUS / LIST / INFO REPLIES — KEEP TIGHT:`,
+    `When the owner asks a STATUS or LIST question (e.g. "what skills are available", "list my agents", "what tools do I have", "who is on the team", "what's the current state"), answer with a CONCISE summary, then offer the next action.`,
+    `- Group items by category (3-5 lines max per category).`,
+    `- Skip descriptions for items the owner already knows about — name + a 3-5 word hint is enough.`,
+    `- End with ONE concrete offer: "Want me to install X on Y?", "Want me to deploy Z?", "Want a breakdown of one of these?".`,
+    `- Do NOT dump the full catalog or copy the entire prompt context back at the owner. The runtime suppresses dumps over ~2500 chars; tight summary lands well under that.`,
+    `- Surfacing the answer is the job, but BREVITY is the standard.`,
     ``,
     `*** HARD RULE — DO NOT DELIVER THE WORK YOURSELF IN CHAT. ***`,
     `Your chat replies are EXCLUSIVELY for: clarifying questions,`,
@@ -239,7 +515,9 @@ function renderFirstTurnPrompt(spec: ContextSpec, userMessage: string): string {
     `}`,
     `[[/OCCA:CREATE_TASK]]`,
     ``,
-    `Body must be valid JSON. One marker per reply max. When the task completes (whether the teammate finished it or you finished it yourself), the synthesized result lands here in chat automatically — you do not need to emit a second turn to "report back". The runtime parses + strips the marker from the owner's view, so your surrounding prose is what they read. Never paste this syntax outside an actual emit.`,
+    `Body must be valid JSON. One DELEGATE or CREATE_TASK marker per reply max. When the task completes (whether the teammate finished it or you finished it yourself), the synthesized result lands here in chat automatically — you do not need to emit a second turn to "report back". The runtime parses + strips the marker from the owner's view, so your surrounding prose is what they read. Never paste this syntax outside an actual emit.`,
+    ``,
+    ...(installSkillSpecBlock ? [installSkillSpecBlock, ``] : []),
     ``,
     `---`,
     ``,
@@ -255,12 +533,14 @@ function renderFirstTurnPrompt(spec: ContextSpec, userMessage: string): string {
 // memory from the first-turn injection and don't need re-sending.
 function renderRefreshTurn(spec: ContextSpec, userMessage: string): string {
   const recentWorkBlock = formatRecentWork(spec);
+  const ceoOpsStateBlock = formatCeoOpsState(spec);
   return [
     `[Team snapshot — auto-refreshed]`,
     formatTeam(spec.org.team),
     ``,
     formatGaps(spec.org.gaps),
     ``,
+    ...(ceoOpsStateBlock ? [ceoOpsStateBlock, ``] : []),
     ...(recentWorkBlock ? [recentWorkBlock, ``] : []),
     `---`,
     ``,
