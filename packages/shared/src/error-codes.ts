@@ -121,7 +121,12 @@ export const ERROR_CODES = {
   GATEWAY_PROVISION_FAILED: "gateway_provision_failed",
   GATEWAY_LIST_FAILED: "gateway_list_failed",
   DEVICE_PAIRING_REQUIRED: "device_pairing_required",
-  OPENCLAW_AGENT_ID_CONFLICT: "openclaw_agent_id_conflict",
+
+  // Deployment channels
+  CHANNEL_TYPE_INVALID: "channel_type_invalid",
+  CHANNEL_NOT_CEO: "channel_not_ceo",
+  CHANNEL_CREDENTIALS_INVALID: "channel_credentials_invalid",
+  CHANNEL_SYNC_FAILED: "channel_sync_failed",
 
   // Workflow (Phase 5 storage; Phase 6 engine adds runtime errors)
   WORKFLOW_NOT_FOUND: "workflow_not_found",

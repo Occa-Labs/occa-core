@@ -16,6 +16,7 @@ import toolSyncsRouter from "./tool-syncs";
 import tracesRouter from "./traces";
 import tokensRouter from "./tokens";
 import walletRouter from "./wallet";
+import channelsRouter from "./channels";
 import lifecycleRouter from "./lifecycle";
 
 const router: Router = Router();
@@ -30,6 +31,7 @@ router.use(toolSyncsRouter);
 router.use(tracesRouter);
 router.use(tokensRouter);
 router.use(walletRouter);
+router.use(channelsRouter);
 
 // Lifecycle owns the bare `/` endpoint plus generic `/:id` so it
 // registers last — keeps wildcard `:id` matchers from intercepting

@@ -470,6 +470,62 @@ export type HermesProbeErrorCode =
   | "unauthorized"
   | "invalid_response";
 
+// ── Deployment channels ──
+// External chat surfaces (Telegram/Discord/etc) that route user↔CEO via
+// the deployment's adapter. CEO-only — server rejects upserts for any
+// deployment with role !== CEO_ROLE. Intersection of channels supported
+// by both adapter-openclaw and adapter-hermes (so any CEO can opt in
+// regardless of which runtime it runs on).
+export const CHANNEL_TYPES = [
+  "telegram",
+  "discord",
+  "whatsapp",
+  "slack",
+  "signal",
+  "matrix",
+  "mattermost",
+  "line",
+  "feishu",
+  "qqbot",
+  "bluebubbles",
+  "googlechat",
+  "msteams",
+] as const;
+export type ChannelType = (typeof CHANNEL_TYPES)[number];
+
+export const CHANNEL_STATUS = [
+  "off",
+  "connecting",
+  "connected",
+  "error",
+] as const;
+export type ChannelStatus = (typeof CHANNEL_STATUS)[number];
+
+export interface ChannelDTO {
+  channelType: ChannelType;
+  enabled: boolean;
+  chatEnabled: boolean;
+  notifEnabled: boolean;
+  status: ChannelStatus;
+  statusMsg: string | null;
+  lastSyncedAt: string | null;
+  // Sanitized credentials — server returns `{ hasToken: true }` rather
+  // than the raw token so the UI can render "configured" state without
+  // exposing the secret.
+  credentialsSummary: Record<string, boolean | string | null>;
+  updatedAt: string;
+}
+
+// PUT /api/deployments/:id/channels/:type
+export interface ChannelUpsertRequest {
+  // Channel-specific credential payload. Server validates shape per
+  // channelType via zod. Telegram example: `{ botToken: "..." }`.
+  credentials: Record<string, unknown>;
+  enabled?: boolean;
+  chatEnabled?: boolean;
+  notifEnabled?: boolean;
+}
+
 // ── POST /api/agents ──
 // Atomic onboarding entry point. If the caller has no company yet, supply
 // `companyName` and the server will create company + agent + provision the

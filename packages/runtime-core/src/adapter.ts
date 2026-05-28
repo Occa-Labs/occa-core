@@ -32,6 +32,17 @@ export interface AssignedSkill {
   markdown: string;
 }
 
+// Persona / workspace markdown the agent's identity lives in. For
+// adapters that run the agent on their own filesystem (OpenClaw) these
+// files were pushed via `seedWorkspace` and the agent reads them with
+// its read_file tool. For adapters that don't have a per-agent filesystem
+// (Hermes' HTTP gateway), the content needs to ride inside the wake
+// prompt — otherwise the agent fires read_file calls that fail.
+export interface WorkspaceFile {
+  filename: string;
+  content: string;
+}
+
 export interface AdapterExecutionContext {
   payload: WakePayload;
   adapterConfig: Record<string, unknown>;
@@ -41,6 +52,7 @@ export interface AdapterExecutionContext {
   onLivenessHint: (state: LivenessState) => void;
   sessionParams: Record<string, unknown> | null;
   skills: AssignedSkill[];
+  workspaceFiles: WorkspaceFile[];
 }
 
 export interface ProbeResult {

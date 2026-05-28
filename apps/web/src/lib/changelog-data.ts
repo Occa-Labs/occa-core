@@ -16,6 +16,33 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.14.0",
+    date: "2026-05-28",
+    title: "Channels — talk to your CEO from anywhere",
+    items: [
+      {
+        tag: "feature",
+        text: "External chat channels in CEO Settings. Add a bot token (Telegram first; Discord/WhatsApp/Slack/Signal/Matrix/Mattermost/LINE/Feishu/QQ Bot/Bluebubbles/Google Chat/Teams scaffolded), and the CEO is reachable from that surface. CEO-only by design.",
+      },
+      {
+        tag: "feature",
+        text: "Telegram transport — long-poll listener routes user messages into the same chat thread as the web OS. Typing indicator while the CEO drafts. Replies > 4k chars split automatically.",
+      },
+      {
+        tag: "feature",
+        text: "Outbound notifications fan out to active channels with notif enabled. Treasury readiness (and any future emitNotification caller) auto-push to Telegram without code changes downstream.",
+      },
+      {
+        tag: "improvement",
+        text: "Channel dispatcher is channel-agnostic — adding the next transport (Discord, Slack) is one push handler in a registry, zero changes to the caller layer.",
+      },
+      {
+        tag: "improvement",
+        text: "Adapter contract stays runtime-only — channels are transport concern, kept orthogonal to BYORT. Dead OPENCLAW_AGENT_ID_CONFLICT constant removed from shared; web maps the adapter's real agent_id_conflict code instead.",
+      },
+    ],
+  },
+  {
     version: "0.13.0",
     date: "2026-05-05",
     title: "Production preview & dynamic idle",

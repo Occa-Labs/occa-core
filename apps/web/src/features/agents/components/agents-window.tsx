@@ -27,6 +27,7 @@ import { ActivityTab } from "./activity-tab";
 import { FilesTab } from "./files-tab";
 import { TracesTab } from "./traces-tab";
 import { DeployAgentModal } from "./deploy-agent-modal";
+import { ChannelsSection } from "./channels-section";
 import { buildTree, type TreeNode } from "./hierarchy-tab";
 
 interface AgentsWindowProps {
@@ -847,6 +848,8 @@ function SettingsTab({
           onReloadMe={onReloadMe}
         />
       )}
+
+      {isCeo && <ChannelsSection agent={agent} />}
 
       <section className="space-y-3">
         <h3 className="text-xs font-semibold text-red-300/80 uppercase tracking-wider">

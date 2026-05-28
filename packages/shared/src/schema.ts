@@ -1612,3 +1612,51 @@ export const toolCallLogs = pgTable(
     index("idx_tool_call_logs_status").on(t.status),
   ],
 );
+
+// ── Deployment channels — external chat surfaces routing user↔CEO ─────
+// One row per (deployment, channel_type). Channels are CEO-only by design
+// — server-side validation rejects upserts for non-CEO deployments.
+//
+// `credentials` is plaintext JSONB; mirrors the `agents.adapter_config`
+// pattern. Encryption-at-rest is deferred — when that ships, both this
+// and adapter_config get rotated together.
+//
+// `status` mirrors the live adapter-side state ("off" = not configured,
+// "connecting" = adapter is paring/handshaking, "connected" = ready,
+// "error" = setup failed). Status is refreshed by the adapter glue, not
+// by the user-facing PUT.
+export const deploymentChannels = pgTable(
+  "deployment_channels",
+  {
+    deploymentId: uuid("deployment_id")
+      .notNull()
+      .references(() => deployments.id, { onDelete: "cascade" }),
+    // telegram | discord | whatsapp | slack | signal | matrix | mattermost
+    // | line | feishu | qqbot | bluebubbles | googlechat | msteams
+    channelType: text("channel_type").notNull(),
+    credentials: jsonb("credentials").notNull(),
+    enabled: boolean("enabled").notNull().default(true),
+    chatEnabled: boolean("chat_enabled").notNull().default(true),
+    notifEnabled: boolean("notif_enabled").notNull().default(true),
+    // off | connecting | connected | error
+    status: text("status").notNull().default("off"),
+    statusMsg: text("status_msg"),
+    lastSyncedAt: timestamp("last_synced_at", { withTimezone: true }),
+    // Per-channel transport runtime state (Telegram: `{ pollingOffset:
+    // number }`, Discord: `{ resumeUrl, sessionId }`, etc.). Distinct
+    // from `credentials` so token rotation doesn't accidentally reset
+    // polling cursors. JSONB so each channel's orchestrator owns its own
+    // shape — server never inspects.
+    transportState: jsonb("transport_state").notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("uniq_deployment_channels").on(t.deploymentId, t.channelType),
+    index("idx_deployment_channels_deployment").on(t.deploymentId),
+  ],
+);

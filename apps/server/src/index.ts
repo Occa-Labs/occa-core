@@ -16,6 +16,7 @@ import { registerTaskWorker } from "./infra/queue/task-worker";
 import { registerWorkflowWorker } from "./infra/queue/workflow-worker";
 import { registerAgentDmWorker } from "./infra/queue/agent-dm-worker";
 import { registerReviewWorker } from "./infra/queue/review-worker";
+import { startTelegramOrchestrator } from "./features/channels/transport/telegram-orchestrator";
 import {
   startWorkflowTriggerPoller,
   stopWorkflowTriggerPoller,
@@ -171,6 +172,11 @@ async function main() {
   // Auto-enqueue any task with an assigned agent that never got dispatched
   // (created before pg-boss existed, or reverted by the reaper above).
   await enqueuePendingTasks();
+
+  // Spawn long-poll loops for any enabled Telegram channels saved in
+  // `deployment_channels`. Reload on upsert/delete is handled by the
+  // channels route via `reloadTelegramChannel`.
+  await startTelegramOrchestrator();
 
   // Fire-and-forget: seed failures must not block the server from accepting
   // requests. Next boot retries any entry that didn't land.

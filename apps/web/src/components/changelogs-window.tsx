@@ -12,6 +12,13 @@ interface ChangelogsWindowProps {
   onClose?: () => void;
 }
 
+// Monochrome treatment across the four tags — icons carry the semantic
+// (Sparkles=new, Zap=improved, Wrench=fixed, AlertTriangle=breaking).
+// Breaking keeps a subtle warning ring so destructive notes still stand
+// apart from the routine ship log without leaning on saturated color.
+const NEUTRAL_BADGE = "bg-white/6 text-white/75 border-white/12";
+const BREAKING_BADGE = "bg-white/6 text-red-200/85 border-red-400/20";
+
 const TAG_META: Record<
   ChangelogTag,
   { label: string; icon: typeof Sparkles; className: string }
@@ -19,22 +26,22 @@ const TAG_META: Record<
   feature: {
     label: "New",
     icon: Sparkles,
-    className: "bg-sky-500/15 text-sky-200 border-sky-400/30",
+    className: NEUTRAL_BADGE,
   },
   improvement: {
     label: "Improved",
     icon: Zap,
-    className: "bg-emerald-500/15 text-emerald-200 border-emerald-400/30",
+    className: NEUTRAL_BADGE,
   },
   fix: {
     label: "Fixed",
     icon: Wrench,
-    className: "bg-amber-500/15 text-amber-200 border-amber-400/30",
+    className: NEUTRAL_BADGE,
   },
   breaking: {
     label: "Breaking",
     icon: AlertTriangle,
-    className: "bg-red-500/15 text-red-200 border-red-400/30",
+    className: BREAKING_BADGE,
   },
 };
 

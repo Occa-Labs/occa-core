@@ -7,6 +7,7 @@ import {
   deploymentApiKeys,
   deploymentRuntimeState,
   deploymentTaskSessions,
+  deploymentWorkspaceFiles,
   deployments,
   episodicMemory,
   tasks,
@@ -19,6 +20,7 @@ import type {
   AssignedSkill,
   LivenessState,
   WakePayload,
+  WorkspaceFile,
 } from "@occa/runtime-core";
 import type { TraceStatus, TraceUsage } from "@occa/shared/types";
 import { db } from "./db";
@@ -221,6 +223,19 @@ async function loadSubordinates(
         eq(deployments.parentDeploymentIndex, parentDeploymentIndex),
       ),
     );
+}
+
+async function loadWorkspaceFiles(
+  deploymentId: string,
+): Promise<WorkspaceFile[]> {
+  const rows = await db
+    .select({
+      filename: deploymentWorkspaceFiles.filename,
+      content: deploymentWorkspaceFiles.content,
+    })
+    .from(deploymentWorkspaceFiles)
+    .where(eq(deploymentWorkspaceFiles.deploymentId, deploymentId));
+  return rows.map((r) => ({ filename: r.filename, content: r.content }));
 }
 
 async function loadAssignedSkills(
@@ -507,6 +522,7 @@ async function executeClaim(trace: ClaimedTrace): Promise<void> {
   const apiUrl = process.env.OCCA_SERVER_URL || "http://localhost:3002";
 
   const skills = await loadAssignedSkills(trace.companyId, agent.desiredSkills);
+  const workspaceFiles = await loadWorkspaceFiles(trace.agentId);
 
   const abortController = new AbortController();
   let seq = 0;
@@ -586,6 +602,7 @@ async function executeClaim(trace: ClaimedTrace): Promise<void> {
     },
     sessionParams: baseSessionParams,
     skills,
+    workspaceFiles,
   };
 
   let status: TraceStatus = "succeeded";

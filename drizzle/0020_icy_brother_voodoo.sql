@@ -1,0 +1,1 @@
+ALTER TABLE "deployment_channels" ADD COLUMN "transport_state" jsonb DEFAULT '{}'::jsonb NOT NULL;

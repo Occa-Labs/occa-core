@@ -189,8 +189,8 @@ function prettifyError(code: string): string {
       return "Gateway failed to provision the agent.";
     case "gateway_restart_timeout":
       return "Gateway didn't come back after the config restart.";
-    case "openclaw_agent_id_conflict":
-      return "An OpenClaw agent with this id already exists.";
+    case "agent_id_conflict":
+      return "An agent with this id already exists on the adapter.";
     case "company_already_exists":
       return "You already have a company — reload to continue.";
     case "conflict":

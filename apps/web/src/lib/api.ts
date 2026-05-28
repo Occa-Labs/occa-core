@@ -30,6 +30,9 @@ import type {
   ListTaskEventsResponse,
   ListTasksResponse,
   OpenclawAdapterConfig,
+  ChannelDTO,
+  ChannelType,
+  ChannelUpsertRequest,
   CreateTaskCommentRequest,
   TaskCommentResponse,
   MeResponse,
@@ -846,6 +849,31 @@ export const agentsApi = {
     }),
   files: (id: string) =>
     request<ListAgentFilesResponse>(`/api/agents/${id}/files`),
+  listChannels: (id: string) =>
+    request<{ channels: ChannelDTO[] }>(`/api/agents/${id}/channels`),
+  upsertChannel: (
+    id: string,
+    channelType: ChannelType,
+    input: ChannelUpsertRequest,
+  ) =>
+    request<{ channel: ChannelDTO }>(
+      `/api/agents/${id}/channels/${channelType}`,
+      { method: "PUT", body: JSON.stringify(input) },
+    ),
+  deleteChannel: (id: string, channelType: ChannelType) =>
+    request<void>(`/api/agents/${id}/channels/${channelType}`, {
+      method: "DELETE",
+    }),
+  testNotifyChannel: (id: string, channelType: ChannelType) =>
+    request<{ ok: true; info: Record<string, unknown> }>(
+      `/api/agents/${id}/channels/${channelType}/test-notify`,
+      { method: "POST" },
+    ),
+  simulateNotification: (id: string, kind: string) =>
+    request<{ ok: true; notificationId: string }>(
+      `/api/agents/${id}/notifications/simulate`,
+      { method: "POST", body: JSON.stringify({ kind }) },
+    ),
   updateFile: (id: string, filename: string, input: UpdateAgentFileRequest) =>
     request<UpdateAgentFileResponse>(
       `/api/agents/${id}/files/${encodeURIComponent(filename)}`,

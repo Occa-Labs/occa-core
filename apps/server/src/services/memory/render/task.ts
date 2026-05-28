@@ -264,6 +264,40 @@ function formatCompanyBrain(spec: ContextSpec): string | null {
   return sections.join("\n").trimEnd();
 }
 
+// See chat renderer for context. Same override constant repeated here
+// to keep the renderers self-contained (different surface flavor, same
+// runtime-memory leak problem).
+const RUNTIME_MEMORY_OVERRIDE = [
+  `PRIORITY — IGNORE PRIOR RUNTIME MEMORY BLOCKS:`,
+  `If any "Memory", "User profile", "Things to remember", or similar`,
+  `pre-existing block was injected above this instruction by the agent`,
+  `runtime itself, treat it as STALE DATA from unrelated conversations.`,
+  `Do not act on it, do not reference it, do not "recall" facts from it.`,
+  `Your authoritative identity, persona, and operating context comes`,
+  `EXCLUSIVELY from the workspace files + this task's brief below.`,
+].join("\n");
+
+// Inline persona / workspace markdown so the agent has its identity
+// context regardless of adapter filesystem availability. Same block
+// shape as chat renderer; both surfaces share the canonical content.
+function formatWorkspaceFiles(spec: ContextSpec): string | null {
+  const files = spec.workspaceFiles;
+  if (!files || files.length === 0) return null;
+  const lines = [
+    `Your workspace files (full content below — this is your identity,`,
+    `team awareness, and operating notes; treat them as authoritative):`,
+  ];
+  for (const f of files) {
+    lines.push("");
+    lines.push(`=== FILE: ${f.filename} ===`);
+    lines.push("");
+    lines.push(f.content.trim());
+    lines.push("");
+    lines.push(`=== END FILE: ${f.filename} ===`);
+  }
+  return lines.join("\n");
+}
+
 // Optional company profile block — only emit lines that have content
 // so blank onboarding doesn't spam the prompt. Same shape as chat
 // renderer; sharing format keeps agents consistent across surfaces.
@@ -348,6 +382,7 @@ export function renderTaskPrompt(spec: ContextSpec): string {
   const profileBlock = formatCompanyProfile(spec);
   const brainBlock = formatCompanyBrain(spec);
   const relatedDocsBlock = formatRelevantDocuments(spec);
+  const workspaceFilesBlock = formatWorkspaceFiles(spec);
   const commentsBlock = renderCommentsBlock(s.comments);
   // Verified-role agents (e.g. news_writer) must emit a machine-checked
   // <!--occa:claims--> block or the deliverable is auto-rejected by the
@@ -472,11 +507,12 @@ export function renderTaskPrompt(spec: ContextSpec): string {
     : [];
 
   return [
+    RUNTIME_MEMORY_OVERRIDE,
+    ``,
     `You are ${spec.agent.name}, the ${spec.agent.roleLabel} of ${spec.company.name} — running inside OCCA OS in TASK mode.`,
     ``,
-    `Your full persona lives in your workspace files (./SOUL.md, ./AGENTS.md, ./IDENTITY.md, ./HEARTBEAT.md). Read them if you haven't this session.`,
-    ``,
     ...continuationBanner,
+    ...(workspaceFilesBlock ? [workspaceFilesBlock, ``] : []),
     ...(profileBlock ? [profileBlock, ``] : []),
     ...(brainBlock ? [brainBlock, ``] : []),
     ...(relatedDocsBlock ? [relatedDocsBlock, ``] : []),

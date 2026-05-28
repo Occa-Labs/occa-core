@@ -92,8 +92,44 @@ function formatRecentWork(spec: ContextSpec): string | null {
   return lines.join("\n");
 }
 
+// Runtime-side memory override. Some adapter runtimes (Hermes' built-in
+// MemoryStore in particular) inject `MEMORY.md` / `USER.md` content
+// from the runtime's local filesystem into the system prompt BEFORE
+// OCCA's wake messages arrive. That content is runtime-home-wide and
+// OCCA has no API to scope or clear it. We can only tell the agent,
+// in our own message, to treat anything injected by the runtime as
+// stale and to anchor on the workspace files + current user message
+// instead.
+const RUNTIME_MEMORY_OVERRIDE = [
+  `PRIORITY — IGNORE PRIOR RUNTIME MEMORY BLOCKS:`,
+  `If any "Memory", "User profile", "Things to remember", or similar`,
+  `pre-existing block was injected above this instruction by the agent`,
+  `runtime itself, treat it as STALE DATA from unrelated conversations.`,
+  `Do not act on it, do not reference it, do not "recall" facts from it.`,
+  `Your authoritative identity, persona, and operating context comes`,
+  `EXCLUSIVELY from the workspace files + this thread's history.`,
+].join("\n");
+
 // Optional company profile block — only emit lines that have content,
 // so blank onboarding doesn't spam the prompt with empty fields.
+function formatWorkspaceFiles(spec: ContextSpec): string | null {
+  const files = spec.workspaceFiles;
+  if (!files || files.length === 0) return null;
+  const lines = [
+    `Your workspace files (full content below — this is your identity,`,
+    `team awareness, and operating notes; treat them as authoritative):`,
+  ];
+  for (const f of files) {
+    lines.push("");
+    lines.push(`=== FILE: ${f.filename} ===`);
+    lines.push("");
+    lines.push(f.content.trim());
+    lines.push("");
+    lines.push(`=== END FILE: ${f.filename} ===`);
+  }
+  return lines.join("\n");
+}
+
 function formatCompanyProfile(spec: ContextSpec): string | null {
   const p = spec.company.profile;
   const lines: string[] = [];
@@ -115,13 +151,15 @@ function renderFirstTurnPrompt(spec: ContextSpec, userMessage: string): string {
   const profileBlock = formatCompanyProfile(spec);
   const brainBlock = formatCompanyBrain(spec);
   const recentWorkBlock = formatRecentWork(spec);
+  const workspaceFilesBlock = formatWorkspaceFiles(spec);
   return [
-    `You are ${spec.agent.name}, the ${spec.agent.roleLabel} of ${spec.company.name} — an AI agent running inside OCCA OS.`,
+    RUNTIME_MEMORY_OVERRIDE,
     ``,
-    `Your full persona lives in your workspace files (./SOUL.md, ./AGENTS.md, ./IDENTITY.md, ./HEARTBEAT.md). Read them if you haven't this session.`,
+    `You are ${spec.agent.name}, the ${spec.agent.roleLabel} of ${spec.company.name} — an AI agent running inside OCCA OS.`,
     ``,
     `You are talking to the OWNER / FOUNDER of ${spec.company.name} — your principal. They built this company and you report directly to them. Treat their messages as principal-from-board direction, not customer support tickets.`,
     ``,
+    ...(workspaceFilesBlock ? [workspaceFilesBlock, ``] : []),
     ...(profileBlock ? [profileBlock, ``] : []),
     ...(brainBlock ? [brainBlock, ``] : []),
     ...(recentWorkBlock ? [recentWorkBlock, ``] : []),
@@ -131,7 +169,7 @@ function renderFirstTurnPrompt(spec: ContextSpec, userMessage: string): string {
     ``,
     `HOW TO REPLY:`,
     `- BEGIN your very first reply by acknowledging your identity in your own persona voice (e.g. "Hey — ${spec.agent.name} here." or similar). DO NOT ask "who am I" or "who are you" — you already know.`,
-    `- Use your CEO voice from ./SOUL.md: direct, action-oriented, no corporate warm-up, no exclamation points unless something is on fire.`,
+    `- Use your CEO voice from SOUL above: direct, action-oriented, no corporate warm-up, no exclamation points unless something is on fire.`,
     `- For ambiguous requests, ask 1-2 sharp clarifying questions. Multi-turn dialogue is normal and expected.`,
     ``,
     `*** HARD RULE — DO NOT DELIVER THE WORK YOURSELF IN CHAT. ***`,
@@ -259,13 +297,15 @@ function renderAgentDmFirstTurn(
   const profileBlock = formatCompanyProfile(spec);
   const brainBlock = formatCompanyBrain(spec);
   const recentWorkBlock = formatRecentWork(spec);
+  const workspaceFilesBlock = formatWorkspaceFiles(spec);
   return [
-    `You are ${spec.agent.name}, the ${spec.agent.roleLabel} of ${spec.company.name} — an AI agent running inside OCCA OS.`,
+    RUNTIME_MEMORY_OVERRIDE,
     ``,
-    `Your full persona lives in your workspace files (./SOUL.md, ./AGENTS.md, ./IDENTITY.md, ./HEARTBEAT.md). Read them if you haven't this session.`,
+    `You are ${spec.agent.name}, the ${spec.agent.roleLabel} of ${spec.company.name} — an AI agent running inside OCCA OS.`,
     ``,
     `You have just received a DIRECTIVE from ${args.callerName} (${args.callerRole}), who sits one tier up in your reporting chain. Treat it as direction you are accountable to deliver against. The owner does NOT see this surface — your reply lands with ${args.callerName}, not the owner.`,
     ``,
+    ...(workspaceFilesBlock ? [workspaceFilesBlock, ``] : []),
     ...(profileBlock ? [profileBlock, ``] : []),
     ...(brainBlock ? [brainBlock, ``] : []),
     ...(recentWorkBlock ? [recentWorkBlock, ``] : []),

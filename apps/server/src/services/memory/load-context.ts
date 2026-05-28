@@ -32,6 +32,7 @@ import { loadOrg } from "./stores/org";
 import { loadKnowledge } from "./stores/semantic";
 import { loadHistory } from "./stores/episodic";
 import { loadSkills } from "./stores/skills";
+import { loadWorkspaceFiles } from "./stores/workspace-files";
 import type {
   ContextRuntimeEnv,
   ContextSpec,
@@ -51,7 +52,7 @@ export async function loadContext(args: {
   // Identity first — everything downstream is scoped by its companyId.
   const { agent, company } = await loadIdentity(args.deploymentId);
 
-  const [org, knowledge, history, skills] = await Promise.all([
+  const [org, knowledge, history, skills, workspaceFiles] = await Promise.all([
     loadOrg({
       deploymentId: args.deploymentId,
       companyId: company.id,
@@ -70,6 +71,7 @@ export async function loadContext(args: {
       deploymentId: args.deploymentId,
       companyId: company.id,
     }),
+    loadWorkspaceFiles({ deploymentId: args.deploymentId }),
   ]);
 
   return {
@@ -79,6 +81,7 @@ export async function loadContext(args: {
     knowledge,
     history,
     skills,
+    workspaceFiles,
     runtimeEnv: args.runtimeEnv,
     surface: args.surface,
   };

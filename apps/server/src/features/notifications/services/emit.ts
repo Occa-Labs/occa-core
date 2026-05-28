@@ -6,6 +6,8 @@
 import { childLogger } from "../../../lib/logger";
 import { insertOne } from "../repositories/notifications";
 import type { NotificationRow } from "../repositories/notifications";
+import { findCeoForCompany } from "../../agents/repositories/deployments";
+import { pushNotificationToCeo } from "../../channels/notify";
 
 const log = childLogger("services:notifications:emit");
 
@@ -36,5 +38,53 @@ export async function emitNotification(
     { id: row.id, kind: row.kind, userId: row.userId, companyId: row.companyId },
     "notification emitted",
   );
+
+  // Fan-out to external channels (Telegram, future Discord/Slack/...).
+  // Best-effort: a delivery failure does NOT roll back the persisted
+  // notification — the in-app inbox is the source of truth, channels
+  // are convenience. The dispatcher handles `notifEnabled` per channel
+  // so users who only want chat (not push) on a given channel stay
+  // unbothered.
+  void pushAfterEmit(input, row.id).catch((err) => {
+    log.warn({ err, notifId: row.id }, "channel push after emit failed");
+  });
+
   return row;
+}
+
+async function pushAfterEmit(
+  input: EmitNotificationInput,
+  notifId: string,
+): Promise<void> {
+  const ceo = await findCeoForCompany(input.companyId);
+  if (!ceo) return;
+  const text = formatForChannel(input);
+  const res = await pushNotificationToCeo({
+    deploymentId: ceo.id,
+    text,
+  });
+  if (res.delivered.length > 0 || res.failed.length > 0) {
+    log.info(
+      {
+        notifId,
+        delivered: res.delivered,
+        failed: res.failed,
+        skipped: res.skipped,
+      },
+      "channel push fan-out done",
+    );
+  }
+}
+
+function formatForChannel(input: EmitNotificationInput): string {
+  // Plain-text format suitable for Telegram + most chat platforms.
+  // Two lines: title (bold-equivalent via uppercase prefix) and body.
+  // Link is omitted — operator still resolves it from the in-app inbox
+  // since channel surfaces don't share OCCA auth.
+  const lines = [input.title];
+  if (input.body && input.body.length > 0) {
+    lines.push("");
+    lines.push(input.body);
+  }
+  return lines.join("\n");
 }

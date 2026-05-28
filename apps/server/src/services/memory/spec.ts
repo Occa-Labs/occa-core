@@ -185,6 +185,17 @@ export type SurfacePayload =
       comments: { from: "system" | "teammate"; body: string }[];
     };
 
+// Workspace markdown the agent's identity lives in (SOUL.md, AGENTS.md,
+// IDENTITY.md, HEARTBEAT.md, etc) — loaded with full content so the
+// renderer can inline it. For adapters that mount a per-agent filesystem
+// (OpenClaw), agents can ALSO read these via read_file from their CWD;
+// for adapters that don't (Hermes), the prompt is the only place the
+// content surfaces.
+export interface ContextWorkspaceFile {
+  filename: string;
+  content: string;
+}
+
 export interface ContextSpec {
   agent: ContextAgent;
   company: ContextCompany;
@@ -195,6 +206,9 @@ export interface ContextSpec {
   // Skills assigned to the calling deployment, loaded with full markdown
   // so renderers can inline them. Empty array when none assigned.
   skills: ContextSkill[];
+  // Persona / operating markdown for this deployment. Empty array when
+  // no files have been seeded yet.
+  workspaceFiles: ContextWorkspaceFile[];
   // Optional. Present when the caller is a task/wake dispatcher minting
   // a per-trace ephemeral key. Chat-mode loaders that don't have a
   // trace context (e.g. CEO chat preview) leave this undefined and the
