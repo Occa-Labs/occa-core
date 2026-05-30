@@ -8,6 +8,15 @@ import { z } from "zod";
 import { ADAPTER_TYPES } from "@occa/shared/types";
 import { ROLE_ORDER } from "@occa/shared/role-catalog";
 import { LIMITS } from "../../../lib/limits";
+import { roleSchema } from "../../../lib/role-schema";
+import {
+  createBrainFileBody,
+  updateBrainFileBody,
+} from "../../../features/company-brain/domain/schemas";
+
+// Cap on an allowed-roles whitelist (library skills + tools share the same
+// role-gate semantics). Mirrors the skills feature's MAX_ALLOWED_ROLES.
+const ROLE_WHITELIST_MAX = 32;
 
 const titleField = z.string().trim().min(1).max(LIMITS.TITLE);
 const descriptionField = z.string().trim().min(1).max(LIMITS.DESCRIPTION);
@@ -166,6 +175,106 @@ export const proposeProfileEditBlockPayload = z
     message: "at least one profile field required",
   });
 
+// PROPOSE_KNOWLEDGE_EDIT: CEO drafts a create/update/delete of a Company
+// Brain knowledge file. With-approval tier: the marker NEVER writes — its
+// handler creates a pending approvals row the operator commits, and
+// applyKnowledgeEditApproval performs the repo write on approve. Files are
+// addressed by `path` (e.g. /brain/glossary.md), not by uuid, since the CEO
+// knows them by name. Reuses the canonical Company Brain validators (path
+// regex, content/visibility limits) so the marker stays in lockstep with the
+// brain feature. Discriminated by `op`; per-member refinement is done in the
+// handler (zod discriminatedUnion members must be plain objects).
+const knowledgePath = createBrainFileBody.shape.path;
+export const proposeKnowledgeEditBlockPayload = z.discriminatedUnion("op", [
+  createBrainFileBody.extend({ op: z.literal("create") }),
+  updateBrainFileBody.extend({
+    op: z.literal("update"),
+    path: knowledgePath,
+  }),
+  z.object({ op: z.literal("delete"), path: knowledgePath }),
+]);
+
+// PROPOSE_ROUTINE_EDIT: CEO drafts an edit-mandate or delete of an existing
+// routine. With-approval tier; the marker NEVER writes (applyRoutineEditApproval
+// runs the repo write on approve). Routines are addressed by routineId (uuid,
+// copied from COMPANY ROUTINES in the prompt) since they lack a stable slug —
+// consistent with TOGGLE/DISPATCH/ASSIGN_ROUTINE. This action covers ONLY the
+// mandate fields (title/description/priority) + delete; status (pause/resume),
+// assignee (reassign), and run-now are autonomous markers already, and routine
+// CREATE + trigger/schedule editing (cron) are a separate later action.
+const routineId = z.string().uuid();
+export const proposeRoutineEditBlockPayload = z.discriminatedUnion("op", [
+  z.object({
+    op: z.literal("update"),
+    routineId,
+    title: z.string().trim().min(1).max(LIMITS.KEY).optional(),
+    description: z.string().max(LIMITS.DESCRIPTION_LONG).optional(),
+    priority: z.string().max(LIMITS.TINY).optional(),
+  }),
+  z.object({ op: z.literal("delete"), routineId }),
+]);
+
+// PROPOSE_SKILL_LIBRARY_EDIT: CEO drafts a change to a company-imported
+// skill in the library — set its allowed-roles whitelist, or remove it from
+// the library entirely. With-approval tier; the marker NEVER writes (the
+// repo write runs on approve). Addressed by skillKey (canonical owner/repo/
+// slug), consistent with INSTALL_SKILL. This targets ONLY company-imported
+// skills: platform built-ins (companyId IS NULL) are not company-scoped, so
+// the apply lookup never resolves them — they cannot be edited or removed
+// here. Installing/uninstalling a skill ONTO an agent stays autonomous;
+// importing a skill from a source repo is operator-only.
+const skillKeyField = z.string().trim().min(1).max(LIMITS.KEY);
+export const proposeSkillLibraryEditBlockPayload = z.discriminatedUnion("op", [
+  z.object({
+    op: z.literal("set_roles"),
+    skillKey: skillKeyField,
+    // Empty array = unrestricted (every role may bind it). Non-empty = the
+    // whitelist of roles allowed to bind this skill.
+    allowedRoles: z.array(roleSchema).max(ROLE_WHITELIST_MAX),
+  }),
+  z.object({ op: z.literal("remove"), skillKey: skillKeyField }),
+]);
+
+// PROPOSE_TOOL_EDIT: CEO drafts a change to a company tool — set its
+// allowed-roles whitelist, or delete it. With-approval; the marker NEVER
+// writes (repo write runs on approve). Addressed by toolId (uuid, copied
+// from the CEO's context), consistent with BIND_TOOL. Tool CONFIG and
+// CREDENTIALS are intentionally absent — editing config is a later action
+// and credentials are operator-only (entered/rotated in the OS). Binding a
+// tool onto an agent stays autonomous.
+const toolId = z.string().uuid();
+export const proposeToolEditBlockPayload = z.discriminatedUnion("op", [
+  z.object({
+    op: z.literal("set_roles"),
+    toolId,
+    allowedRoles: z.array(roleSchema).max(ROLE_WHITELIST_MAX),
+  }),
+  // pause/activate. Only the operator-meaningful states — "failed" is
+  // system-set on invocation error, never proposable.
+  z.object({
+    op: z.literal("set_status"),
+    toolId,
+    status: z.enum(["active", "paused"]),
+  }),
+  z.object({ op: z.literal("delete"), toolId }),
+]);
+
+// PROPOSE_WORKFLOW_DELETE: CEO drafts deletion of a workflow, addressed by its
+// stable yamlId (consistent with TOGGLE_WORKFLOW). With-approval; the marker
+// NEVER writes. Workflow CREATE / step-editing is YAML-authoring — a separate
+// later action; enable/disable stays autonomous. Delete-only here, so the
+// payload is flat (no op discriminator).
+export const proposeWorkflowDeleteBlockPayload = z.object({
+  workflowYamlId: z.string().trim().min(1).max(LIMITS.KEY),
+});
+
+// PROPOSE_TASK_DELETE: CEO drafts deletion of a task by id. With-approval (the
+// only with-approval task action — create/edit/status/comment/archive are
+// autonomous). The marker NEVER writes; approve runs the delete.
+export const proposeTaskDeleteBlockPayload = z.object({
+  taskId: z.string().uuid(),
+});
+
 // REPORT marker is intentionally schema-less: its body is plain
 // markdown (not JSON) so the LLM can ship long-form summaries without
 // fighting JSON escape rules. The handler reads the raw text between
@@ -298,6 +407,67 @@ export type ProposeProfileEditBlockPayload = z.infer<
 // invalid_body also covers the refine failure (no editable field after
 // unknown-key stripping) and any stray non-editable key's type mismatch.
 export type ProfileEditProposeRejectReason =
+  | "permission_denied"
+  | "invalid_body";
+
+export type ProposeKnowledgeEditBlockPayload = z.infer<
+  typeof proposeKnowledgeEditBlockPayload
+>;
+
+// invalid_body covers a malformed payload AND an "update" op that names no
+// field to change (content/visibility both absent — handler-level check, not
+// expressible inside a discriminatedUnion member). Path-not-found and
+// path-conflict are APPLY-time failures (surfaced via the approval's
+// failureReason on approve), not propose-time rejects.
+export type KnowledgeEditProposeRejectReason =
+  | "permission_denied"
+  | "invalid_body";
+
+export type ProposeRoutineEditBlockPayload = z.infer<
+  typeof proposeRoutineEditBlockPayload
+>;
+
+// invalid_body also covers an "update" op naming no field to change
+// (title/description/priority all absent). routine_not_found is an APPLY-time
+// failure (surfaced via the approval's failureReason on approve).
+export type RoutineEditProposeRejectReason =
+  | "permission_denied"
+  | "invalid_body";
+
+export type ProposeSkillLibraryEditBlockPayload = z.infer<
+  typeof proposeSkillLibraryEditBlockPayload
+>;
+
+// skill_not_in_library is an APPLY-time failure (the key resolves to no
+// company-imported skill — absent, or a platform built-in), surfaced via the
+// approval's failureReason on approve.
+export type SkillLibraryEditProposeRejectReason =
+  | "permission_denied"
+  | "invalid_body";
+
+export type ProposeToolEditBlockPayload = z.infer<
+  typeof proposeToolEditBlockPayload
+>;
+
+// tool_not_found is an APPLY-time failure (the toolId resolves to no tool in
+// this company), surfaced via the approval's failureReason on approve.
+export type ToolEditProposeRejectReason =
+  | "permission_denied"
+  | "invalid_body";
+
+export type ProposeWorkflowDeleteBlockPayload = z.infer<
+  typeof proposeWorkflowDeleteBlockPayload
+>;
+export type ProposeTaskDeleteBlockPayload = z.infer<
+  typeof proposeTaskDeleteBlockPayload
+>;
+
+// workflow_not_found / task_not_found are APPLY-time failures, surfaced via
+// the approval's failureReason on approve.
+export type WorkflowDeleteProposeRejectReason =
+  | "permission_denied"
+  | "invalid_body";
+export type TaskDeleteProposeRejectReason =
   | "permission_denied"
   | "invalid_body";
 
@@ -454,4 +624,68 @@ export type ActionBlockOutcome =
   | {
       kind: "profile_edit_propose_rejected";
       reason: ProfileEditProposeRejectReason;
+    }
+  // PROPOSE_KNOWLEDGE_EDIT: a pending knowledge-file edit proposal row was
+  // created. `op` + `path` identify what the CEO drafted; the operator
+  // reviews + commits in the Approvals window (approve runs the repo write).
+  | {
+      kind: "knowledge_edit_proposed";
+      proposalId: string;
+      op: "create" | "update" | "delete";
+      path: string;
+    }
+  | {
+      kind: "knowledge_edit_propose_rejected";
+      reason: KnowledgeEditProposeRejectReason;
+    }
+  // PROPOSE_ROUTINE_EDIT: a pending routine edit/delete proposal row was
+  // created. `op` + `routineId` identify what the CEO drafted; the operator
+  // reviews + commits in the Approvals window (approve runs the repo write).
+  | {
+      kind: "routine_edit_proposed";
+      proposalId: string;
+      op: "update" | "delete";
+      routineId: string;
+    }
+  | {
+      kind: "routine_edit_propose_rejected";
+      reason: RoutineEditProposeRejectReason;
+    }
+  // PROPOSE_SKILL_LIBRARY_EDIT: a pending skill-library edit/remove proposal
+  // row was created. `op` + `skillKey` identify the draft; approve runs the
+  // repo write (set allowed-roles, or remove from the library).
+  | {
+      kind: "skill_library_edit_proposed";
+      proposalId: string;
+      op: "set_roles" | "remove";
+      skillKey: string;
+    }
+  | {
+      kind: "skill_library_edit_propose_rejected";
+      reason: SkillLibraryEditProposeRejectReason;
+    }
+  // PROPOSE_TOOL_EDIT: a pending tool edit/delete proposal row was created.
+  // `op` + `toolId` identify the draft; approve runs the repo write (set
+  // allowed-roles, or delete the tool).
+  | {
+      kind: "tool_edit_proposed";
+      proposalId: string;
+      op: "set_roles" | "set_status" | "delete";
+      toolId: string;
+    }
+  | {
+      kind: "tool_edit_propose_rejected";
+      reason: ToolEditProposeRejectReason;
+    }
+  // PROPOSE_WORKFLOW_DELETE / PROPOSE_TASK_DELETE: a pending delete proposal
+  // row was created; approve runs the repo delete.
+  | { kind: "workflow_delete_proposed"; proposalId: string; workflowYamlId: string }
+  | {
+      kind: "workflow_delete_propose_rejected";
+      reason: WorkflowDeleteProposeRejectReason;
+    }
+  | { kind: "task_delete_proposed"; proposalId: string; taskId: string }
+  | {
+      kind: "task_delete_propose_rejected";
+      reason: TaskDeleteProposeRejectReason;
     };

@@ -4,7 +4,11 @@ import { Bot, Loader2 } from "lucide-react";
 import type { AgentDTO, ApprovalDTO } from "@occa/shared/types";
 import { cn } from "@/lib/utils";
 import { surface } from "@/components/ui/tokens";
-import { humanizeApprovalAction, relativeTime } from "../utils";
+import {
+  approvalStatusLabel,
+  humanizeApprovalAction,
+  relativeTime,
+} from "../utils";
 
 interface ApprovalsListProps {
   approvals: ApprovalDTO[];
@@ -135,7 +139,7 @@ function StatusChip({ status }: { status: string }) {
         tone,
       )}
     >
-      {status}
+      {approvalStatusLabel(status)}
     </span>
   );
 }

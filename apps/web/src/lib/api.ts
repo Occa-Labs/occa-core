@@ -9,6 +9,7 @@ import type {
   CreateAgentRequest,
   CreateAgentResponse,
   DecideApprovalResponse,
+  DismissApprovalResponse,
   ListActivityResponse,
   ListAgentFilesResponse,
   UpdateAgentFileRequest,
@@ -1200,6 +1201,10 @@ export const approvalsApi = {
     request<{ approval: ApprovalDTO }>(`/api/approvals/${id}`, {
       method: "PATCH",
       body: JSON.stringify({ payload }),
+    }),
+  dismiss: (id: string) =>
+    request<DismissApprovalResponse>(`/api/approvals/${id}/dismiss`, {
+      method: "POST",
     }),
 };
 

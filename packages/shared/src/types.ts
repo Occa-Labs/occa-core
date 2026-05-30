@@ -1194,6 +1194,10 @@ export const APPROVAL_ACTION_TYPES = [
   "delegate",
   "propose_deployment",
   "edit_company_profile",
+  "edit_knowledge",
+  "edit_routine",
+  "edit_skill_library",
+  "edit_tool",
 ] as const;
 export type ApprovalActionType =
   | (typeof APPROVAL_ACTION_TYPES)[number]
@@ -1265,6 +1269,14 @@ export interface DecideApprovalRequest {
 }
 
 export interface DecideApprovalResponse {
+  approval: ApprovalDTO;
+}
+
+// Body-less POST /api/approvals/:id/dismiss — operator clears a pending row
+// from the queue without an approve/reject decision (sets the "cancelled"
+// terminal status). No side effects, no reason. Distinct from reject, which
+// is an explicit denial carrying a reason.
+export interface DismissApprovalResponse {
   approval: ApprovalDTO;
 }
 

@@ -14,6 +14,12 @@ import type { ApprovalActionType, ChannelAction } from "@occa/shared/types";
 const CHANNEL_DECIDABLE_ACTION_TYPES = new Set<ApprovalActionType>([
   "delegate",
   "edit_company_profile",
+  "edit_knowledge",
+  "edit_routine",
+  "edit_skill_library",
+  "edit_tool",
+  "delete_workflow",
+  "delete_task",
 ]);
 
 // Build the interactive approve/reject actions for an approval, or an empty

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Bot, Check, Pencil, Rocket, Undo2, X } from "lucide-react";
+import { Archive, Bot, Check, Pencil, Rocket, Undo2, X } from "lucide-react";
 import type { AgentDTO, ApprovalDTO } from "@occa/shared/types";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -9,11 +9,13 @@ import { MarkdownViewer } from "@/components/ui/markdown-viewer";
 import { surface } from "@/components/ui/tokens";
 import { cn } from "@/lib/utils";
 import { useDecideApproval } from "../api/use-decide-approval";
+import { useDismissApproval } from "../api/use-dismiss-approval";
 import { useUpdateApproval } from "../api/use-update-approval";
 import {
   MARKDOWN_PAYLOAD_KEYS,
   SYSTEM_PAYLOAD_KEYS,
   type DeployProposalRequest,
+  approvalStatusLabel,
   humanizeApprovalAction,
   readDeployProposal,
   relativeTime,
@@ -80,8 +82,71 @@ export function ApprovalDetail({
     return <ProfileEditDetail approval={approval} agentById={agentById} />;
   }
 
+  // Knowledge-file edits (create/update/delete a Company Brain file) are not
+  // task-shaped; approve runs the repo write via the with-approval engine.
+  if (approval.actionType === "edit_knowledge") {
+    return <KnowledgeEditDetail approval={approval} agentById={agentById} />;
+  }
+
+  // Routine edits (mandate edit / delete) — approve runs the repo write.
+  if (approval.actionType === "edit_routine") {
+    return <RoutineEditDetail approval={approval} agentById={agentById} />;
+  }
+
+  // Skill-library edits (set allowed-roles / remove) — approve runs the write.
+  if (approval.actionType === "edit_skill_library") {
+    return <SkillLibraryEditDetail approval={approval} agentById={agentById} />;
+  }
+
+  // Tool edits (set allowed-roles / status / delete) — approve runs the write.
+  if (approval.actionType === "edit_tool") {
+    return <ToolEditDetail approval={approval} agentById={agentById} />;
+  }
+
+  // Delete-only proposals (workflow, task) share one minimal view.
+  if (approval.actionType === "delete_workflow") {
+    return (
+      <SimpleDeleteDetail approval={approval} agentById={agentById} noun="workflow" />
+    );
+  }
+  if (approval.actionType === "delete_task") {
+    return (
+      <SimpleDeleteDetail approval={approval} agentById={agentById} noun="task" />
+    );
+  }
+
   return (
     <TaskApprovalDetail approval={approval} agentById={agentById} />
+  );
+}
+
+// Quiet "clear from the queue" action shared by all three pending views.
+// Sets the approval to "cancelled" via dismissApproval — no reason, no side
+// effects — distinct from Reject (an explicit denial that records a reason).
+// Self-contained: owns its mutation so each view just drops it next to
+// Reject. The optimistic drop unmounts this detail almost immediately, so
+// the in-flight window is tiny.
+function DismissButton({
+  approvalId,
+  disabled,
+}: {
+  approvalId: string;
+  disabled?: boolean;
+}) {
+  const dismiss = useDismissApproval();
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      title="Clear this from the queue without a decision"
+      disabled={disabled || dismiss.isPending}
+      onClick={() =>
+        void dismiss.mutateAsync({ id: approvalId }).catch(() => {})
+      }
+    >
+      <Archive className="size-3" />
+      {dismiss.isPending ? "Dismissing…" : "Dismiss"}
+    </Button>
   );
 }
 
@@ -275,6 +340,7 @@ function TaskApprovalDetail({ approval, agentById }: ApprovalDetailProps) {
               Revert edits
             </Button>
           )}
+          <DismissButton approvalId={approval.id} disabled={submitting} />
           <Button
             variant="ghost"
             size="sm"
@@ -429,6 +495,7 @@ function ProposeDeploymentDetail({
         </div>
       ) : (
         <div className="flex items-center justify-end gap-2">
+          <DismissButton approvalId={approval.id} disabled={submitting} />
           <Button
             variant="ghost"
             size="sm"
@@ -596,6 +663,7 @@ function ProfileEditDetail({
         </div>
       ) : (
         <div className="flex items-center justify-end gap-2">
+          <DismissButton approvalId={approval.id} disabled={submitting} />
           <Button
             variant="ghost"
             size="sm"
@@ -612,6 +680,854 @@ function ProfileEditDetail({
           >
             <Check className="size-3" />
             {submitting ? "Approving…" : "Approve"}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Knowledge-file edit proposal view ────────────────────────────────
+// Read-only render of a CEO PROPOSE_KNOWLEDGE_EDIT row (op + path + content
+// + visibility). Approve runs the Company Brain repo write (create/update/
+// delete) via the with-approval engine; Reject denies it; Dismiss clears it.
+// No inline editing in this v1.
+function KnowledgeEditDetail({
+  approval,
+  agentById,
+}: {
+  approval: ApprovalDTO;
+  agentById: Map<string, AgentDTO>;
+}) {
+  const decide = useDecideApproval();
+  const [mode, setMode] = useState<DetailMode>({ kind: "view" });
+  const [rejectReason, setRejectReason] = useState("");
+
+  useEffect(() => {
+    setMode({ kind: "view" });
+    setRejectReason("");
+  }, [approval.id]);
+
+  const submitting = mode.kind === "submitting";
+
+  const handleApprove = useCallback(async () => {
+    setMode({ kind: "submitting" });
+    try {
+      await decide.mutateAsync({ id: approval.id, decision: "approve" });
+    } catch {
+      setMode({ kind: "view" });
+    }
+  }, [approval.id, decide]);
+
+  const handleSendReject = useCallback(async () => {
+    const reason = rejectReason.trim();
+    if (!reason) return;
+    setMode({ kind: "submitting" });
+    try {
+      await decide.mutateAsync({
+        id: approval.id,
+        decision: "reject",
+        rejectionReason: reason,
+      });
+    } catch {
+      setMode({ kind: "rejecting" });
+    }
+  }, [approval.id, decide, rejectReason]);
+
+  const agent = approval.requestedByAgentId
+    ? agentById.get(approval.requestedByAgentId)
+    : null;
+  const agentName = agent?.name ?? "CEO";
+  const agentRole = agent?.role ?? null;
+  const actionLabel = humanizeApprovalAction(
+    approval.actionType,
+    approval.payload,
+    agentById,
+  );
+  const op =
+    typeof approval.payload.op === "string" ? approval.payload.op : "update";
+  const fields = Object.entries(approval.payload).filter(
+    ([k]) => !SYSTEM_PAYLOAD_KEYS.has(k),
+  );
+
+  return (
+    <div className="flex flex-col gap-4 px-5 py-4">
+      <div className="flex items-start gap-3">
+        <div
+          aria-hidden
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-white/70"
+          style={surface.recessed}
+        >
+          <Bot className="h-4 w-4" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-baseline gap-2">
+            <span className="truncate text-[14px] font-semibold text-white/90">
+              {agentName}
+            </span>
+            {agentRole && (
+              <span className="shrink-0 text-[11px] text-white/40">
+                · {agentRole}
+              </span>
+            )}
+            <span className="ml-auto shrink-0 text-[11px] text-white/40">
+              {relativeTime(approval.requestedAt)}
+            </span>
+          </div>
+          <div className="mt-0.5 text-[12px] text-white/60">{actionLabel}</div>
+        </div>
+      </div>
+
+      {fields.length > 0 && (
+        <Card variant="recessed" padding="md">
+          <div className="flex flex-col gap-4 text-[12px]">
+            {fields.map(([k, v]) => (
+              <ReadOnlyField key={k} label={k} value={v} />
+            ))}
+          </div>
+        </Card>
+      )}
+
+      <p className="text-[11px] leading-relaxed text-white/45">
+        {op === "delete"
+          ? "Approving permanently removes this knowledge file from the Company Brain."
+          : op === "create"
+            ? "Approving adds this file to the Company Brain. Content replaces nothing — it's a new file."
+            : "Approving overwrites the file's content/visibility in the Company Brain with what's shown above."}
+      </p>
+
+      {mode.kind === "rejecting" ? (
+        <div className="space-y-2">
+          <textarea
+            autoFocus
+            value={rejectReason}
+            onChange={(e) => setRejectReason(e.target.value)}
+            placeholder="Reason for rejection…"
+            rows={3}
+            className={cn(
+              "w-full resize-none rounded-lg border border-white/10",
+              "bg-black/25 px-2.5 py-2 text-[12px] text-white/85",
+              "placeholder:text-white/30 focus:border-white/25 focus:outline-none",
+            )}
+          />
+          <div className="flex items-center justify-end gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setRejectReason("");
+                setMode({ kind: "view" });
+              }}
+              disabled={submitting}
+            >
+              <X className="size-3" />
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              size="sm"
+              disabled={submitting || rejectReason.trim().length === 0}
+              onClick={() => void handleSendReject()}
+            >
+              {submitting ? "Sending…" : "Send"}
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex items-center justify-end gap-2">
+          <DismissButton approvalId={approval.id} disabled={submitting} />
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setMode({ kind: "rejecting" })}
+            disabled={submitting}
+          >
+            Reject
+          </Button>
+          <Button
+            variant="success"
+            size="sm"
+            onClick={() => void handleApprove()}
+            disabled={submitting}
+          >
+            <Check className="size-3" />
+            {submitting ? "Approving…" : "Approve"}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Routine edit proposal view ───────────────────────────────────────
+// Read-only render of a CEO PROPOSE_ROUTINE_EDIT row (op + routineId +
+// mandate fields). Approve runs updateRoutine/deleteRoutine via the
+// with-approval engine; Reject denies; Dismiss clears. No inline editing.
+function RoutineEditDetail({
+  approval,
+  agentById,
+}: {
+  approval: ApprovalDTO;
+  agentById: Map<string, AgentDTO>;
+}) {
+  const decide = useDecideApproval();
+  const [mode, setMode] = useState<DetailMode>({ kind: "view" });
+  const [rejectReason, setRejectReason] = useState("");
+
+  useEffect(() => {
+    setMode({ kind: "view" });
+    setRejectReason("");
+  }, [approval.id]);
+
+  const submitting = mode.kind === "submitting";
+
+  const handleApprove = useCallback(async () => {
+    setMode({ kind: "submitting" });
+    try {
+      await decide.mutateAsync({ id: approval.id, decision: "approve" });
+    } catch {
+      setMode({ kind: "view" });
+    }
+  }, [approval.id, decide]);
+
+  const handleSendReject = useCallback(async () => {
+    const reason = rejectReason.trim();
+    if (!reason) return;
+    setMode({ kind: "submitting" });
+    try {
+      await decide.mutateAsync({
+        id: approval.id,
+        decision: "reject",
+        rejectionReason: reason,
+      });
+    } catch {
+      setMode({ kind: "rejecting" });
+    }
+  }, [approval.id, decide, rejectReason]);
+
+  const agent = approval.requestedByAgentId
+    ? agentById.get(approval.requestedByAgentId)
+    : null;
+  const agentName = agent?.name ?? "CEO";
+  const agentRole = agent?.role ?? null;
+  const actionLabel = humanizeApprovalAction(
+    approval.actionType,
+    approval.payload,
+    agentById,
+  );
+  const op =
+    typeof approval.payload.op === "string" ? approval.payload.op : "update";
+  const fields = Object.entries(approval.payload).filter(
+    ([k]) => !SYSTEM_PAYLOAD_KEYS.has(k),
+  );
+
+  return (
+    <div className="flex flex-col gap-4 px-5 py-4">
+      <div className="flex items-start gap-3">
+        <div
+          aria-hidden
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-white/70"
+          style={surface.recessed}
+        >
+          <Bot className="h-4 w-4" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-baseline gap-2">
+            <span className="truncate text-[14px] font-semibold text-white/90">
+              {agentName}
+            </span>
+            {agentRole && (
+              <span className="shrink-0 text-[11px] text-white/40">
+                · {agentRole}
+              </span>
+            )}
+            <span className="ml-auto shrink-0 text-[11px] text-white/40">
+              {relativeTime(approval.requestedAt)}
+            </span>
+          </div>
+          <div className="mt-0.5 text-[12px] text-white/60">{actionLabel}</div>
+        </div>
+      </div>
+
+      {fields.length > 0 && (
+        <Card variant="recessed" padding="md">
+          <div className="flex flex-col gap-4 text-[12px]">
+            {fields.map(([k, v]) => (
+              <ReadOnlyField key={k} label={k} value={v} />
+            ))}
+          </div>
+        </Card>
+      )}
+
+      <p className="text-[11px] leading-relaxed text-white/45">
+        {op === "delete"
+          ? "Approving permanently deletes this routine. Its triggers stop firing."
+          : "Approving updates this routine's mandate. Schedule, assignee, and active/paused state are unchanged."}
+      </p>
+
+      {mode.kind === "rejecting" ? (
+        <div className="space-y-2">
+          <textarea
+            autoFocus
+            value={rejectReason}
+            onChange={(e) => setRejectReason(e.target.value)}
+            placeholder="Reason for rejection…"
+            rows={3}
+            className={cn(
+              "w-full resize-none rounded-lg border border-white/10",
+              "bg-black/25 px-2.5 py-2 text-[12px] text-white/85",
+              "placeholder:text-white/30 focus:border-white/25 focus:outline-none",
+            )}
+          />
+          <div className="flex items-center justify-end gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setRejectReason("");
+                setMode({ kind: "view" });
+              }}
+              disabled={submitting}
+            >
+              <X className="size-3" />
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              size="sm"
+              disabled={submitting || rejectReason.trim().length === 0}
+              onClick={() => void handleSendReject()}
+            >
+              {submitting ? "Sending…" : "Send"}
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex items-center justify-end gap-2">
+          <DismissButton approvalId={approval.id} disabled={submitting} />
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setMode({ kind: "rejecting" })}
+            disabled={submitting}
+          >
+            Reject
+          </Button>
+          <Button
+            variant="success"
+            size="sm"
+            onClick={() => void handleApprove()}
+            disabled={submitting}
+          >
+            <Check className="size-3" />
+            {submitting ? "Approving…" : "Approve"}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Skill-library edit proposal view ─────────────────────────────────
+// Read-only render of a CEO PROPOSE_SKILL_LIBRARY_EDIT row (op + skillKey +
+// allowedRoles). Approve runs updateSkillById/deleteSkillById via the
+// with-approval engine; Reject denies; Dismiss clears.
+function SkillLibraryEditDetail({
+  approval,
+  agentById,
+}: {
+  approval: ApprovalDTO;
+  agentById: Map<string, AgentDTO>;
+}) {
+  const decide = useDecideApproval();
+  const [mode, setMode] = useState<DetailMode>({ kind: "view" });
+  const [rejectReason, setRejectReason] = useState("");
+
+  useEffect(() => {
+    setMode({ kind: "view" });
+    setRejectReason("");
+  }, [approval.id]);
+
+  const submitting = mode.kind === "submitting";
+
+  const handleApprove = useCallback(async () => {
+    setMode({ kind: "submitting" });
+    try {
+      await decide.mutateAsync({ id: approval.id, decision: "approve" });
+    } catch {
+      setMode({ kind: "view" });
+    }
+  }, [approval.id, decide]);
+
+  const handleSendReject = useCallback(async () => {
+    const reason = rejectReason.trim();
+    if (!reason) return;
+    setMode({ kind: "submitting" });
+    try {
+      await decide.mutateAsync({
+        id: approval.id,
+        decision: "reject",
+        rejectionReason: reason,
+      });
+    } catch {
+      setMode({ kind: "rejecting" });
+    }
+  }, [approval.id, decide, rejectReason]);
+
+  const agent = approval.requestedByAgentId
+    ? agentById.get(approval.requestedByAgentId)
+    : null;
+  const agentName = agent?.name ?? "CEO";
+  const agentRole = agent?.role ?? null;
+  const actionLabel = humanizeApprovalAction(
+    approval.actionType,
+    approval.payload,
+    agentById,
+  );
+  const op =
+    typeof approval.payload.op === "string" ? approval.payload.op : "set_roles";
+  const fields = Object.entries(approval.payload).filter(
+    ([k]) => !SYSTEM_PAYLOAD_KEYS.has(k),
+  );
+
+  return (
+    <div className="flex flex-col gap-4 px-5 py-4">
+      <div className="flex items-start gap-3">
+        <div
+          aria-hidden
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-white/70"
+          style={surface.recessed}
+        >
+          <Bot className="h-4 w-4" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-baseline gap-2">
+            <span className="truncate text-[14px] font-semibold text-white/90">
+              {agentName}
+            </span>
+            {agentRole && (
+              <span className="shrink-0 text-[11px] text-white/40">
+                · {agentRole}
+              </span>
+            )}
+            <span className="ml-auto shrink-0 text-[11px] text-white/40">
+              {relativeTime(approval.requestedAt)}
+            </span>
+          </div>
+          <div className="mt-0.5 text-[12px] text-white/60">{actionLabel}</div>
+        </div>
+      </div>
+
+      {fields.length > 0 && (
+        <Card variant="recessed" padding="md">
+          <div className="flex flex-col gap-4 text-[12px]">
+            {fields.map(([k, v]) => (
+              <ReadOnlyField key={k} label={k} value={v} />
+            ))}
+          </div>
+        </Card>
+      )}
+
+      <p className="text-[11px] leading-relaxed text-white/45">
+        {op === "remove"
+          ? "Approving removes this skill from the company library. Agents currently using it keep their copy until reprovisioned."
+          : "Approving replaces the skill's allowed-roles whitelist. An empty list means every role may bind it."}
+      </p>
+
+      {mode.kind === "rejecting" ? (
+        <div className="space-y-2">
+          <textarea
+            autoFocus
+            value={rejectReason}
+            onChange={(e) => setRejectReason(e.target.value)}
+            placeholder="Reason for rejection…"
+            rows={3}
+            className={cn(
+              "w-full resize-none rounded-lg border border-white/10",
+              "bg-black/25 px-2.5 py-2 text-[12px] text-white/85",
+              "placeholder:text-white/30 focus:border-white/25 focus:outline-none",
+            )}
+          />
+          <div className="flex items-center justify-end gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setRejectReason("");
+                setMode({ kind: "view" });
+              }}
+              disabled={submitting}
+            >
+              <X className="size-3" />
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              size="sm"
+              disabled={submitting || rejectReason.trim().length === 0}
+              onClick={() => void handleSendReject()}
+            >
+              {submitting ? "Sending…" : "Send"}
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex items-center justify-end gap-2">
+          <DismissButton approvalId={approval.id} disabled={submitting} />
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setMode({ kind: "rejecting" })}
+            disabled={submitting}
+          >
+            Reject
+          </Button>
+          <Button
+            variant="success"
+            size="sm"
+            onClick={() => void handleApprove()}
+            disabled={submitting}
+          >
+            <Check className="size-3" />
+            {submitting ? "Approving…" : "Approve"}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Tool edit proposal view ──────────────────────────────────────────
+// Read-only render of a CEO PROPOSE_TOOL_EDIT row (op + toolId + allowedRoles).
+// Approve runs updateById/deleteById via the with-approval engine. Credentials
+// and config are never part of the proposal.
+function ToolEditDetail({
+  approval,
+  agentById,
+}: {
+  approval: ApprovalDTO;
+  agentById: Map<string, AgentDTO>;
+}) {
+  const decide = useDecideApproval();
+  const [mode, setMode] = useState<DetailMode>({ kind: "view" });
+  const [rejectReason, setRejectReason] = useState("");
+
+  useEffect(() => {
+    setMode({ kind: "view" });
+    setRejectReason("");
+  }, [approval.id]);
+
+  const submitting = mode.kind === "submitting";
+
+  const handleApprove = useCallback(async () => {
+    setMode({ kind: "submitting" });
+    try {
+      await decide.mutateAsync({ id: approval.id, decision: "approve" });
+    } catch {
+      setMode({ kind: "view" });
+    }
+  }, [approval.id, decide]);
+
+  const handleSendReject = useCallback(async () => {
+    const reason = rejectReason.trim();
+    if (!reason) return;
+    setMode({ kind: "submitting" });
+    try {
+      await decide.mutateAsync({
+        id: approval.id,
+        decision: "reject",
+        rejectionReason: reason,
+      });
+    } catch {
+      setMode({ kind: "rejecting" });
+    }
+  }, [approval.id, decide, rejectReason]);
+
+  const agent = approval.requestedByAgentId
+    ? agentById.get(approval.requestedByAgentId)
+    : null;
+  const agentName = agent?.name ?? "CEO";
+  const agentRole = agent?.role ?? null;
+  const actionLabel = humanizeApprovalAction(
+    approval.actionType,
+    approval.payload,
+    agentById,
+  );
+  const op =
+    typeof approval.payload.op === "string" ? approval.payload.op : "set_roles";
+  const fields = Object.entries(approval.payload).filter(
+    ([k]) => !SYSTEM_PAYLOAD_KEYS.has(k),
+  );
+
+  return (
+    <div className="flex flex-col gap-4 px-5 py-4">
+      <div className="flex items-start gap-3">
+        <div
+          aria-hidden
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-white/70"
+          style={surface.recessed}
+        >
+          <Bot className="h-4 w-4" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-baseline gap-2">
+            <span className="truncate text-[14px] font-semibold text-white/90">
+              {agentName}
+            </span>
+            {agentRole && (
+              <span className="shrink-0 text-[11px] text-white/40">
+                · {agentRole}
+              </span>
+            )}
+            <span className="ml-auto shrink-0 text-[11px] text-white/40">
+              {relativeTime(approval.requestedAt)}
+            </span>
+          </div>
+          <div className="mt-0.5 text-[12px] text-white/60">{actionLabel}</div>
+        </div>
+      </div>
+
+      {fields.length > 0 && (
+        <Card variant="recessed" padding="md">
+          <div className="flex flex-col gap-4 text-[12px]">
+            {fields.map(([k, v]) => (
+              <ReadOnlyField key={k} label={k} value={v} />
+            ))}
+          </div>
+        </Card>
+      )}
+
+      <p className="text-[11px] leading-relaxed text-white/45">
+        {op === "delete"
+          ? "Approving deletes this tool. Agents lose access on next reprovision; credentials are destroyed."
+          : op === "set_status"
+            ? "Approving changes the tool's active/paused state. Paused tools reject invocations but keep their config and credentials."
+            : "Approving replaces the tool's allowed-roles whitelist. An empty list means every role may use it. Credentials and config are unchanged."}
+      </p>
+
+      {mode.kind === "rejecting" ? (
+        <div className="space-y-2">
+          <textarea
+            autoFocus
+            value={rejectReason}
+            onChange={(e) => setRejectReason(e.target.value)}
+            placeholder="Reason for rejection…"
+            rows={3}
+            className={cn(
+              "w-full resize-none rounded-lg border border-white/10",
+              "bg-black/25 px-2.5 py-2 text-[12px] text-white/85",
+              "placeholder:text-white/30 focus:border-white/25 focus:outline-none",
+            )}
+          />
+          <div className="flex items-center justify-end gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setRejectReason("");
+                setMode({ kind: "view" });
+              }}
+              disabled={submitting}
+            >
+              <X className="size-3" />
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              size="sm"
+              disabled={submitting || rejectReason.trim().length === 0}
+              onClick={() => void handleSendReject()}
+            >
+              {submitting ? "Sending…" : "Send"}
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex items-center justify-end gap-2">
+          <DismissButton approvalId={approval.id} disabled={submitting} />
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setMode({ kind: "rejecting" })}
+            disabled={submitting}
+          >
+            Reject
+          </Button>
+          <Button
+            variant="success"
+            size="sm"
+            onClick={() => void handleApprove()}
+            disabled={submitting}
+          >
+            <Check className="size-3" />
+            {submitting ? "Approving…" : "Approve"}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Delete-only proposal view (workflow, task) ───────────────────────
+// Minimal read-only render for delete-only with-approval actions: header +
+// the payload id + a permanence warning + Approve/Reject/Dismiss. Approve runs
+// the company-scoped repo delete via the with-approval engine.
+function SimpleDeleteDetail({
+  approval,
+  agentById,
+  noun,
+}: {
+  approval: ApprovalDTO;
+  agentById: Map<string, AgentDTO>;
+  noun: string;
+}) {
+  const decide = useDecideApproval();
+  const [mode, setMode] = useState<DetailMode>({ kind: "view" });
+  const [rejectReason, setRejectReason] = useState("");
+
+  useEffect(() => {
+    setMode({ kind: "view" });
+    setRejectReason("");
+  }, [approval.id]);
+
+  const submitting = mode.kind === "submitting";
+
+  const handleApprove = useCallback(async () => {
+    setMode({ kind: "submitting" });
+    try {
+      await decide.mutateAsync({ id: approval.id, decision: "approve" });
+    } catch {
+      setMode({ kind: "view" });
+    }
+  }, [approval.id, decide]);
+
+  const handleSendReject = useCallback(async () => {
+    const reason = rejectReason.trim();
+    if (!reason) return;
+    setMode({ kind: "submitting" });
+    try {
+      await decide.mutateAsync({
+        id: approval.id,
+        decision: "reject",
+        rejectionReason: reason,
+      });
+    } catch {
+      setMode({ kind: "rejecting" });
+    }
+  }, [approval.id, decide, rejectReason]);
+
+  const agent = approval.requestedByAgentId
+    ? agentById.get(approval.requestedByAgentId)
+    : null;
+  const agentName = agent?.name ?? "CEO";
+  const agentRole = agent?.role ?? null;
+  const actionLabel = humanizeApprovalAction(
+    approval.actionType,
+    approval.payload,
+    agentById,
+  );
+  const fields = Object.entries(approval.payload).filter(
+    ([k]) => !SYSTEM_PAYLOAD_KEYS.has(k),
+  );
+
+  return (
+    <div className="flex flex-col gap-4 px-5 py-4">
+      <div className="flex items-start gap-3">
+        <div
+          aria-hidden
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-white/70"
+          style={surface.recessed}
+        >
+          <Bot className="h-4 w-4" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-baseline gap-2">
+            <span className="truncate text-[14px] font-semibold text-white/90">
+              {agentName}
+            </span>
+            {agentRole && (
+              <span className="shrink-0 text-[11px] text-white/40">
+                · {agentRole}
+              </span>
+            )}
+            <span className="ml-auto shrink-0 text-[11px] text-white/40">
+              {relativeTime(approval.requestedAt)}
+            </span>
+          </div>
+          <div className="mt-0.5 text-[12px] text-white/60">{actionLabel}</div>
+        </div>
+      </div>
+
+      {fields.length > 0 && (
+        <Card variant="recessed" padding="md">
+          <div className="flex flex-col gap-4 text-[12px]">
+            {fields.map(([k, v]) => (
+              <ReadOnlyField key={k} label={k} value={v} />
+            ))}
+          </div>
+        </Card>
+      )}
+
+      <p className="text-[11px] leading-relaxed text-white/45">
+        Approving permanently deletes this {noun}. This cannot be undone.
+      </p>
+
+      {mode.kind === "rejecting" ? (
+        <div className="space-y-2">
+          <textarea
+            autoFocus
+            value={rejectReason}
+            onChange={(e) => setRejectReason(e.target.value)}
+            placeholder="Reason for rejection…"
+            rows={3}
+            className={cn(
+              "w-full resize-none rounded-lg border border-white/10",
+              "bg-black/25 px-2.5 py-2 text-[12px] text-white/85",
+              "placeholder:text-white/30 focus:border-white/25 focus:outline-none",
+            )}
+          />
+          <div className="flex items-center justify-end gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setRejectReason("");
+                setMode({ kind: "view" });
+              }}
+              disabled={submitting}
+            >
+              <X className="size-3" />
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              size="sm"
+              disabled={submitting || rejectReason.trim().length === 0}
+              onClick={() => void handleSendReject()}
+            >
+              {submitting ? "Sending…" : "Send"}
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex items-center justify-end gap-2">
+          <DismissButton approvalId={approval.id} disabled={submitting} />
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setMode({ kind: "rejecting" })}
+            disabled={submitting}
+          >
+            Reject
+          </Button>
+          <Button
+            variant="danger"
+            size="sm"
+            onClick={() => void handleApprove()}
+            disabled={submitting}
+          >
+            <Check className="size-3" />
+            {submitting ? "Deleting…" : "Approve delete"}
           </Button>
         </div>
       )}
@@ -761,7 +1677,7 @@ function DecisionBadge({ status }: { status: string }) {
         tone,
       )}
     >
-      {status}
+      {approvalStatusLabel(status)}
     </span>
   );
 }

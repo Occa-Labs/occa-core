@@ -1,5 +1,13 @@
 import type { AgentDTO } from "@occa/shared/types";
 
+// Operator-facing label for a terminal approval status. The "cancelled"
+// status is what a dismiss writes, but users know the action as "Dismiss",
+// so we surface it as "dismissed" in chips/badges. Other statuses render
+// as-is.
+export function approvalStatusLabel(status: string): string {
+  return status === "cancelled" ? "dismissed" : status;
+}
+
 // Best-effort humanization. Approvals carry a free-form `actionType` string;
 // when the actionType is a known structured kind (currently `delegate`)
 // we pull typed fields and resolve referenced agent IDs to names.
@@ -42,6 +50,49 @@ export function humanizeApprovalAction(
       : `Wants to update ${n} company profile fields`;
   }
 
+  if (actionType === "edit_knowledge") {
+    const op = typeof payload.op === "string" ? payload.op : "";
+    const path = typeof payload.path === "string" ? payload.path : "";
+    const verb =
+      op === "create" ? "add" : op === "delete" ? "remove" : "update";
+    return path
+      ? `Wants to ${verb} knowledge file ${path}`
+      : "Wants to edit a knowledge file";
+  }
+
+  if (actionType === "edit_routine") {
+    const op = typeof payload.op === "string" ? payload.op : "";
+    return op === "delete"
+      ? "Wants to delete a routine"
+      : "Wants to edit a routine's mandate";
+  }
+
+  if (actionType === "edit_skill_library") {
+    const op = typeof payload.op === "string" ? payload.op : "";
+    const key = typeof payload.skillKey === "string" ? payload.skillKey : "";
+    if (op === "remove")
+      return key
+        ? `Wants to remove skill ${key} from the library`
+        : "Wants to remove a skill from the library";
+    return key
+      ? `Wants to set allowed roles for skill ${key}`
+      : "Wants to change a skill's allowed roles";
+  }
+
+  if (actionType === "edit_tool") {
+    const op = typeof payload.op === "string" ? payload.op : "";
+    if (op === "delete") return "Wants to delete a tool";
+    if (op === "set_status") {
+      const status =
+        typeof payload.status === "string" ? payload.status : "change";
+      return `Wants to ${status === "paused" ? "pause" : status === "active" ? "activate" : "change"} a tool`;
+    }
+    return "Wants to change a tool's allowed roles";
+  }
+
+  if (actionType === "delete_workflow") return "Wants to delete a workflow";
+  if (actionType === "delete_task") return "Wants to delete a task";
+
   const summary =
     typeof payload.summary === "string" ? payload.summary.trim() : "";
   if (summary) return summary;
@@ -63,6 +114,7 @@ export const MARKDOWN_PAYLOAD_KEYS = new Set([
   "note",
   "rejectionReason",
   "failureReason",
+  "content",
 ]);
 
 // Payload keys that represent system / lifecycle metadata stamped by the

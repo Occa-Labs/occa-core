@@ -13,7 +13,7 @@
 // `infra/`, which features ARE allowed to import directly.
 
 import { and, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
-import type { ContentBlock } from "@occa/shared/types";
+import type { AgentRole, ContentBlock } from "@occa/shared/types";
 import {
   agentIdentities,
   agentRuntimeProfile,
@@ -44,7 +44,13 @@ import {
   dispatchRoutineBlockPayload,
   installSkillBlockPayload,
   proposeDeploymentBlockPayload,
+  proposeKnowledgeEditBlockPayload,
   proposeProfileEditBlockPayload,
+  proposeRoutineEditBlockPayload,
+  proposeSkillLibraryEditBlockPayload,
+  proposeTaskDeleteBlockPayload,
+  proposeToolEditBlockPayload,
+  proposeWorkflowDeleteBlockPayload,
   toggleChannelBlockPayload,
   toggleRoutineBlockPayload,
   toggleWorkflowBlockPayload,
@@ -53,8 +59,14 @@ import {
   type ActionBlockOutcome,
   type ChannelToggleRejectReason,
   type DeploymentProposeRejectReason,
+  type KnowledgeEditProposeRejectReason,
   type ProfileEditProposeRejectReason,
   type RoutineAssignRejectReason,
+  type RoutineEditProposeRejectReason,
+  type SkillLibraryEditProposeRejectReason,
+  type TaskDeleteProposeRejectReason,
+  type ToolEditProposeRejectReason,
+  type WorkflowDeleteProposeRejectReason,
   type RoutineDispatchRejectReason,
   type RoutineToggleRejectReason,
   type SkillInstallRejectReason,
@@ -66,6 +78,30 @@ import {
 import { createTaskComment } from "../../../features/tasks/services/comments";
 import { notifyApprovalCreated } from "../../../features/approvals/services/post-create";
 import { upsert as upsertCompanyProfile } from "../../../features/companies/repositories/company-profiles";
+import {
+  deleteBrainFileById,
+  findByPath as findBrainFileByPath,
+  insertBrainFile,
+  updateBrainFileById,
+} from "../../../features/company-brain/repositories/company-brain";
+import {
+  deleteRoutine,
+  updateRoutine,
+} from "../../../features/routines/repositories/routines";
+import {
+  deleteSkillById,
+  findByKeyInCompany,
+  updateSkillById,
+} from "../../../features/skills/repositories/company-skills";
+import {
+  deleteById as deleteToolById,
+  updateById as updateToolById,
+} from "../../../features/tools/repositories/company-tools";
+import {
+  deleteWorkflow,
+  findWorkflowByYamlId,
+} from "../../../features/workflows/repositories/workflows";
+import { deleteTaskInCompany } from "../../../features/tasks/repositories/tasks";
 
 const log = childLogger("services:delegation:markers");
 
@@ -1672,5 +1708,574 @@ export async function applyProfileEditApproval(
     companyId: approval.companyId,
     patch: parsed.data,
   });
+  return approval;
+}
+
+// PROPOSE_KNOWLEDGE_EDIT (with-approval). The CEO drafts a create/update/
+// delete of a Company Brain knowledge file; this creates a zero-authority
+// pending approvals row. The marker NEVER writes — the repo write happens in
+// applyKnowledgeEditApproval on approve. Files are addressed by `path`.
+export async function handleProposeKnowledgeEditBlock(
+  args: ActionBlockHandlerArgs,
+): Promise<ActionBlockOutcome> {
+  const reject = (
+    reason: KnowledgeEditProposeRejectReason,
+  ): ActionBlockOutcome => ({
+    kind: "knowledge_edit_propose_rejected",
+    reason,
+  });
+
+  if (getTier(args.agentRole) !== "ceo") {
+    log.warn(
+      { agentId: args.agentId, agentRole: args.agentRole },
+      "PROPOSE_KNOWLEDGE_EDIT block rejected: only CEO tier may emit it",
+    );
+    return reject("permission_denied");
+  }
+
+  const parsed = proposeKnowledgeEditBlockPayload.safeParse(args.block.body);
+  if (!parsed.success) {
+    log.warn(
+      { detail: parsed.error.flatten() },
+      "PROPOSE_KNOWLEDGE_EDIT block rejected: invalid payload",
+    );
+    return reject("invalid_body");
+  }
+  const edit = parsed.data;
+
+  // An "update" that names no field to change is a no-op — reject it rather
+  // than queue an approval that would only bump updatedAt. (Not expressible
+  // inside the discriminatedUnion member, so checked here.)
+  if (
+    edit.op === "update" &&
+    edit.content === undefined &&
+    edit.visibility === undefined
+  ) {
+    return reject("invalid_body");
+  }
+
+  const [row] = await db
+    .insert(approvals)
+    .values({
+      companyId: args.companyId,
+      requestedByDeploymentId: args.agentId,
+      actionType: "edit_knowledge",
+      payload: edit,
+    })
+    .returning();
+
+  void notifyApprovalCreated(row);
+
+  log.info(
+    {
+      ceoDeploymentId: args.agentId,
+      proposalId: row.id,
+      op: edit.op,
+      path: edit.path,
+      traceId: args.traceId,
+    },
+    "PROPOSE_KNOWLEDGE_EDIT proposal created",
+  );
+
+  return {
+    kind: "knowledge_edit_proposed",
+    proposalId: row.id,
+    op: edit.op,
+    path: edit.path,
+  };
+}
+
+// With-approval side-effect for "edit_knowledge". Re-validates the stored
+// payload and performs the repo write on approve. create/update/delete are
+// dispatched by `op`; update/delete resolve the target by path within the
+// company. A path conflict (create) or missing file (update/delete) throws —
+// the approval engine stamps that into the row's failureReason and surfaces
+// it, so the operator sees why a stale proposal didn't apply.
+export async function applyKnowledgeEditApproval(
+  approval: typeof approvals.$inferSelect,
+): Promise<typeof approvals.$inferSelect> {
+  const parsed = proposeKnowledgeEditBlockPayload.safeParse(approval.payload);
+  if (!parsed.success) {
+    throw new Error("knowledge_edit_payload_invalid");
+  }
+  const edit = parsed.data;
+  // The operator who approved owns the write (poly-ref column, user id here).
+  const updatedBy = approval.decidedByUserId;
+
+  if (edit.op === "create") {
+    const existing = await findBrainFileByPath({
+      companyId: approval.companyId,
+      path: edit.path,
+    });
+    if (existing) {
+      throw new Error(`knowledge_path_conflict: ${edit.path} already exists`);
+    }
+    await insertBrainFile({
+      companyId: approval.companyId,
+      path: edit.path,
+      content: edit.content,
+      visibility: edit.visibility,
+      updatedBy,
+    });
+    return approval;
+  }
+
+  const target = await findBrainFileByPath({
+    companyId: approval.companyId,
+    path: edit.path,
+  });
+  if (!target) {
+    throw new Error(`knowledge_file_not_found: ${edit.path}`);
+  }
+
+  if (edit.op === "delete") {
+    await deleteBrainFileById({ companyId: approval.companyId, id: target.id });
+    return approval;
+  }
+
+  // op === "update"
+  await updateBrainFileById({
+    companyId: approval.companyId,
+    id: target.id,
+    updates: {
+      content: edit.content,
+      visibility: edit.visibility,
+      updatedBy,
+    },
+  });
+  return approval;
+}
+
+// PROPOSE_ROUTINE_EDIT (with-approval). The CEO drafts an edit-mandate or
+// delete of an existing routine (addressed by routineId); this creates a
+// zero-authority pending approvals row. The marker NEVER writes — the repo
+// write happens in applyRoutineEditApproval on approve.
+export async function handleProposeRoutineEditBlock(
+  args: ActionBlockHandlerArgs,
+): Promise<ActionBlockOutcome> {
+  const reject = (
+    reason: RoutineEditProposeRejectReason,
+  ): ActionBlockOutcome => ({
+    kind: "routine_edit_propose_rejected",
+    reason,
+  });
+
+  if (getTier(args.agentRole) !== "ceo") {
+    log.warn(
+      { agentId: args.agentId, agentRole: args.agentRole },
+      "PROPOSE_ROUTINE_EDIT block rejected: only CEO tier may emit it",
+    );
+    return reject("permission_denied");
+  }
+
+  const parsed = proposeRoutineEditBlockPayload.safeParse(args.block.body);
+  if (!parsed.success) {
+    log.warn(
+      { detail: parsed.error.flatten() },
+      "PROPOSE_ROUTINE_EDIT block rejected: invalid payload",
+    );
+    return reject("invalid_body");
+  }
+  const edit = parsed.data;
+
+  // An "update" naming no field is a no-op — reject rather than queue it.
+  if (
+    edit.op === "update" &&
+    edit.title === undefined &&
+    edit.description === undefined &&
+    edit.priority === undefined
+  ) {
+    return reject("invalid_body");
+  }
+
+  const [row] = await db
+    .insert(approvals)
+    .values({
+      companyId: args.companyId,
+      requestedByDeploymentId: args.agentId,
+      actionType: "edit_routine",
+      payload: edit,
+    })
+    .returning();
+
+  void notifyApprovalCreated(row);
+
+  log.info(
+    {
+      ceoDeploymentId: args.agentId,
+      proposalId: row.id,
+      op: edit.op,
+      routineId: edit.routineId,
+      traceId: args.traceId,
+    },
+    "PROPOSE_ROUTINE_EDIT proposal created",
+  );
+
+  return {
+    kind: "routine_edit_proposed",
+    proposalId: row.id,
+    op: edit.op,
+    routineId: edit.routineId,
+  };
+}
+
+// With-approval side-effect for "edit_routine". Re-validates the stored
+// payload and performs the repo write on approve. A missing routine (already
+// deleted, or wrong company) throws — the approval engine stamps that into
+// failureReason. companyId-scoped: updateRoutine/deleteRoutine both filter on
+// approval.companyId, so a caller can never touch another company's routine.
+export async function applyRoutineEditApproval(
+  approval: typeof approvals.$inferSelect,
+): Promise<typeof approvals.$inferSelect> {
+  const parsed = proposeRoutineEditBlockPayload.safeParse(approval.payload);
+  if (!parsed.success) {
+    throw new Error("routine_edit_payload_invalid");
+  }
+  const edit = parsed.data;
+
+  if (edit.op === "delete") {
+    const ok = await deleteRoutine(approval.companyId, edit.routineId);
+    if (!ok) throw new Error(`routine_not_found: ${edit.routineId}`);
+    return approval;
+  }
+
+  // op === "update" — undefined fields are skipped by the repo's .set().
+  const row = await updateRoutine(approval.companyId, edit.routineId, {
+    title: edit.title,
+    description: edit.description,
+    priority: edit.priority,
+  });
+  if (!row) throw new Error(`routine_not_found: ${edit.routineId}`);
+  return approval;
+}
+
+// PROPOSE_SKILL_LIBRARY_EDIT (with-approval). The CEO drafts a set-roles or
+// remove on a company-imported library skill (addressed by skillKey); this
+// creates a zero-authority pending approvals row. The marker NEVER writes —
+// applySkillLibraryEditApproval runs the repo write on approve.
+export async function handleProposeSkillLibraryEditBlock(
+  args: ActionBlockHandlerArgs,
+): Promise<ActionBlockOutcome> {
+  const reject = (
+    reason: SkillLibraryEditProposeRejectReason,
+  ): ActionBlockOutcome => ({
+    kind: "skill_library_edit_propose_rejected",
+    reason,
+  });
+
+  if (getTier(args.agentRole) !== "ceo") {
+    log.warn(
+      { agentId: args.agentId, agentRole: args.agentRole },
+      "PROPOSE_SKILL_LIBRARY_EDIT block rejected: only CEO tier may emit it",
+    );
+    return reject("permission_denied");
+  }
+
+  const parsed = proposeSkillLibraryEditBlockPayload.safeParse(args.block.body);
+  if (!parsed.success) {
+    log.warn(
+      { detail: parsed.error.flatten() },
+      "PROPOSE_SKILL_LIBRARY_EDIT block rejected: invalid payload",
+    );
+    return reject("invalid_body");
+  }
+  const edit = parsed.data;
+
+  const [row] = await db
+    .insert(approvals)
+    .values({
+      companyId: args.companyId,
+      requestedByDeploymentId: args.agentId,
+      actionType: "edit_skill_library",
+      payload: edit,
+    })
+    .returning();
+
+  void notifyApprovalCreated(row);
+
+  log.info(
+    {
+      ceoDeploymentId: args.agentId,
+      proposalId: row.id,
+      op: edit.op,
+      skillKey: edit.skillKey,
+      traceId: args.traceId,
+    },
+    "PROPOSE_SKILL_LIBRARY_EDIT proposal created",
+  );
+
+  return {
+    kind: "skill_library_edit_proposed",
+    proposalId: row.id,
+    op: edit.op,
+    skillKey: edit.skillKey,
+  };
+}
+
+// With-approval side-effect for "edit_skill_library". Re-validates the stored
+// payload, resolves the skill by key WITHIN the company (so platform built-ins
+// — companyId IS NULL — never resolve and thus can't be edited/removed), then
+// applies. A missing/built-in key throws skill_not_in_library, stamped into
+// the approval's failureReason. deleteSkillById is not company-scoped, so the
+// company-scoped resolve here is the guard that makes the delete safe.
+export async function applySkillLibraryEditApproval(
+  approval: typeof approvals.$inferSelect,
+): Promise<typeof approvals.$inferSelect> {
+  const parsed = proposeSkillLibraryEditBlockPayload.safeParse(approval.payload);
+  if (!parsed.success) {
+    throw new Error("skill_library_edit_payload_invalid");
+  }
+  const edit = parsed.data;
+
+  const skill = await findByKeyInCompany({
+    companyId: approval.companyId,
+    key: edit.skillKey,
+  });
+  if (!skill) {
+    throw new Error(`skill_not_in_library: ${edit.skillKey}`);
+  }
+
+  if (edit.op === "remove") {
+    await deleteSkillById(skill.id);
+    return approval;
+  }
+
+  // op === "set_roles"
+  await updateSkillById({
+    skillId: skill.id,
+    patch: { allowedRoles: edit.allowedRoles },
+  });
+  return approval;
+}
+
+// PROPOSE_TOOL_EDIT (with-approval). The CEO drafts a set-roles or delete on
+// a company tool (addressed by toolId); this creates a zero-authority pending
+// approvals row. The marker NEVER writes — applyToolEditApproval runs the repo
+// write on approve. Never touches credentials or config (operator-only / later).
+export async function handleProposeToolEditBlock(
+  args: ActionBlockHandlerArgs,
+): Promise<ActionBlockOutcome> {
+  const reject = (reason: ToolEditProposeRejectReason): ActionBlockOutcome => ({
+    kind: "tool_edit_propose_rejected",
+    reason,
+  });
+
+  if (getTier(args.agentRole) !== "ceo") {
+    log.warn(
+      { agentId: args.agentId, agentRole: args.agentRole },
+      "PROPOSE_TOOL_EDIT block rejected: only CEO tier may emit it",
+    );
+    return reject("permission_denied");
+  }
+
+  const parsed = proposeToolEditBlockPayload.safeParse(args.block.body);
+  if (!parsed.success) {
+    log.warn(
+      { detail: parsed.error.flatten() },
+      "PROPOSE_TOOL_EDIT block rejected: invalid payload",
+    );
+    return reject("invalid_body");
+  }
+  const edit = parsed.data;
+
+  const [row] = await db
+    .insert(approvals)
+    .values({
+      companyId: args.companyId,
+      requestedByDeploymentId: args.agentId,
+      actionType: "edit_tool",
+      payload: edit,
+    })
+    .returning();
+
+  void notifyApprovalCreated(row);
+
+  log.info(
+    {
+      ceoDeploymentId: args.agentId,
+      proposalId: row.id,
+      op: edit.op,
+      toolId: edit.toolId,
+      traceId: args.traceId,
+    },
+    "PROPOSE_TOOL_EDIT proposal created",
+  );
+
+  return {
+    kind: "tool_edit_proposed",
+    proposalId: row.id,
+    op: edit.op,
+    toolId: edit.toolId,
+  };
+}
+
+// With-approval side-effect for "edit_tool". Re-validates the stored payload
+// and applies via the company-scoped tool repo (so a toolId from another
+// company never resolves). A missing tool throws tool_not_found, stamped into
+// failureReason. Only allowedRoles / delete — credentials + config untouched.
+export async function applyToolEditApproval(
+  approval: typeof approvals.$inferSelect,
+): Promise<typeof approvals.$inferSelect> {
+  const parsed = proposeToolEditBlockPayload.safeParse(approval.payload);
+  if (!parsed.success) {
+    throw new Error("tool_edit_payload_invalid");
+  }
+  const edit = parsed.data;
+
+  if (edit.op === "delete") {
+    const ok = await deleteToolById({
+      id: edit.toolId,
+      companyId: approval.companyId,
+    });
+    if (!ok) throw new Error(`tool_not_found: ${edit.toolId}`);
+    return approval;
+  }
+
+  const patch =
+    edit.op === "set_status"
+      ? { status: edit.status }
+      : { allowedRoles: edit.allowedRoles as AgentRole[] };
+  const row = await updateToolById({
+    id: edit.toolId,
+    companyId: approval.companyId,
+    patch,
+  });
+  if (!row) throw new Error(`tool_not_found: ${edit.toolId}`);
+  return approval;
+}
+
+// PROPOSE_WORKFLOW_DELETE (with-approval). Drafts deletion of a workflow by
+// yamlId; the marker NEVER writes. On approve, resolve the yamlId within the
+// company then delete by id (company-scoped). Missing workflow throws.
+export async function handleProposeWorkflowDeleteBlock(
+  args: ActionBlockHandlerArgs,
+): Promise<ActionBlockOutcome> {
+  const reject = (
+    reason: WorkflowDeleteProposeRejectReason,
+  ): ActionBlockOutcome => ({
+    kind: "workflow_delete_propose_rejected",
+    reason,
+  });
+  if (getTier(args.agentRole) !== "ceo") {
+    log.warn(
+      { agentId: args.agentId, agentRole: args.agentRole },
+      "PROPOSE_WORKFLOW_DELETE block rejected: only CEO tier may emit it",
+    );
+    return reject("permission_denied");
+  }
+  const parsed = proposeWorkflowDeleteBlockPayload.safeParse(args.block.body);
+  if (!parsed.success) {
+    log.warn(
+      { detail: parsed.error.flatten() },
+      "PROPOSE_WORKFLOW_DELETE block rejected: invalid payload",
+    );
+    return reject("invalid_body");
+  }
+  const [row] = await db
+    .insert(approvals)
+    .values({
+      companyId: args.companyId,
+      requestedByDeploymentId: args.agentId,
+      actionType: "delete_workflow",
+      payload: parsed.data,
+    })
+    .returning();
+  void notifyApprovalCreated(row);
+  log.info(
+    {
+      ceoDeploymentId: args.agentId,
+      proposalId: row.id,
+      workflowYamlId: parsed.data.workflowYamlId,
+      traceId: args.traceId,
+    },
+    "PROPOSE_WORKFLOW_DELETE proposal created",
+  );
+  return {
+    kind: "workflow_delete_proposed",
+    proposalId: row.id,
+    workflowYamlId: parsed.data.workflowYamlId,
+  };
+}
+
+export async function applyWorkflowDeleteApproval(
+  approval: typeof approvals.$inferSelect,
+): Promise<typeof approvals.$inferSelect> {
+  const parsed = proposeWorkflowDeleteBlockPayload.safeParse(approval.payload);
+  if (!parsed.success) {
+    throw new Error("workflow_delete_payload_invalid");
+  }
+  const wf = await findWorkflowByYamlId(
+    parsed.data.workflowYamlId,
+    approval.companyId,
+  );
+  if (!wf) {
+    throw new Error(`workflow_not_found: ${parsed.data.workflowYamlId}`);
+  }
+  await deleteWorkflow(wf.id, approval.companyId);
+  return approval;
+}
+
+// PROPOSE_TASK_DELETE (with-approval). Drafts deletion of a task by id; the
+// marker NEVER writes. On approve, delete by id (company-scoped). Missing task
+// throws task_not_found.
+export async function handleProposeTaskDeleteBlock(
+  args: ActionBlockHandlerArgs,
+): Promise<ActionBlockOutcome> {
+  const reject = (reason: TaskDeleteProposeRejectReason): ActionBlockOutcome => ({
+    kind: "task_delete_propose_rejected",
+    reason,
+  });
+  if (getTier(args.agentRole) !== "ceo") {
+    log.warn(
+      { agentId: args.agentId, agentRole: args.agentRole },
+      "PROPOSE_TASK_DELETE block rejected: only CEO tier may emit it",
+    );
+    return reject("permission_denied");
+  }
+  const parsed = proposeTaskDeleteBlockPayload.safeParse(args.block.body);
+  if (!parsed.success) {
+    log.warn(
+      { detail: parsed.error.flatten() },
+      "PROPOSE_TASK_DELETE block rejected: invalid payload",
+    );
+    return reject("invalid_body");
+  }
+  const [row] = await db
+    .insert(approvals)
+    .values({
+      companyId: args.companyId,
+      requestedByDeploymentId: args.agentId,
+      actionType: "delete_task",
+      payload: parsed.data,
+    })
+    .returning();
+  void notifyApprovalCreated(row);
+  log.info(
+    {
+      ceoDeploymentId: args.agentId,
+      proposalId: row.id,
+      taskId: parsed.data.taskId,
+      traceId: args.traceId,
+    },
+    "PROPOSE_TASK_DELETE proposal created",
+  );
+  return {
+    kind: "task_delete_proposed",
+    proposalId: row.id,
+    taskId: parsed.data.taskId,
+  };
+}
+
+export async function applyTaskDeleteApproval(
+  approval: typeof approvals.$inferSelect,
+): Promise<typeof approvals.$inferSelect> {
+  const parsed = proposeTaskDeleteBlockPayload.safeParse(approval.payload);
+  if (!parsed.success) {
+    throw new Error("task_delete_payload_invalid");
+  }
+  const deleted = await deleteTaskInCompany(parsed.data.taskId, approval.companyId);
+  if (!deleted) {
+    throw new Error(`task_not_found: ${parsed.data.taskId}`);
+  }
   return approval;
 }

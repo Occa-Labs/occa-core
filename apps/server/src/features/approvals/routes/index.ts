@@ -5,6 +5,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { approvals, companies } from "@occa/shared/schema";
 import type {
   DecideApprovalResponse,
+  DismissApprovalResponse,
   ListApprovalsResponse,
 } from "@occa/shared/types";
 import { db } from "../../../infra/database/client";
@@ -12,6 +13,7 @@ import { requireAuth } from "../../../middleware/auth";
 import { stripSystemKeys, toApprovalDTO } from "../domain/dto";
 import { decideBody, listQuery, patchBody } from "../domain/schemas";
 import { decideApproval } from "../services/decide";
+import { dismissApproval } from "../services/dismiss";
 
 const router: Router = Router();
 
@@ -173,6 +175,42 @@ router.post("/:id/decide", requireAuth, async (req: Request, res: Response) => {
       return;
     case "ok": {
       const body: DecideApprovalResponse = {
+        approval: toApprovalDTO(result.approval),
+      };
+      res.json(body);
+      return;
+    }
+  }
+});
+
+// POST /api/approvals/:id/dismiss — clear a pending approval from the queue
+// without an approve/reject decision (sets "cancelled"). No body, no reason.
+router.post("/:id/dismiss", requireAuth, async (req: Request, res: Response) => {
+  const companyId = await userCompanyId(req.user!.userId);
+  if (!companyId) {
+    res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.COMPANY_NOT_FOUND });
+    return;
+  }
+
+  const result = await dismissApproval({
+    approvalId: req.params.id,
+    companyId,
+    dismissedByUserId: req.user!.userId,
+  });
+
+  switch (result.kind) {
+    case "not_found":
+      res
+        .status(StatusCodes.NOT_FOUND)
+        .json({ error: ERROR_CODES.APPROVAL_NOT_FOUND });
+      return;
+    case "already_decided":
+      res
+        .status(StatusCodes.CONFLICT)
+        .json({ error: ERROR_CODES.APPROVAL_ALREADY_DECIDED });
+      return;
+    case "ok": {
+      const body: DismissApprovalResponse = {
         approval: toApprovalDTO(result.approval),
       };
       res.json(body);

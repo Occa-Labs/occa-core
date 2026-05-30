@@ -32,6 +32,7 @@ import {
 } from "@/features/agents/components/deploy-agent-modal";
 import { ApprovalsWindow } from "@/features/approvals/components/approvals-window";
 import { useDecideApproval } from "@/features/approvals/api/use-decide-approval";
+import { useApprovalsList } from "@/features/approvals/api/use-approvals-list";
 import type { DeployProposalRequest } from "@/features/approvals/utils";
 import { CompanyWindow } from "@/features/companies/components/company-window";
 import { ChainWindow } from "@/features/chain/components/chain-window";
@@ -164,6 +165,13 @@ export function OsShell({
   // list drops the row immediately via its optimistic update + invalidate,
   // instead of lingering until the 15s poll.
   const decideApproval = useDecideApproval();
+
+  // Pending-approvals count for the dock badge. Always-on (not gated on the
+  // window being open) so the badge stays live even when Approvals is
+  // closed; reuses the same 15s-polling query key as the window, so this
+  // adds no extra network traffic when the window is also open.
+  const { data: pendingApprovals } = useApprovalsList(authenticated, "pending");
+  const pendingApprovalCount = pendingApprovals?.length ?? 0;
 
   // External focus request (theater click) → open AgentsWindow. Tracking
   // by id rather than truthy-check so re-clicking the same agent twice
@@ -321,6 +329,7 @@ export function OsShell({
             icon: <CheckCircle2 className="size-5" />,
             label: "Approvals",
             active: activeWindow === "approvals",
+            badge: pendingApprovalCount,
             onClick: () => toggle("approvals"),
           },
           {

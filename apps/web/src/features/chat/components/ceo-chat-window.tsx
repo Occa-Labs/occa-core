@@ -239,6 +239,17 @@ function InlineApprovalCard({ approval }: { approval: ChatLinkedApproval }) {
   if (approval.status === "rejected") {
     return <div className="mt-2 text-[10px] text-white/40">Rejected</div>;
   }
+  // "cancelled" is what a dismiss writes (label "Dismissed" — inlined, not
+  // imported, to keep features/chat free of a features/approvals dependency).
+  if (approval.status === "cancelled") {
+    return <div className="mt-2 text-[10px] text-white/40">Dismissed</div>;
+  }
+  // Defensive: any other non-pending status is terminal too — never render a
+  // live Approve/Reject affordance for a row that already left the queue
+  // (it would only 409). Keeps new statuses from falling through to the card.
+  if (approval.status !== "pending") {
+    return <div className="mt-2 text-[10px] text-white/40">Resolved</div>;
+  }
 
   const fields = Object.entries(approval.payload);
   return (

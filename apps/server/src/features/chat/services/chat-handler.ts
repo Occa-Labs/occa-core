@@ -506,7 +506,16 @@ export async function sendUserTurn(
     });
     const line = formatOsMutationReceipt(outcome);
     if (line) osMutationReceipts.push(line);
-    if (linkedApprovalId === null && outcome.kind === "profile_edit_proposed") {
+    if (
+      linkedApprovalId === null &&
+      (outcome.kind === "profile_edit_proposed" ||
+        outcome.kind === "knowledge_edit_proposed" ||
+        outcome.kind === "routine_edit_proposed" ||
+        outcome.kind === "skill_library_edit_proposed" ||
+        outcome.kind === "tool_edit_proposed" ||
+        outcome.kind === "workflow_delete_proposed" ||
+        outcome.kind === "task_delete_proposed")
+    ) {
       linkedApprovalId = outcome.proposalId;
     }
   }
@@ -801,6 +810,84 @@ function formatOsMutationReceipt(outcome: ActionBlockOutcome): string {
       switch (outcome.reason) {
         case "invalid_body":
           return `× PROPOSE_PROFILE_EDIT payload invalid.`;
+        case "permission_denied":
+          return "";
+      }
+      return "";
+    case "knowledge_edit_proposed": {
+      const verb =
+        outcome.op === "create"
+          ? "add"
+          : outcome.op === "delete"
+            ? "remove"
+            : "update";
+      return `✓ Queued a knowledge-file change (${verb} ${outcome.path}) for your approval. Open the Approvals window to review and apply it. Nothing changes until you approve.`;
+    }
+    case "knowledge_edit_propose_rejected":
+      switch (outcome.reason) {
+        case "invalid_body":
+          return `× PROPOSE_KNOWLEDGE_EDIT payload invalid.`;
+        case "permission_denied":
+          return "";
+      }
+      return "";
+    case "routine_edit_proposed":
+      return outcome.op === "delete"
+        ? `✓ Queued the deletion of a routine for your approval. Open the Approvals window to review and apply it. Nothing changes until you approve.`
+        : `✓ Queued a routine change for your approval. Open the Approvals window to review and apply it. Nothing changes until you approve.`;
+    case "routine_edit_propose_rejected":
+      switch (outcome.reason) {
+        case "invalid_body":
+          return `× PROPOSE_ROUTINE_EDIT payload invalid.`;
+        case "permission_denied":
+          return "";
+      }
+      return "";
+    case "skill_library_edit_proposed":
+      return outcome.op === "remove"
+        ? `✓ Queued removing a skill from the library for your approval. Open the Approvals window to review and apply it. Nothing changes until you approve.`
+        : `✓ Queued a skill allowed-roles change for your approval. Open the Approvals window to review and apply it. Nothing changes until you approve.`;
+    case "skill_library_edit_propose_rejected":
+      switch (outcome.reason) {
+        case "invalid_body":
+          return `× PROPOSE_SKILL_LIBRARY_EDIT payload invalid.`;
+        case "permission_denied":
+          return "";
+      }
+      return "";
+    case "tool_edit_proposed": {
+      const what =
+        outcome.op === "delete"
+          ? "deleting a tool"
+          : outcome.op === "set_status"
+            ? "a tool pause/activate"
+            : "a tool allowed-roles change";
+      return `✓ Queued ${what} for your approval. Open the Approvals window to review and apply it. Nothing changes until you approve.`;
+    }
+    case "tool_edit_propose_rejected":
+      switch (outcome.reason) {
+        case "invalid_body":
+          return `× PROPOSE_TOOL_EDIT payload invalid.`;
+        case "permission_denied":
+          return "";
+      }
+      return "";
+    case "workflow_delete_proposed":
+      return `✓ Queued deleting a workflow for your approval. Open the Approvals window to review and apply it. Nothing changes until you approve.`;
+    case "workflow_delete_propose_rejected":
+      switch (outcome.reason) {
+        case "invalid_body":
+          return `× PROPOSE_WORKFLOW_DELETE payload invalid.`;
+        case "permission_denied":
+          return "";
+      }
+      return "";
+    case "task_delete_proposed":
+      return `✓ Queued deleting a task for your approval. Open the Approvals window to review and apply it. Nothing changes until you approve.`;
+    case "task_delete_propose_rejected":
+      switch (outcome.reason) {
+        case "invalid_body":
+          return `× PROPOSE_TASK_DELETE payload invalid.`;
         case "permission_denied":
           return "";
       }
