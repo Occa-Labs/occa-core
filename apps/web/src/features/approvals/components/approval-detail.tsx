@@ -73,6 +73,13 @@ export function ApprovalDetail({
     );
   }
 
+  // Profile-edit proposals are not task-shaped (no title/description) and
+  // the operator approves the CEO's draft as-is — no editable form. Approve
+  // applies the patch via the with-approval engine.
+  if (approval.actionType === "edit_company_profile") {
+    return <ProfileEditDetail approval={approval} agentById={agentById} />;
+  }
+
   return (
     <TaskApprovalDetail approval={approval} agentById={agentById} />
   );
@@ -438,6 +445,173 @@ function ProposeDeploymentDetail({
           >
             <Rocket className="size-3" />
             Deploy this
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Profile edit proposal view ───────────────────────────────────────
+// Read-only render of a CEO PROPOSE_PROFILE_EDIT row: the proposed profile
+// fields, with a plain Approve that applies the patch (the with-approval
+// engine runs the upsert on approve) and Reject. The operator approves the
+// CEO's draft as-is or rejects — no inline editing in this v1.
+function ProfileEditDetail({
+  approval,
+  agentById,
+}: {
+  approval: ApprovalDTO;
+  agentById: Map<string, AgentDTO>;
+}) {
+  const decide = useDecideApproval();
+  const [mode, setMode] = useState<DetailMode>({ kind: "view" });
+  const [rejectReason, setRejectReason] = useState("");
+
+  useEffect(() => {
+    setMode({ kind: "view" });
+    setRejectReason("");
+  }, [approval.id]);
+
+  const submitting = mode.kind === "submitting";
+
+  const handleApprove = useCallback(async () => {
+    setMode({ kind: "submitting" });
+    try {
+      await decide.mutateAsync({ id: approval.id, decision: "approve" });
+    } catch {
+      setMode({ kind: "view" });
+    }
+  }, [approval.id, decide]);
+
+  const handleSendReject = useCallback(async () => {
+    const reason = rejectReason.trim();
+    if (!reason) return;
+    setMode({ kind: "submitting" });
+    try {
+      await decide.mutateAsync({
+        id: approval.id,
+        decision: "reject",
+        rejectionReason: reason,
+      });
+    } catch {
+      setMode({ kind: "rejecting" });
+    }
+  }, [approval.id, decide, rejectReason]);
+
+  const agent = approval.requestedByAgentId
+    ? agentById.get(approval.requestedByAgentId)
+    : null;
+  const agentName = agent?.name ?? "CEO";
+  const agentRole = agent?.role ?? null;
+  const actionLabel = humanizeApprovalAction(
+    approval.actionType,
+    approval.payload,
+    agentById,
+  );
+  const fields = Object.entries(approval.payload).filter(
+    ([k]) => !SYSTEM_PAYLOAD_KEYS.has(k),
+  );
+
+  return (
+    <div className="flex flex-col gap-4 px-5 py-4">
+      <div className="flex items-start gap-3">
+        <div
+          aria-hidden
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-white/70"
+          style={surface.recessed}
+        >
+          <Bot className="h-4 w-4" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-baseline gap-2">
+            <span className="truncate text-[14px] font-semibold text-white/90">
+              {agentName}
+            </span>
+            {agentRole && (
+              <span className="shrink-0 text-[11px] text-white/40">
+                · {agentRole}
+              </span>
+            )}
+            <span className="ml-auto shrink-0 text-[11px] text-white/40">
+              {relativeTime(approval.requestedAt)}
+            </span>
+          </div>
+          <div className="mt-0.5 text-[12px] text-white/60">{actionLabel}</div>
+        </div>
+      </div>
+
+      {fields.length > 0 && (
+        <Card variant="recessed" padding="md">
+          <div className="flex flex-col gap-4 text-[12px]">
+            {fields.map(([k, v]) => (
+              <ReadOnlyField key={k} label={k} value={v} />
+            ))}
+          </div>
+        </Card>
+      )}
+
+      <p className="text-[11px] leading-relaxed text-white/45">
+        Approving applies these changes to your company profile. The payout
+        wallet is never part of a proposal — change it yourself in the Company
+        window.
+      </p>
+
+      {mode.kind === "rejecting" ? (
+        <div className="space-y-2">
+          <textarea
+            autoFocus
+            value={rejectReason}
+            onChange={(e) => setRejectReason(e.target.value)}
+            placeholder="Reason for rejection…"
+            rows={3}
+            className={cn(
+              "w-full resize-none rounded-lg border border-white/10",
+              "bg-black/25 px-2.5 py-2 text-[12px] text-white/85",
+              "placeholder:text-white/30 focus:border-white/25 focus:outline-none",
+            )}
+          />
+          <div className="flex items-center justify-end gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setRejectReason("");
+                setMode({ kind: "view" });
+              }}
+              disabled={submitting}
+            >
+              <X className="size-3" />
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              size="sm"
+              disabled={submitting || rejectReason.trim().length === 0}
+              onClick={() => void handleSendReject()}
+            >
+              {submitting ? "Sending…" : "Send"}
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex items-center justify-end gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setMode({ kind: "rejecting" })}
+            disabled={submitting}
+          >
+            Reject
+          </Button>
+          <Button
+            variant="success"
+            size="sm"
+            onClick={() => void handleApprove()}
+            disabled={submitting}
+          >
+            <Check className="size-3" />
+            {submitting ? "Approving…" : "Approve"}
           </Button>
         </div>
       )}

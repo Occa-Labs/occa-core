@@ -1,8 +1,11 @@
 // Minimal Telegram Bot API client. Pure HTTP — no third-party SDK. We
-// only need three endpoints for v1:
-//   - getMe          : probe creds (no side effects)
-//   - getUpdates     : long-poll for incoming messages
-//   - sendMessage    : reply to a chat
+// need these endpoints:
+//   - getMe              : probe creds (no side effects)
+//   - getUpdates         : long-poll for incoming messages + button taps
+//   - sendMessage        : reply to a chat (optionally with inline buttons)
+//   - answerCallbackQuery : acknowledge a button tap (clears the spinner)
+//   - editMessageText    : rewrite a sent message (e.g. strip buttons after
+//                          a decision and show the resolved state)
 //
 // Long-polling is preferred over webhook for v1: no public ingress
 // requirement, no Telegram-side webhook setup, works behind home NAT.
@@ -35,9 +38,32 @@ export interface TelegramMessage {
   text?: string;
 }
 
+// One tappable inline button. `callback_data` is opaque to Telegram and
+// capped at 64 bytes; we encode our routing payload into it (see
+// telegram-orchestrator).
+export interface TelegramInlineButton {
+  text: string;
+  callback_data: string;
+}
+
+export interface TelegramInlineKeyboard {
+  inline_keyboard: TelegramInlineButton[][];
+}
+
+// Delivered when the user taps an inline button. `message` is the message
+// the button was attached to (carries chat + message_id so we can edit it
+// in place); `data` is the `callback_data` we set on that button.
+export interface TelegramCallbackQuery {
+  id: string;
+  from: TelegramUser;
+  message?: TelegramMessage;
+  data?: string;
+}
+
 export interface TelegramUpdate {
   update_id: number;
   message?: TelegramMessage;
+  callback_query?: TelegramCallbackQuery;
 }
 
 export interface TelegramResponse<T> {
@@ -91,7 +117,7 @@ export async function getUpdates(
     {
       offset,
       timeout: LONG_POLL_TIMEOUT_S,
-      allowed_updates: ["message"],
+      allowed_updates: ["message", "callback_query"],
     },
     signal,
   );
@@ -101,6 +127,7 @@ export async function sendMessage(
   token: string,
   chatId: number,
   text: string,
+  replyMarkup?: TelegramInlineKeyboard,
 ): Promise<TelegramResponse<TelegramMessage>> {
   return telegramFetch<TelegramMessage>(token, "sendMessage", {
     chat_id: chatId,
@@ -109,6 +136,42 @@ export async function sendMessage(
     // caller already split; here we just truncate as a safety net so the
     // orchestrator never gets stuck on an over-length reply.
     parse_mode: undefined,
+    reply_markup: replyMarkup,
+  });
+}
+
+// Acknowledge a button tap. Without this the client shows a loading spinner
+// on the button for a few seconds; `text` (optional) surfaces as a small
+// toast over the chat. Best-effort — failing to ack is cosmetic only.
+export async function answerCallbackQuery(
+  token: string,
+  callbackQueryId: string,
+  text?: string,
+): Promise<void> {
+  try {
+    await telegramFetch<boolean>(token, "answerCallbackQuery", {
+      callback_query_id: callbackQueryId,
+      text,
+    });
+  } catch {
+    // Cosmetic — the decision already committed; the spinner clears itself.
+  }
+}
+
+// Rewrite an already-sent message in place. Pass no `replyMarkup` to drop
+// the inline keyboard (Telegram removes buttons when the field is absent).
+export async function editMessageText(
+  token: string,
+  chatId: number,
+  messageId: number,
+  text: string,
+  replyMarkup?: TelegramInlineKeyboard,
+): Promise<TelegramResponse<TelegramMessage>> {
+  return telegramFetch<TelegramMessage>(token, "editMessageText", {
+    chat_id: chatId,
+    message_id: messageId,
+    text,
+    reply_markup: replyMarkup,
   });
 }
 

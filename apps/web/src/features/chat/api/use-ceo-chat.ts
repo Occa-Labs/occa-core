@@ -6,7 +6,7 @@ import type {
   ListChatMessagesResponse,
   SendChatMessageResponse,
 } from "@occa/shared/types";
-import { chatApi } from "@/lib/api";
+import { approvalsApi, chatApi } from "@/lib/api";
 import { chatKeys } from "./keys";
 
 // Polling cadence — short while the panel is open since the user is
@@ -47,6 +47,7 @@ export function useSendCeoMessage() {
         role: "user",
         content,
         createdTaskId: null,
+        linkedApproval: null,
         createdAt: new Date().toISOString(),
       };
       queryClient.setQueryData<ChatMessageDTO[]>(chatKeys.ceo(), [
@@ -116,6 +117,25 @@ export function useClearCeoChat() {
       queryClient.setQueryData<ChatMessageDTO[]>(chatKeys.ceo(), []);
     },
     onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: chatKeys.ceo() });
+    },
+  });
+}
+
+// Decide a CEO-proposed approval inline from the chat card (Approve/Reject
+// on the message that queued it). Calls the shared approvals endpoint via
+// lib — NOT the approvals feature — so the no-cross-feature-import rule
+// holds. Refetches the thread on success so the card reflects the new
+// status. The Approvals window remains the canonical record (it polls).
+export function useDecideCeoApproval() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: {
+      id: string;
+      decision: "approve" | "reject";
+      rejectionReason?: string;
+    }) => approvalsApi.decide(input.id, input.decision, input.rejectionReason),
+    onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: chatKeys.ceo() });
     },
   });

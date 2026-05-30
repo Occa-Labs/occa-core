@@ -10,6 +10,7 @@ import { approvals, companies } from "@occa/shared/schema";
 import { db } from "../../../infra/database/client";
 import { childLogger } from "../../../lib/logger";
 import { emitNotification } from "../../notifications/services/emit";
+import { channelActionsForApproval } from "../domain/channel-actions";
 
 const log = childLogger("services:approvals:post-create");
 
@@ -40,6 +41,9 @@ export async function notifyApprovalCreated(
         actionType: approval.actionType,
       },
       link: `approvals:${approval.id}`,
+      // Channel-decidable approvals (delegate, profile edit) get one-tap
+      // approve/reject buttons; OS-only ones (propose_deployment) get none.
+      actions: channelActionsForApproval(approval.id, approval.actionType),
     });
   } catch (err) {
     log.error(

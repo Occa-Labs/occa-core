@@ -19,17 +19,37 @@ import {
   deploymentChannels,
   deployments,
 } from "@occa/shared/schema";
+import type { ApprovalDecision, ChannelAction } from "@occa/shared/types";
 import { sendUserTurn } from "../../chat/services/chat-handler";
+import { decideApproval, type DecideApprovalResult } from "../../approvals/services/decide";
 import {
+  answerCallbackQuery,
+  editMessageText,
   getUpdates,
   sendChatAction,
   sendMessage,
   splitForTelegram,
+  type TelegramCallbackQuery,
+  type TelegramInlineButton,
+  type TelegramInlineKeyboard,
   type TelegramUpdate,
 } from "./telegram-api";
 import { markStatus } from "../repositories/channels";
 
 const log = childLogger("transport:telegram");
+
+// Canned rejection reason for button-driven rejects. A Telegram inline tap
+// can't collect free text in one step, so the service-level reject (which,
+// unlike the HTTP route, does not require a reason) records this. Free-text
+// reasons are a later text-reply tier, not part of inline buttons.
+const TELEGRAM_REJECT_REASON = "Rejected from Telegram";
+
+// Inline-button callback_data wire format. Telegram caps callback_data at
+// 64 bytes; "apd:<decision>:<uuid>" fits in ~48. This encoding is private
+// to the Telegram transport — producers hand us semantic ChannelActions and
+// we own both the render (encode) and the tap (decode) sides.
+const CALLBACK_PREFIX = "apd"; // approval decision
+const CALLBACK_SEP = ":";
 
 interface ActiveLoop {
   controller: AbortController;
@@ -142,6 +162,140 @@ async function persistTransportState(
     );
 }
 
+function encodeApprovalCallback(
+  decision: ApprovalDecision,
+  approvalId: string,
+): string {
+  return [CALLBACK_PREFIX, decision, approvalId].join(CALLBACK_SEP);
+}
+
+function parseApprovalCallback(
+  data: string,
+): { decision: ApprovalDecision; approvalId: string } | null {
+  const parts = data.split(CALLBACK_SEP);
+  if (parts.length !== 3 || parts[0] !== CALLBACK_PREFIX) return null;
+  const [, decision, approvalId] = parts;
+  if (decision !== "approve" && decision !== "reject") return null;
+  if (!approvalId) return null;
+  return { decision, approvalId };
+}
+
+// Render semantic ChannelActions into a Telegram inline keyboard. Returns
+// undefined when there are no renderable actions (so the message sends as
+// plain text). All buttons sit on one row — approvals only ever carry the
+// approve/reject pair today.
+function actionsToInlineKeyboard(
+  actions: ChannelAction[] | undefined,
+): TelegramInlineKeyboard | undefined {
+  if (!actions || actions.length === 0) return undefined;
+  const buttons: TelegramInlineButton[] = [];
+  for (const a of actions) {
+    if (a.kind !== "approval_decision") continue;
+    buttons.push({
+      text: a.label,
+      callback_data: encodeApprovalCallback(a.decision, a.approvalId),
+    });
+  }
+  if (buttons.length === 0) return undefined;
+  return { inline_keyboard: [buttons] };
+}
+
+// Map a decision outcome to operator-facing copy: a short toast (shown over
+// the chat by answerCallbackQuery) and a resolution line appended to the
+// original message after its buttons are stripped.
+function describeDecision(
+  result: DecideApprovalResult,
+  decision: ApprovalDecision,
+): { toast: string; resolution: string } {
+  switch (result.kind) {
+    case "ok":
+      return decision === "approve"
+        ? { toast: "Approved", resolution: "✅ Approved" }
+        : { toast: "Rejected", resolution: "❌ Rejected" };
+    case "already_decided":
+      return {
+        toast: "Already decided",
+        resolution: "⚠️ Already decided elsewhere",
+      };
+    case "not_found":
+      return { toast: "Not found", resolution: "⚠️ Approval no longer exists" };
+    case "side_effect_failed":
+      return {
+        toast: "Action failed",
+        resolution: `⚠️ Approved, but the action failed: ${result.message}`,
+      };
+  }
+}
+
+// Handle an inline-button tap. 1-on-1 only: the tap must originate from the
+// bound private DM (chat.id === stored lastChatId), so a stranger who
+// somehow learns the bot handle can't decide the operator's approvals.
+async function handleCallback(
+  deploymentId: string,
+  token: string,
+  cbq: TelegramCallbackQuery,
+): Promise<void> {
+  const data = cbq.data;
+  const msg = cbq.message;
+  // Need the originating message to gate (chat) and to edit (message_id),
+  // plus a payload to act on. Missing either → just clear the spinner.
+  if (!data || !msg) {
+    await answerCallbackQuery(token, cbq.id);
+    return;
+  }
+
+  const ch = await loadOneTelegramChannel(deploymentId);
+  const boundChatId = Number(ch?.transportState.lastChatId ?? 0);
+  if (msg.chat.type !== "private" || msg.chat.id !== boundChatId) {
+    log.warn(
+      { deploymentId, chatId: msg.chat.id, boundChatId, fromId: cbq.from.id },
+      "telegram: callback from non-bound chat — ignoring",
+    );
+    await answerCallbackQuery(token, cbq.id, "Not authorized.");
+    return;
+  }
+
+  const parsed = parseApprovalCallback(data);
+  if (!parsed) {
+    await answerCallbackQuery(token, cbq.id);
+    return;
+  }
+
+  const owner = await resolveOwnerAndCompany(deploymentId);
+  if (!owner) {
+    log.warn({ deploymentId }, "telegram: callback owner not found");
+    await answerCallbackQuery(token, cbq.id, "Company not found.");
+    return;
+  }
+
+  // Decide through the exact same service path the OS + HTTP route use.
+  const result = await decideApproval({
+    approvalId: parsed.approvalId,
+    companyId: owner.companyId,
+    decidedByUserId: owner.ownerUserId,
+    decision: parsed.decision,
+    reason: parsed.decision === "reject" ? TELEGRAM_REJECT_REASON : null,
+  });
+
+  const { toast, resolution } = describeDecision(result, parsed.decision);
+  await answerCallbackQuery(token, cbq.id, toast);
+  // Strip the keyboard (omit reply_markup) and append the resolved state so
+  // the message reflects the decision and can't be tapped twice.
+  const baseText = msg.text ?? "Approval";
+  const edited = await editMessageText(
+    token,
+    msg.chat.id,
+    msg.message_id,
+    `${baseText}\n\n${resolution}`,
+  );
+  if (!edited.ok) {
+    log.warn(
+      { deploymentId, telegramErr: edited.description },
+      "telegram: editMessageText after decision failed",
+    );
+  }
+}
+
 async function handleMessage(
   deploymentId: string,
   token: string,
@@ -246,9 +400,13 @@ async function loop(
       const updates = res.result ?? [];
       let lastChatId: number | null = null;
       for (const u of updates) {
-        await handleMessage(deploymentId, token, u);
+        if (u.callback_query) {
+          await handleCallback(deploymentId, token, u.callback_query);
+        } else if (u.message) {
+          await handleMessage(deploymentId, token, u);
+          if (u.message.chat.id) lastChatId = u.message.chat.id;
+        }
         offset = Math.max(offset, u.update_id + 1);
-        if (u.message?.chat.id) lastChatId = u.message.chat.id;
       }
       if (updates.length > 0) {
         const patch: Record<string, unknown> = { pollingOffset: offset };
@@ -324,6 +482,7 @@ export async function stopTelegramOrchestrator(): Promise<void> {
 export async function pushTelegramNotification(args: {
   deploymentId: string;
   text: string;
+  actions?: ChannelAction[];
 }): Promise<
   | { ok: true; info: { chatId: number } }
   | { ok: false; error: string; reason?: string }
@@ -341,8 +500,18 @@ export async function pushTelegramNotification(args: {
         "Send a message to the bot from Telegram first so it knows where to push.",
     };
   }
-  for (const chunk of splitForTelegram(args.text)) {
-    const res = await sendMessage(token, chatId, chunk);
+  // Buttons attach to the final chunk only — a multi-part notification
+  // shouldn't repeat the keyboard on every part.
+  const keyboard = actionsToInlineKeyboard(args.actions);
+  const chunks = splitForTelegram(args.text);
+  for (let i = 0; i < chunks.length; i++) {
+    const isLast = i === chunks.length - 1;
+    const res = await sendMessage(
+      token,
+      chatId,
+      chunks[i],
+      isLast ? keyboard : undefined,
+    );
     if (!res.ok) {
       return {
         ok: false,

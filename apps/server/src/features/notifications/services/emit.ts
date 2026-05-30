@@ -8,6 +8,7 @@ import { insertOne } from "../repositories/notifications";
 import type { NotificationRow } from "../repositories/notifications";
 import { findCeoForCompany } from "../../agents/repositories/deployments";
 import { pushNotificationToCeo } from "../../channels/notify";
+import type { ChannelAction } from "@occa/shared/types";
 
 const log = childLogger("services:notifications:emit");
 
@@ -20,6 +21,10 @@ export interface EmitNotificationInput {
   payload?: Record<string, unknown>;
   /** Deep-link target, e.g. "approvals:<uuid>" or "chain:treasury". */
   link?: string | null;
+  // Interactive actions for channels that support them (e.g. Telegram
+  // inline buttons). The in-app inbox ignores these — it resolves the
+  // notification through `link`. Forwarded as-is to the channel fan-out.
+  actions?: ChannelAction[];
 }
 
 export async function emitNotification(
@@ -62,6 +67,7 @@ async function pushAfterEmit(
   const res = await pushNotificationToCeo({
     deploymentId: ceo.id,
     text,
+    actions: input.actions,
   });
   if (res.delivered.length > 0 || res.failed.length > 0) {
     log.info(

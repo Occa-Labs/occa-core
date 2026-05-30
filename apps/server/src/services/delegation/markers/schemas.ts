@@ -120,6 +120,52 @@ export const proposeDeploymentBlockPayload = z.object({
   suggestedName: z.string().trim().min(1).max(LIMITS.NAME).optional(),
 });
 
+// PROPOSE_PROFILE_EDIT: CEO drafts changes to the company profile (brand,
+// voice, mission, output, contact, presence, chains). With-approval tier:
+// the marker does NOT write — its handler creates a pending approvals row
+// the operator commits. The payout wallet (treasuryAddress), socialHandles,
+// and foundedAt are intentionally ABSENT from this schema; unknown keys are
+// stripped (zod default), so the CEO can never get a wallet change into the
+// payload, even by mistake. companyId is derived from the emitter.
+//
+// Max items in a profile list field (content pillars, USPs, etc.) — a sanity
+// cap on the marker; the DB columns themselves are unbounded text arrays.
+const PROFILE_LIST_MAX = 24;
+const profileText = z.string().trim().max(LIMITS.DESCRIPTION);
+const profileShort = z.string().trim().max(LIMITS.TITLE);
+const profileList = z
+  .array(z.string().trim().min(1).max(LIMITS.DESCRIPTION_SHORT))
+  .max(PROFILE_LIST_MAX);
+
+export const proposeProfileEditBlockPayload = z
+  .object({
+    tagline: profileShort.optional(),
+    logoUrl: profileText.optional(),
+    niche: profileShort.optional(),
+    coverageScope: profileText.optional(),
+    coverageExcluded: profileText.optional(),
+    contentPillars: profileList.optional(),
+    brandVoice: profileText.optional(),
+    forbiddenWords: profileList.optional(),
+    mission: profileText.optional(),
+    vision: profileText.optional(),
+    targetAudience: profileText.optional(),
+    usps: profileList.optional(),
+    coreOffering: profileText.optional(),
+    serviceCatalog: profileList.optional(),
+    contactEmail: profileShort.optional(),
+    salesEmail: profileShort.optional(),
+    phone: profileShort.optional(),
+    websiteUrl: profileText.optional(),
+    blogUrl: profileText.optional(),
+    newsletterUrl: profileText.optional(),
+    docsUrl: profileText.optional(),
+    chainsCovered: profileList.optional(),
+  })
+  .refine((o) => Object.keys(o).length > 0, {
+    message: "at least one profile field required",
+  });
+
 // REPORT marker is intentionally schema-less: its body is plain
 // markdown (not JSON) so the LLM can ship long-form summaries without
 // fighting JSON escape rules. The handler reads the raw text between
@@ -242,6 +288,16 @@ export type DeploymentProposeRejectReason =
   | "role_already_filled"
   | "skill_not_found"
   | "runtime_not_registered"
+  | "permission_denied"
+  | "invalid_body";
+
+export type ProposeProfileEditBlockPayload = z.infer<
+  typeof proposeProfileEditBlockPayload
+>;
+
+// invalid_body also covers the refine failure (no editable field after
+// unknown-key stripping) and any stray non-editable key's type mismatch.
+export type ProfileEditProposeRejectReason =
   | "permission_denied"
   | "invalid_body";
 
@@ -385,4 +441,17 @@ export type ActionBlockOutcome =
   | {
       kind: "deployment_propose_rejected";
       reason: DeploymentProposeRejectReason;
+    }
+  // PROPOSE_PROFILE_EDIT: a pending profile-edit proposal row was created.
+  // fieldCount = how many profile fields the CEO proposed to change. The
+  // operator reviews + commits in the Approvals window; approve applies the
+  // patch via the with-approval engine.
+  | {
+      kind: "profile_edit_proposed";
+      proposalId: string;
+      fieldCount: number;
+    }
+  | {
+      kind: "profile_edit_propose_rejected";
+      reason: ProfileEditProposeRejectReason;
     };

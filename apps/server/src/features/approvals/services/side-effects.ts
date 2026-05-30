@@ -4,6 +4,7 @@ import type { ContentBlock, DelegatePayload } from "@occa/shared/types";
 import { db } from "../../../infra/database/client";
 import { createTaskRecord } from "../../../infra/database/task-creation";
 import { canDeploy } from "../../agents/services/deployment-hierarchy";
+import { findCeoActionByApprovalType } from "../../../services/delegation/markers/registry";
 
 // Side-effect dispatcher — runs after the approval row has flipped.
 // Returns the (mutated) approval row so the caller can read the updated
@@ -11,17 +12,24 @@ import { canDeploy } from "../../agents/services/deployment-hierarchy";
 export async function runApprovalSideEffect(
   approval: typeof approvals.$inferSelect,
 ): Promise<typeof approvals.$inferSelect> {
+  // CEO with-approval actions are registry-driven: the descriptor owns the
+  // commit logic via executeOnApprove. One table, no per-action case here.
+  // (PROPOSE_DEPLOYMENT is registered but has no executeOnApprove — it is
+  // finished by the operator-signed deploy modal — so it falls through to
+  // the no-op below, preserving prior behavior.)
+  const ceoAction = findCeoActionByApprovalType(approval.actionType);
+  if (ceoAction?.executeOnApprove) {
+    return ceoAction.executeOnApprove(approval);
+  }
+
   switch (approval.actionType) {
     case "delegate":
+      // Agent-emitted delegation (not a CEO registry action). Spawns the
+      // approved child task.
       return runDelegate(approval);
-    case "propose_deployment":
-      // No provisioning side effect. A deployment proposal is fulfilled
-      // by the operator-signed "Deploy this" flow (the deploy modal),
-      // which provisions the agent and then marks this row resolved.
-      // Approve here only closes the proposal — it never deploys.
-      return approval;
     default:
-      // Unknown actionType: no-op. Approve still flips the row.
+      // Unknown / no-side-effect actionType (e.g. propose_deployment):
+      // approve just flips the row.
       return approval;
   }
 }

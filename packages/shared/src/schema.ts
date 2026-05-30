@@ -1402,6 +1402,14 @@ export const chatMessages = pgTable(
     createdTaskId: uuid("created_task_id").references(() => tasks.id, {
       onDelete: "set null",
     }),
+    // Set on assistant messages whose with-approval marker (e.g.
+    // PROPOSE_PROFILE_EDIT, PROPOSE_DEPLOYMENT) created a pending approval.
+    // Lets the chat render an inline Approve/Reject card for "this reply"
+    // without a trip to the Approvals window. The approval row itself stays
+    // the canonical record (Approvals window pending + history).
+    linkedApprovalId: uuid("linked_approval_id").references(() => approvals.id, {
+      onDelete: "set null",
+    }),
     // Trace row for the adapter call that produced an assistant turn.
     // Null on user / system messages.
     traceId: uuid("trace_id").references(() => traces.id, {

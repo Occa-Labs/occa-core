@@ -35,6 +35,13 @@ export function humanizeApprovalAction(
     return "Wants to deploy a new agent";
   }
 
+  if (actionType === "edit_company_profile") {
+    const n = Object.keys(payload).length;
+    return n === 1
+      ? "Wants to update 1 company profile field"
+      : `Wants to update ${n} company profile fields`;
+  }
+
   const summary =
     typeof payload.summary === "string" ? payload.summary.trim() : "";
   if (summary) return summary;

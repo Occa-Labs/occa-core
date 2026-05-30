@@ -9,13 +9,9 @@ import type {
 } from "@occa/shared/types";
 import { db } from "../../../infra/database/client";
 import { requireAuth } from "../../../middleware/auth";
-import { enqueueTaskDispatch } from "../../../infra/queue/task-worker";
-import { childLogger } from "../../../lib/logger";
 import { stripSystemKeys, toApprovalDTO } from "../domain/dto";
 import { decideBody, listQuery, patchBody } from "../domain/schemas";
-import { runApprovalSideEffect } from "../services/side-effects";
-
-const log = childLogger("routes:approvals");
+import { decideApproval } from "../services/decide";
 
 const router: Router = Router();
 
@@ -147,91 +143,42 @@ router.post("/:id/decide", requireAuth, async (req: Request, res: Response) => {
     return;
   }
 
-  const [row] = await db
-    .select()
-    .from(approvals)
-    .where(
-      and(eq(approvals.id, req.params.id), eq(approvals.companyId, companyId)),
-    )
-    .limit(1);
-  if (!row) {
-    res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.APPROVAL_NOT_FOUND });
-    return;
+  const result = await decideApproval({
+    approvalId: req.params.id,
+    companyId,
+    decidedByUserId: req.user!.userId,
+    decision,
+    reason: decision === "reject" ? rejectionReason!.trim() : null,
+  });
+
+  switch (result.kind) {
+    case "not_found":
+      res
+        .status(StatusCodes.NOT_FOUND)
+        .json({ error: ERROR_CODES.APPROVAL_NOT_FOUND });
+      return;
+    case "already_decided":
+      res
+        .status(StatusCodes.CONFLICT)
+        .json({ error: ERROR_CODES.APPROVAL_ALREADY_DECIDED });
+      return;
+    case "side_effect_failed":
+      // Row already flipped + failure stamped; still surface 500 so the
+      // UI shows the problem.
+      res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
+        error: ERROR_CODES.SIDE_EFFECT_FAILED,
+        detail: result.message,
+        approval: toApprovalDTO(result.approval),
+      });
+      return;
+    case "ok": {
+      const body: DecideApprovalResponse = {
+        approval: toApprovalDTO(result.approval),
+      };
+      res.json(body);
+      return;
+    }
   }
-  if (row.status !== "pending") {
-    res.status(StatusCodes.CONFLICT).json({ error: ERROR_CODES.APPROVAL_ALREADY_DECIDED });
-    return;
-  }
-
-  const now = new Date();
-  const nextStatus = decision === "approve" ? "approved" : "rejected";
-
-  // Step 1 — flip the approval row. Single update, no tx.
-  const [updated] = await db
-    .update(approvals)
-    .set({
-      status: nextStatus,
-      decidedAt: now,
-      decidedByUserId: req.user!.userId,
-      rejectionReason: decision === "reject" ? rejectionReason! : null,
-      updatedAt: now,
-    })
-    .where(eq(approvals.id, row.id))
-    .returning();
-
-  // Reject path — no side effects.
-  if (decision === "reject") {
-    res.json({ approval: toApprovalDTO(updated) });
-    return;
-  }
-
-  // Approve path — run the side effect for the action type. Side effects
-  // run AFTER the row flip (not in a tx) because hire must do network
-  // calls. On failure we stamp the failure into the payload so the row
-  // tells the story; we still return 500 so the UI surfaces the problem.
-  let final = updated;
-  try {
-    final = await runApprovalSideEffect(updated);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "unknown";
-    log.error({ err }, "side-effect failed");
-    // Stamp failure on the row so UI / audits can see what happened.
-    const payload = (updated.payload ?? {}) as Record<string, unknown>;
-    const [stamped] = await db
-      .update(approvals)
-      .set({
-        payload: {
-          ...payload,
-          failureReason: message,
-          failedAt: new Date().toISOString(),
-        },
-        updatedAt: new Date(),
-      })
-      .where(eq(approvals.id, updated.id))
-      .returning();
-    res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
-      error: ERROR_CODES.SIDE_EFFECT_FAILED,
-      detail: message,
-      approval: toApprovalDTO(stamped),
-    });
-    return;
-  }
-
-  // After the side effect commits, kick off async dispatch for any new
-  // task we created. enqueueTaskDispatch is fire-and-forget by design.
-  const spawnedTaskId =
-    typeof (final.payload as Record<string, unknown>)?.spawnedTaskId ===
-    "string"
-      ? ((final.payload as Record<string, unknown>).spawnedTaskId as string)
-      : null;
-  if (spawnedTaskId) {
-    void enqueueTaskDispatch(spawnedTaskId).catch((err) =>
-      log.error({ err, spawnedTaskId }, "post-decide enqueue task dispatch failed"),
-    );
-  }
-
-  const body: DecideApprovalResponse = { approval: toApprovalDTO(final) };
-  res.json(body);
 });
 
 export default router;

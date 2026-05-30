@@ -1,0 +1,2 @@
+ALTER TABLE "chat_messages" ADD COLUMN "linked_approval_id" uuid;--> statement-breakpoint
+ALTER TABLE "chat_messages" ADD CONSTRAINT "chat_messages_linked_approval_id_approvals_id_fk" FOREIGN KEY ("linked_approval_id") REFERENCES "public"."approvals"("id") ON DELETE set null ON UPDATE no action;

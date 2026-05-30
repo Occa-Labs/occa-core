@@ -44,6 +44,7 @@ import {
   dispatchRoutineBlockPayload,
   installSkillBlockPayload,
   proposeDeploymentBlockPayload,
+  proposeProfileEditBlockPayload,
   toggleChannelBlockPayload,
   toggleRoutineBlockPayload,
   toggleWorkflowBlockPayload,
@@ -52,6 +53,7 @@ import {
   type ActionBlockOutcome,
   type ChannelToggleRejectReason,
   type DeploymentProposeRejectReason,
+  type ProfileEditProposeRejectReason,
   type RoutineAssignRejectReason,
   type RoutineDispatchRejectReason,
   type RoutineToggleRejectReason,
@@ -63,6 +65,7 @@ import {
 } from "./schemas";
 import { createTaskComment } from "../../../features/tasks/services/comments";
 import { notifyApprovalCreated } from "../../../features/approvals/services/post-create";
+import { upsert as upsertCompanyProfile } from "../../../features/companies/repositories/company-profiles";
 
 const log = childLogger("services:delegation:markers");
 
@@ -1587,4 +1590,87 @@ export async function handleProposeDeploymentBlock(
     skillCount: uniqueSkills.length,
     suggestedName: suggestedName ?? null,
   };
+}
+
+// PROPOSE_PROFILE_EDIT (with-approval). The CEO drafts a profile change;
+// this creates a zero-authority pending approvals row the operator commits
+// in the Approvals window. The marker NEVER writes the profile — the patch
+// is applied by applyProfileEditApproval on approve. Unknown keys (payout
+// wallet, social handles, founded date) were stripped at the schema, so the
+// payload can only carry operator-allowed fields.
+export async function handleProposeProfileEditBlock(
+  args: ActionBlockHandlerArgs,
+): Promise<ActionBlockOutcome> {
+  const reject = (
+    reason: ProfileEditProposeRejectReason,
+  ): ActionBlockOutcome => ({
+    kind: "profile_edit_propose_rejected",
+    reason,
+  });
+
+  if (getTier(args.agentRole) !== "ceo") {
+    log.warn(
+      { agentId: args.agentId, agentRole: args.agentRole },
+      "PROPOSE_PROFILE_EDIT block rejected: only CEO tier may emit it",
+    );
+    return reject("permission_denied");
+  }
+
+  const parsed = proposeProfileEditBlockPayload.safeParse(args.block.body);
+  if (!parsed.success) {
+    log.warn(
+      { detail: parsed.error.flatten() },
+      "PROPOSE_PROFILE_EDIT block rejected: invalid payload",
+    );
+    return reject("invalid_body");
+  }
+  // parsed.data is the stripped, allowlisted patch — treasuryAddress and
+  // other operator-only keys cannot be present here.
+  const patch = parsed.data;
+
+  const [row] = await db
+    .insert(approvals)
+    .values({
+      companyId: args.companyId,
+      requestedByDeploymentId: args.agentId,
+      actionType: "edit_company_profile",
+      payload: patch,
+    })
+    .returning();
+
+  // Fire-and-forget operator notification with a deep link into Approvals.
+  // Degraded (not broken) if it fails — the row is still visible there.
+  void notifyApprovalCreated(row);
+
+  const fieldCount = Object.keys(patch).length;
+  log.info(
+    {
+      ceoDeploymentId: args.agentId,
+      proposalId: row.id,
+      fieldCount,
+      traceId: args.traceId,
+    },
+    "PROPOSE_PROFILE_EDIT proposal created",
+  );
+
+  return { kind: "profile_edit_proposed", proposalId: row.id, fieldCount };
+}
+
+// With-approval side-effect for "edit_company_profile". Re-validates the
+// stored payload (defense in depth — re-strips any non-editable key that
+// somehow landed in the row) and applies it to the company profile. Wired
+// into the approval engine via the registry's executeOnApprove, so approve
+// is what actually commits the change.
+export async function applyProfileEditApproval(
+  approval: typeof approvals.$inferSelect,
+): Promise<typeof approvals.$inferSelect> {
+  const parsed = proposeProfileEditBlockPayload.safeParse(approval.payload);
+  if (!parsed.success) {
+    throw new Error("profile_edit_payload_invalid");
+  }
+  await upsertCompanyProfile({
+    companyId: approval.companyId,
+    patch: parsed.data,
+  });
+  return approval;
 }

@@ -50,18 +50,7 @@ import {
   renderChatPrompt,
   ContextNotFoundError,
 } from "../../../services/memory";
-import {
-  handleAssignRoutineBlock,
-  handleBindToolBlock,
-  handleDispatchRoutineBlock,
-  handleInstallSkillBlock,
-  handleProposeDeploymentBlock,
-  handleToggleChannelBlock,
-  handleToggleRoutineBlock,
-  handleToggleWorkflowBlock,
-  handleUnbindToolBlock,
-  handleUninstallSkillBlock,
-} from "../../../services/delegation/markers/handlers";
+import { CEO_ACTIONS } from "../../../services/delegation/markers/registry";
 import type { ActionBlockOutcome } from "../../../services/delegation/markers/schemas";
 
 const log = childLogger("services:chat-handler");
@@ -504,43 +493,21 @@ export async function sendUserTurn(
     currentTaskId: "",
     traceId,
   };
+  // Set when a with-approval marker queues an inline-approvable proposal,
+  // so the assistant message can render an inline Approve/Reject card. First
+  // one wins (one such proposal per turn in practice).
+  let linkedApprovalId: string | null = null;
   for (const block of blocks) {
-    let outcome: ActionBlockOutcome | null = null;
-    switch (block.token) {
-      case "INSTALL_SKILL":
-        outcome = await handleInstallSkillBlock({ block, ...baseArgs });
-        break;
-      case "UNINSTALL_SKILL":
-        outcome = await handleUninstallSkillBlock({ block, ...baseArgs });
-        break;
-      case "BIND_TOOL":
-        outcome = await handleBindToolBlock({ block, ...baseArgs });
-        break;
-      case "UNBIND_TOOL":
-        outcome = await handleUnbindToolBlock({ block, ...baseArgs });
-        break;
-      case "TOGGLE_CHANNEL":
-        outcome = await handleToggleChannelBlock({ block, ...baseArgs });
-        break;
-      case "TOGGLE_WORKFLOW":
-        outcome = await handleToggleWorkflowBlock({ block, ...baseArgs });
-        break;
-      case "TOGGLE_ROUTINE":
-        outcome = await handleToggleRoutineBlock({ block, ...baseArgs });
-        break;
-      case "DISPATCH_ROUTINE":
-        outcome = await handleDispatchRoutineBlock({ block, ...baseArgs });
-        break;
-      case "ASSIGN_ROUTINE":
-        outcome = await handleAssignRoutineBlock({ block, ...baseArgs });
-        break;
-      case "PROPOSE_DEPLOYMENT":
-        outcome = await handleProposeDeploymentBlock({ block, ...baseArgs });
-        break;
-    }
-    if (outcome) {
-      const line = formatOsMutationReceipt(outcome);
-      if (line) osMutationReceipts.push(line);
+    const action = CEO_ACTIONS[block.token];
+    if (!action) continue;
+    const outcome: ActionBlockOutcome = await action.run({
+      block,
+      ...baseArgs,
+    });
+    const line = formatOsMutationReceipt(outcome);
+    if (line) osMutationReceipts.push(line);
+    if (linkedApprovalId === null && outcome.kind === "profile_edit_proposed") {
+      linkedApprovalId = outcome.proposalId;
     }
   }
 
@@ -609,6 +576,7 @@ export async function sendUserTurn(
     role: "assistant",
     content: finalContent,
     createdTaskId: createdTask?.id ?? null,
+    linkedApprovalId,
     traceId,
   });
 
@@ -821,6 +789,18 @@ function formatOsMutationReceipt(outcome: ActionBlockOutcome): string {
           return `× That runtime isn't registered.`;
         case "invalid_body":
           return `× PROPOSE_DEPLOYMENT payload invalid.`;
+        case "permission_denied":
+          return "";
+      }
+      return "";
+    case "profile_edit_proposed":
+      return `✓ Queued a profile change (${outcome.fieldCount} field${
+        outcome.fieldCount === 1 ? "" : "s"
+      }) for your approval. Open the Approvals window to review and apply it. Nothing changes until you approve.`;
+    case "profile_edit_propose_rejected":
+      switch (outcome.reason) {
+        case "invalid_body":
+          return `× PROPOSE_PROFILE_EDIT payload invalid.`;
         case "permission_denied":
           return "";
       }

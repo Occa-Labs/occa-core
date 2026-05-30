@@ -2,12 +2,50 @@
 // per turn — user prompt + CEO reply land as separate rows so the UI
 // renders them as distinct bubbles.
 
-import { and, asc, eq } from "drizzle-orm";
-import { chatMessages } from "@occa/shared/schema";
+import { and, asc, eq, inArray } from "drizzle-orm";
+import { approvals, chatMessages } from "@occa/shared/schema";
 import { db } from "../../../infra/database/client";
 
 export type ChatMessageRow = typeof chatMessages.$inferSelect;
 export type ChatMessageInsert = typeof chatMessages.$inferInsert;
+
+// Minimal approval slice for the inline chat card. Reading the approvals
+// table here (not importing the approvals feature) keeps the no-cross-
+// feature-import rule intact — the table lives in the shared schema.
+export interface LinkedApprovalRow {
+  id: string;
+  actionType: string;
+  payload: Record<string, unknown> | null;
+  status: string;
+}
+
+// Fetch the approvals referenced by a batch of messages' linkedApprovalId,
+// keyed by id. Empty input short-circuits (no query).
+export async function findLinkedApprovals(
+  ids: string[],
+): Promise<Map<string, LinkedApprovalRow>> {
+  if (ids.length === 0) return new Map();
+  const rows = await db
+    .select({
+      id: approvals.id,
+      actionType: approvals.actionType,
+      payload: approvals.payload,
+      status: approvals.status,
+    })
+    .from(approvals)
+    .where(inArray(approvals.id, ids));
+  return new Map(
+    rows.map((r) => [
+      r.id,
+      {
+        id: r.id,
+        actionType: r.actionType,
+        payload: (r.payload ?? null) as Record<string, unknown> | null,
+        status: r.status,
+      },
+    ]),
+  );
+}
 
 export async function listMessages(args: {
   companyId: string;

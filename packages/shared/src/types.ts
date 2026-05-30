@@ -51,12 +51,27 @@ export type ChatMessage = typeof chatMessages.$inferSelect;
 // "thinking…" placeholder while the server is still awaiting the gateway.
 export type ChatMessageRole = "user" | "assistant" | "system";
 
+// Minimal slice of an approval embedded on a chat message so the chat can
+// render an inline Approve/Reject card. The full record lives in the
+// Approvals window (pending + history); this is just enough to render +
+// decide inline.
+export interface ChatLinkedApproval {
+  id: string;
+  actionType: ApprovalActionType;
+  payload: Record<string, unknown>;
+  status: ApprovalStatus;
+}
+
 export interface ChatMessageDTO {
   id: string;
   role: ChatMessageRole;
   content: string;
   /** Set on assistant messages whose CREATE_TASK marker spawned a task. */
   createdTaskId: string | null;
+  /** Set on assistant messages whose with-approval marker created a pending
+   *  approval. Drives the inline Approve/Reject card in chat. The approval
+   *  row is still the canonical record in the Approvals window. */
+  linkedApproval: ChatLinkedApproval | null;
   createdAt: string;
 }
 
@@ -507,6 +522,23 @@ export const CHANNEL_STATUS = [
   "error",
 ] as const;
 export type ChannelStatus = (typeof CHANNEL_STATUS)[number];
+
+// An interactive action attached to an outbound channel notification.
+// Transports with native interactive UI (Telegram inline keyboard, Slack
+// actions) render it as a tappable control and route the operator's tap
+// back through the matching decision path; text-only transports degrade it
+// to a "reply APPROVE/REJECT" instruction. Discriminated by `kind` so new
+// action families land without widening every transport at once. The
+// transport owns the on-the-wire callback encoding — producers only
+// declare intent (semantic fields), never a channel-specific payload.
+export type ChannelAction = {
+  kind: "approval_decision";
+  decision: ApprovalDecision;
+  // The approval row this tap decides.
+  approvalId: string;
+  // Operator-facing button text, e.g. "Approve".
+  label: string;
+};
 
 export interface ChannelDTO {
   channelType: ChannelType;
@@ -1155,7 +1187,14 @@ export interface ListActivityResponse {
 // the "Deploy this" handoff (the pre-filled deploy modal) rather than a
 // plain approve — the agent is provisioned only by that operator-signed
 // deploy, never by approve alone.
-export const APPROVAL_ACTION_TYPES = ["delegate", "propose_deployment"] as const;
+// "edit_company_profile" rows are created by the CEO PROPOSE_PROFILE_EDIT
+// marker; approve applies the proposed profile patch via the with-approval
+// engine. The payout wallet is never part of the payload (operator-only).
+export const APPROVAL_ACTION_TYPES = [
+  "delegate",
+  "propose_deployment",
+  "edit_company_profile",
+] as const;
 export type ApprovalActionType =
   | (typeof APPROVAL_ACTION_TYPES)[number]
   | (string & {});

@@ -1,12 +1,17 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Send } from "lucide-react";
+import { Check, Send, X } from "lucide-react";
 import { Alert } from "@/components/ui/alert";
 import { BubbleMarkdown } from "@/components/ui/bubble-markdown";
-import type { ChatMessageDTO, SendChatMessageResponse } from "@occa/shared/types";
+import type {
+  ChatLinkedApproval,
+  ChatMessageDTO,
+  SendChatMessageResponse,
+} from "@occa/shared/types";
 import {
   useCeoChatMessages,
+  useDecideCeoApproval,
   useSendCeoMessage,
 } from "../api/use-ceo-chat";
 
@@ -128,6 +133,7 @@ export function CeoChatWindow({
               role: "assistant",
               content: "Thinking…",
               createdTaskId: null,
+              linkedApproval: null,
               createdAt: new Date().toISOString(),
             }}
             muted
@@ -206,9 +212,118 @@ function ChatBubble({
             Task created
           </div>
         )}
+        {message.linkedApproval && !isUser && (
+          <InlineApprovalCard approval={message.linkedApproval} />
+        )}
       </div>
     </div>
   );
+}
+
+// Inline Approve/Reject card for a with-approval proposal the CEO queued in
+// this reply. Lets the operator commit without a trip to the Approvals
+// window; that window stays the canonical record (pending + history).
+function InlineApprovalCard({ approval }: { approval: ChatLinkedApproval }) {
+  const decide = useDecideCeoApproval();
+  const [rejecting, setRejecting] = useState(false);
+  const [reason, setReason] = useState("");
+  const submitting = decide.isPending;
+
+  if (approval.status === "approved") {
+    return (
+      <div className="mt-2 text-[10px] text-emerald-300/80">
+        ✓ Approved · applied
+      </div>
+    );
+  }
+  if (approval.status === "rejected") {
+    return <div className="mt-2 text-[10px] text-white/40">Rejected</div>;
+  }
+
+  const fields = Object.entries(approval.payload);
+  return (
+    <div className="mt-2 rounded-lg border border-white/10 bg-black/25 p-2.5 text-[11px]">
+      <div className="mb-1.5 text-[9px] uppercase tracking-wide text-white/35">
+        Proposed change
+      </div>
+      <div className="flex flex-col gap-1.5">
+        {fields.map(([k, v]) => (
+          <div key={k} className="wrap-break-word">
+            <span className="text-white/40">{k}: </span>
+            <span className="text-white/80">{formatApprovalValue(v)}</span>
+          </div>
+        ))}
+      </div>
+      {rejecting ? (
+        <div className="mt-2 flex flex-col gap-1.5">
+          <input
+            autoFocus
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="Reason…"
+            className="w-full rounded-md border border-white/10 bg-black/30 px-2 py-1 text-[11px] text-white/85 placeholder:text-white/30 outline-none focus:border-white/25"
+          />
+          <div className="flex items-center justify-end gap-1.5">
+            <button
+              type="button"
+              onClick={() => {
+                setRejecting(false);
+                setReason("");
+              }}
+              disabled={submitting}
+              className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-white/60 hover:text-white/90 disabled:opacity-40"
+            >
+              <X className="size-3" />
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                decide.mutate({
+                  id: approval.id,
+                  decision: "reject",
+                  rejectionReason: reason.trim(),
+                })
+              }
+              disabled={submitting || reason.trim().length === 0}
+              className="rounded-md bg-red-500/20 px-2 py-1 text-[11px] font-medium text-red-200 hover:bg-red-500/30 disabled:opacity-40"
+            >
+              {submitting ? "Sending…" : "Send"}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="mt-2 flex items-center justify-end gap-1.5">
+          <button
+            type="button"
+            onClick={() => setRejecting(true)}
+            disabled={submitting}
+            className="rounded-md px-2 py-1 text-[11px] text-white/60 hover:text-white/90 disabled:opacity-40"
+          >
+            Reject
+          </button>
+          <button
+            type="button"
+            onClick={() => decide.mutate({ id: approval.id, decision: "approve" })}
+            disabled={submitting}
+            className="inline-flex items-center gap-1 rounded-md bg-emerald-500/25 px-2 py-1 text-[11px] font-medium text-emerald-100 hover:bg-emerald-500/35 disabled:opacity-40"
+          >
+            <Check className="size-3" />
+            {submitting ? "Approving…" : "Approve"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Render a proposed profile value: arrays as a comma list, everything else
+// as a string. Keeps the inline card readable without a full field renderer.
+function formatApprovalValue(value: unknown): string {
+  if (Array.isArray(value)) return value.join(", ");
+  if (value === null || value === undefined) return "—";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
 }
 
 function extractError(err: unknown): string {

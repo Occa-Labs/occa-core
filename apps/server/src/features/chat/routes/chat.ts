@@ -6,6 +6,8 @@ import { Router, type Request, type Response } from "express";
 import { ERROR_CODES } from "@occa/shared/error-codes";
 import { StatusCodes } from "http-status-codes";
 import type {
+  ApprovalActionType,
+  ApprovalStatus,
   ChatMessageDTO,
   ChatMessageRole,
   ListChatMessagesResponse,
@@ -20,8 +22,10 @@ import { findCeoForCompany } from "../../agents/repositories/deployments";
 import { findByDeploymentId as findRuntimeProfile } from "../../agents/repositories/agent-runtime-profile";
 import {
   clearThread,
+  findLinkedApprovals,
   listMessages,
   type ChatMessageRow,
+  type LinkedApprovalRow,
 } from "../repositories/chat-messages";
 import {
   bumpThreadResetGeneration,
@@ -34,14 +38,44 @@ const log = childLogger("routes:chat");
 
 const router: Router = Router();
 
-function toDTO(row: ChatMessageRow): ChatMessageDTO {
+function toDTO(
+  row: ChatMessageRow,
+  approval: LinkedApprovalRow | undefined,
+): ChatMessageDTO {
   return {
     id: row.id,
     role: row.role as ChatMessageRole,
     content: row.content,
     createdTaskId: row.createdTaskId ?? null,
+    linkedApproval: approval
+      ? {
+          id: approval.id,
+          actionType: approval.actionType as ApprovalActionType,
+          payload: approval.payload ?? {},
+          status: approval.status as ApprovalStatus,
+        }
+      : null,
     createdAt: row.createdAt.toISOString(),
   };
+}
+
+// Map message rows to DTOs, batch-resolving any linked approvals so the
+// chat can render inline Approve/Reject cards in the same fetch.
+async function serializeMessages(
+  rows: ChatMessageRow[],
+): Promise<ChatMessageDTO[]> {
+  const approvalIds = rows
+    .map((r) => r.linkedApprovalId)
+    .filter((id): id is string => id !== null);
+  const approvalsById = await findLinkedApprovals(approvalIds);
+  return rows.map((r) =>
+    toDTO(
+      r,
+      r.linkedApprovalId
+        ? approvalsById.get(r.linkedApprovalId)
+        : undefined,
+    ),
+  );
 }
 
 router.get("/ceo", requireAuth, async (req: Request, res: Response) => {
@@ -63,7 +97,9 @@ router.get("/ceo", requireAuth, async (req: Request, res: Response) => {
     companyId,
     deploymentId: ceo.id,
   });
-  const out: ListChatMessagesResponse = { messages: rows.map(toDTO) };
+  const out: ListChatMessagesResponse = {
+    messages: await serializeMessages(rows),
+  };
   res.json(out);
 });
 
@@ -175,7 +211,7 @@ router.post("/ceo", requireAuth, async (req: Request, res: Response) => {
         .status(StatusCodes.BAD_REQUEST)
         .json({ error: ERROR_CODES.AGENT_NOT_PROVISIONED });
       return;
-    case "adapter_failed":
+    case "adapter_failed": {
       // Adapter-failed surfaces as a system message (already inserted)
       // rather than an HTTP error — the FE renders it inline so the user
       // sees what happened without a toast.
@@ -183,19 +219,29 @@ router.post("/ceo", requireAuth, async (req: Request, res: Response) => {
         { companyId },
         "CEO adapter call failed; system message returned to UI",
       );
+      const [user, assistant] = await serializeMessages([
+        result.user,
+        result.assistant,
+      ]);
       res.status(StatusCodes.CREATED).json({
-        user: toDTO(result.user),
-        assistant: toDTO(result.assistant),
+        user,
+        assistant,
         createdTask: null,
       } satisfies SendChatMessageResponse);
       return;
-    case "ok":
+    }
+    case "ok": {
+      const [user, assistant] = await serializeMessages([
+        result.user,
+        result.assistant,
+      ]);
       res.status(StatusCodes.CREATED).json({
-        user: toDTO(result.user),
-        assistant: toDTO(result.assistant),
+        user,
+        assistant,
         createdTask: result.createdTask,
       } satisfies SendChatMessageResponse);
       return;
+    }
   }
 });
 

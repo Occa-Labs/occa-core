@@ -5,7 +5,7 @@
 
 import { and, eq } from "drizzle-orm";
 import { deploymentChannels } from "@occa/shared/schema";
-import type { ChannelType } from "@occa/shared/types";
+import type { ChannelAction, ChannelType } from "@occa/shared/types";
 import { db } from "../../infra/database/client";
 import { childLogger } from "../../lib/logger";
 import { pushTelegramNotification } from "./transport/telegram-orchestrator";
@@ -19,6 +19,10 @@ export type PushPerChannelResult =
 interface PushHandlerInput {
   deploymentId: string;
   text: string;
+  // Optional interactive actions. Interactive transports render them
+  // natively; text-only transports ignore them (a later tier degrades
+  // them to a reply instruction). Absent for plain informational pushes.
+  actions?: ChannelAction[];
 }
 
 type PushHandler = (input: PushHandlerInput) => Promise<PushPerChannelResult>;
@@ -41,6 +45,7 @@ export interface PushNotificationResult {
 export async function pushNotificationToCeo(args: {
   deploymentId: string;
   text: string;
+  actions?: ChannelAction[];
 }): Promise<PushNotificationResult> {
   const rows = await db
     .select({
@@ -74,6 +79,7 @@ export async function pushNotificationToCeo(args: {
       const res = await handler({
         deploymentId: args.deploymentId,
         text: args.text,
+        actions: args.actions,
       });
       if (res.ok) delivered.push(channelType);
       else failed.push({ channel: channelType, error: res.error, reason: res.reason });
@@ -99,6 +105,7 @@ export async function pushNotificationToChannel(args: {
   deploymentId: string;
   channelType: ChannelType;
   text: string;
+  actions?: ChannelAction[];
 }): Promise<PushPerChannelResult> {
   const handler = PUSH_HANDLERS[args.channelType];
   if (!handler) {
@@ -108,5 +115,9 @@ export async function pushNotificationToChannel(args: {
       reason: `No transport handler registered for '${args.channelType}'.`,
     };
   }
-  return handler({ deploymentId: args.deploymentId, text: args.text });
+  return handler({
+    deploymentId: args.deploymentId,
+    text: args.text,
+    actions: args.actions,
+  });
 }
