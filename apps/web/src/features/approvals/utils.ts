@@ -24,6 +24,17 @@ export function humanizeApprovalAction(
     return "Wants to delegate to another agent";
   }
 
+  if (actionType === "propose_deployment") {
+    const role = typeof payload.role === "string" ? payload.role : null;
+    const name =
+      typeof payload.suggestedName === "string"
+        ? payload.suggestedName.trim()
+        : "";
+    if (role && name) return `Wants to deploy ${name} — a ${role} agent`;
+    if (role) return `Wants to deploy a ${role} agent`;
+    return "Wants to deploy a new agent";
+  }
+
   const summary =
     typeof payload.summary === "string" ? payload.summary.trim() : "";
   if (summary) return summary;
@@ -60,6 +71,33 @@ export const SYSTEM_PAYLOAD_KEYS = new Set([
   "editedAt",
   "parentTaskId",
 ]);
+
+// Data the "Deploy this" handoff carries up from a propose_deployment
+// approval to the shell, which opens the pre-filled deploy modal. No
+// credentials — the operator enters the gateway endpoint + token in the
+// modal, never here.
+export interface DeployProposalRequest {
+  proposalId: string;
+  role: string;
+  runtime: string;
+  suggestedName: string | null;
+  desiredSkills: string[];
+}
+
+// Narrow an opaque approval payload into a DeployProposalRequest.
+export function readDeployProposal(
+  proposalId: string,
+  payload: Record<string, unknown>,
+): DeployProposalRequest {
+  const role = typeof payload.role === "string" ? payload.role : "";
+  const runtime = typeof payload.runtime === "string" ? payload.runtime : "";
+  const suggestedName =
+    typeof payload.suggestedName === "string" ? payload.suggestedName : null;
+  const desiredSkills = Array.isArray(payload.desiredSkills)
+    ? payload.desiredSkills.filter((s): s is string => typeof s === "string")
+    : [];
+  return { proposalId, role, runtime, suggestedName, desiredSkills };
+}
 
 export function relativeTime(iso: string): string {
   const then = new Date(iso).getTime();

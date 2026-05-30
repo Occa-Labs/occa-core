@@ -20,3 +20,10 @@ const registry: Record<string, AgentAdapter> = {
 export function getAdapter(type: string): AgentAdapter | null {
   return registry[type] ?? null;
 }
+
+// Registered runtime types, for surfaces that need to enumerate what an
+// agent can be deployed on (e.g. the CEO's PROPOSE_DEPLOYMENT catalog).
+// Sourced from the live registry so it can't drift from getAdapter.
+export function listAdapterTypes(): string[] {
+  return Object.keys(registry);
+}

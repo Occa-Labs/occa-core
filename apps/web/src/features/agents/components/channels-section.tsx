@@ -233,8 +233,17 @@ function ChannelRow({
   onDetach: () => void;
   onTestPing: () => void;
 }) {
+  // `enabled` is the master on/off switch (what the CEO's TOGGLE_CHANNEL
+  // flips); `status` is connection health. A channel can be connected but
+  // disabled — surface the disabled state so turning it off is visible,
+  // not hidden behind a still-green "Connected".
+  const isDisabled = !channel.enabled;
   return (
-    <div className="flex items-center gap-3 rounded-md bg-white/5 px-3 py-2">
+    <div
+      className={`flex items-center gap-3 rounded-md bg-white/5 px-3 py-2 ${
+        isDisabled ? "opacity-60" : ""
+      }`}
+    >
       <BrandChip type={channel.channelType} size="sm" />
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
@@ -242,12 +251,19 @@ function ChannelRow({
             {CHANNEL_LABEL[channel.channelType]}
           </span>
           <span
-            className={`size-1.5 rounded-full ${STATUS_DOT[channel.status]} shrink-0`}
-            title={STATUS_LABEL[channel.status]}
+            className={`size-1.5 rounded-full shrink-0 ${
+              isDisabled ? "bg-white/25" : STATUS_DOT[channel.status]
+            }`}
+            title={isDisabled ? "Disabled" : STATUS_LABEL[channel.status]}
           />
           <span className="text-[10px] uppercase tracking-wider text-white/40">
-            {STATUS_LABEL[channel.status]}
+            {isDisabled ? "Disabled" : STATUS_LABEL[channel.status]}
           </span>
+          {isDisabled && channel.status === "connected" && (
+            <span className="text-[9px] tracking-wide text-white/30">
+              (connection ok)
+            </span>
+          )}
         </div>
         {channel.statusMsg && (
           <p className="text-[11px] text-red-300/80 mt-0.5 truncate">

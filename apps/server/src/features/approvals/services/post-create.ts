@@ -53,6 +53,8 @@ function titleForApproval(actionType: string): string {
   switch (actionType) {
     case "delegate":
       return "Agent requests to delegate a task";
+    case "propose_deployment":
+      return "CEO proposes deploying an agent";
     default:
       return "Approval requested";
   }

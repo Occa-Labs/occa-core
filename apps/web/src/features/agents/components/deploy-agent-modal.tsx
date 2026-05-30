@@ -50,16 +50,30 @@ const INITIAL_STEP_STATUSES: Record<DeployStepKey, DeployStepStatus> = {
   assigning_skills: "pending",
 };
 
+// Fields a caller can pre-seed when opening the modal (e.g. from a CEO
+// deployment proposal). Credentials are deliberately absent — the gateway
+// endpoint + token are always operator-entered here, never pre-filled.
+export interface DeployPrefill {
+  name?: string;
+  role?: string;
+  adapterType?: AdapterType;
+  // Skills the proposal suggested. NOT a modal input (skills are assigned
+  // post-deploy via the Skills tab) — shown as a read-only hint only.
+  proposedSkills?: string[];
+}
+
 export function DeployAgentModal({
   open,
   onClose,
   onDeployed,
   agents,
+  prefill = null,
 }: {
   open: boolean;
   onClose: () => void;
   onDeployed: (agentId: string) => void;
   agents: AgentDTO[];
+  prefill?: DeployPrefill | null;
 }) {
   const [name, setName] = useState("");
   const [role, setRole] = useState("");
@@ -151,6 +165,18 @@ export function DeployAgentModal({
     setSpinnerFrame(0);
     setFailedAgentId(null);
   }, [open]);
+
+  // Seed catalog-constrained fields from a proposal when the modal opens.
+  // NEVER seeds credentials — the operator always types the gateway URL +
+  // token themselves (the security invariant). The close-reset effect above
+  // still wipes everything when the modal closes, so a manual reopen starts
+  // blank.
+  useEffect(() => {
+    if (!open || !prefill) return;
+    if (prefill.name) setName(prefill.name);
+    if (prefill.role) setRole(prefill.role);
+    if (prefill.adapterType) setAdapterType(prefill.adapterType);
+  }, [open, prefill]);
 
   // Switching tabs invalidates a stale probe — credentials are different
   // between adapters so the old "ok" no longer applies.
@@ -413,6 +439,15 @@ export function DeployAgentModal({
                   </select>
                 </label>
               )}
+            {prefill?.proposedSkills && prefill.proposedSkills.length > 0 && (
+              <p className="text-[11px] leading-relaxed text-white/40">
+                Proposed skills:{" "}
+                <span className="text-white/60">
+                  {prefill.proposedSkills.join(", ")}
+                </span>
+                . Assign them from the agent&apos;s Skills tab after deploy.
+              </p>
+            )}
           </div>
         </section>
 

@@ -166,6 +166,26 @@ export interface ContextRoutineState {
   assigneeDeploymentId: string | null;
   triggerSummary: string;
 }
+// Roles the CEO may propose for a new deployment via PROPOSE_DEPLOYMENT.
+// Sourced from the static role catalog minus the ceo tier (one CEO per
+// company). This is the whitelist the CEO picks from — it cannot invent
+// a role the platform doesn't define.
+export interface ContextProposableRole {
+  key: string;
+  label: string;
+  tier: string;
+  description: string | null;
+  // One-per-company role (c-suite or a head). When already filled it
+  // must not be proposed again — the renderer marks it taken and the
+  // handler rejects a duplicate.
+  singleton: boolean;
+}
+// Runtimes a new deployment can run on — the registered adapter types.
+// The CEO proposes one; the operator supplies that runtime's gateway
+// endpoint + token in the deploy modal (never via chat).
+export interface ContextProposableRuntime {
+  type: string;
+}
 export interface ContextCeoOps {
   installableSkills: ContextInstallableSkill[];
   installableTools: ContextInstallableTool[];
@@ -181,6 +201,10 @@ export interface ContextCeoOps {
   // All workflows for this company. CEO can toggle any of them.
   workflows: ContextWorkflowState[];
   routines: ContextRoutineState[];
+  // Whitelists the CEO proposes a new deployment from. The proposal is a
+  // zero-authority pending row; the operator deploys it from the OS.
+  proposableRoles: ContextProposableRole[];
+  proposableRuntimes: ContextProposableRuntime[];
 }
 
 // Per-run server callback credentials. Minted fresh in the dispatcher

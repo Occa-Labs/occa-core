@@ -17,14 +17,16 @@ const KNOWN_ACTION_TYPES: ReadonlySet<string> = new Set(APPROVAL_ACTION_TYPES);
 
 const REFETCH_INTERVAL_MS = 15_000;
 
-export function useApprovalsList(
-  enabled: boolean,
-  status: ApprovalStatus = "pending",
-) {
+// `status` omitted = fetch every status (used by the History view). Only
+// the live pending list polls; decided rows are immutable so history is
+// fetched once and reconciled on the decide mutation's invalidate.
+export function useApprovalsList(enabled: boolean, status?: ApprovalStatus) {
   return useQuery({
     queryKey: approvalKeys.list({ status }),
     queryFn: async (): Promise<ApprovalDTO[]> => {
-      const { approvals } = await approvalsApi.list({ status });
+      const { approvals } = await approvalsApi.list(
+        status ? { status } : undefined,
+      );
       return approvals.filter((a) => KNOWN_ACTION_TYPES.has(a.actionType));
     },
     enabled,

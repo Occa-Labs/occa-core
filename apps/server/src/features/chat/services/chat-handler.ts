@@ -55,6 +55,7 @@ import {
   handleBindToolBlock,
   handleDispatchRoutineBlock,
   handleInstallSkillBlock,
+  handleProposeDeploymentBlock,
   handleToggleChannelBlock,
   handleToggleRoutineBlock,
   handleToggleWorkflowBlock,
@@ -533,6 +534,9 @@ export async function sendUserTurn(
       case "ASSIGN_ROUTINE":
         outcome = await handleAssignRoutineBlock({ block, ...baseArgs });
         break;
+      case "PROPOSE_DEPLOYMENT":
+        outcome = await handleProposeDeploymentBlock({ block, ...baseArgs });
+        break;
     }
     if (outcome) {
       const line = formatOsMutationReceipt(outcome);
@@ -795,6 +799,28 @@ function formatOsMutationReceipt(outcome: ActionBlockOutcome): string {
           return `× Target assignee is retired.`;
         case "invalid_body":
           return `× ASSIGN_ROUTINE payload invalid.`;
+        case "permission_denied":
+          return "";
+      }
+      return "";
+    case "deployment_proposed": {
+      const named = outcome.suggestedName ? ` "${outcome.suggestedName}"` : "";
+      const withSkills =
+        outcome.skillCount > 0 ? ` with ${outcome.skillCount} skill(s)` : "";
+      return `✓ Queued a proposal to deploy a ${outcome.role} agent${named} on ${outcome.runtime}${withSkills}. Open the Approvals window and hit "Deploy this" — you enter the gateway token and sign there. Nothing is created from chat.`;
+    }
+    case "deployment_propose_rejected":
+      switch (outcome.reason) {
+        case "role_not_allowed":
+          return `× That role can't be proposed for deployment.`;
+        case "role_already_filled":
+          return `× That role is already filled — it's one per company.`;
+        case "skill_not_found":
+          return `× A proposed skill isn't in this company's catalog.`;
+        case "runtime_not_registered":
+          return `× That runtime isn't registered.`;
+        case "invalid_body":
+          return `× PROPOSE_DEPLOYMENT payload invalid.`;
         case "permission_denied":
           return "";
       }

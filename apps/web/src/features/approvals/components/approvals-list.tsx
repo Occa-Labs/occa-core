@@ -12,6 +12,7 @@ interface ApprovalsListProps {
   selectedId: string | null;
   onSelect: (id: string) => void;
   loading: boolean;
+  emptyText?: string;
 }
 
 export function ApprovalsList({
@@ -20,6 +21,7 @@ export function ApprovalsList({
   selectedId,
   onSelect,
   loading,
+  emptyText = "No pending approvals.",
 }: ApprovalsListProps) {
   if (loading && approvals.length === 0) {
     return (
@@ -31,7 +33,7 @@ export function ApprovalsList({
   if (approvals.length === 0) {
     return (
       <div className="px-4 py-6 text-center text-[12px] text-white/40">
-        No pending approvals.
+        {emptyText}
       </div>
     );
   }
@@ -110,8 +112,30 @@ function ApprovalRow({
           <div className="mt-0.5 line-clamp-2 text-[11px] text-white/55">
             {actionLabel}
           </div>
+          {approval.status !== "pending" && (
+            <StatusChip status={approval.status} />
+          )}
         </div>
       </button>
     </li>
+  );
+}
+
+function StatusChip({ status }: { status: string }) {
+  const tone =
+    status === "approved"
+      ? "bg-emerald-500/12 text-emerald-300/90 ring-emerald-500/22"
+      : status === "rejected"
+        ? "bg-red-500/12 text-red-300/90 ring-red-500/22"
+        : "bg-white/8 text-white/50 ring-white/15";
+  return (
+    <span
+      className={cn(
+        "mt-1 inline-flex rounded-full px-1.5 py-0 text-[9px] font-medium uppercase tracking-wide ring-1 ring-inset",
+        tone,
+      )}
+    >
+      {status}
+    </span>
   );
 }

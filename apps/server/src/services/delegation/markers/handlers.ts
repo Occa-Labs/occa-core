@@ -17,6 +17,7 @@ import type { ContentBlock } from "@occa/shared/types";
 import {
   agentIdentities,
   agentRuntimeProfile,
+  approvals,
   companies,
   companySkills,
   companyTools,
@@ -28,8 +29,9 @@ import {
   workflows,
 } from "@occa/shared/schema";
 import type { OccaActionBlock } from "@occa/shared/markers";
-import { getTier } from "@occa/shared/role-catalog";
+import { CSUITE_ROLES, getTier } from "@occa/shared/role-catalog";
 import { db } from "../../../infra/database/client";
+import { getAdapter } from "../../../lib/adapter-registry";
 import { createTaskRecord } from "../../../infra/database/task-creation";
 import { enqueueTaskDispatch } from "../../../infra/queue/task-worker";
 import { childLogger } from "../../../lib/logger";
@@ -41,6 +43,7 @@ import {
   delegateBlockPayload,
   dispatchRoutineBlockPayload,
   installSkillBlockPayload,
+  proposeDeploymentBlockPayload,
   toggleChannelBlockPayload,
   toggleRoutineBlockPayload,
   toggleWorkflowBlockPayload,
@@ -48,6 +51,7 @@ import {
   uninstallSkillBlockPayload,
   type ActionBlockOutcome,
   type ChannelToggleRejectReason,
+  type DeploymentProposeRejectReason,
   type RoutineAssignRejectReason,
   type RoutineDispatchRejectReason,
   type RoutineToggleRejectReason,
@@ -58,6 +62,7 @@ import {
   type WorkflowToggleRejectReason,
 } from "./schemas";
 import { createTaskComment } from "../../../features/tasks/services/comments";
+import { notifyApprovalCreated } from "../../../features/approvals/services/post-create";
 
 const log = childLogger("services:delegation:markers");
 
@@ -830,24 +835,43 @@ export async function handleToggleChannelBlock(
     return reject("channel_not_connected", channelType);
   }
 
-  if (row.enabled === enabled) {
-    return {
-      kind: "channel_toggled",
-      channelType,
-      enabled,
-      alreadyAtTarget: true,
-    };
+  const alreadyAtTarget = row.enabled === enabled;
+  if (!alreadyAtTarget) {
+    await db
+      .update(deploymentChannels)
+      .set({
+        enabled,
+        // Mirror the operator save path (channels/sync.ts): status follows
+        // the enabled flag. The transport refreshes it with live state once
+        // the loop (re)starts.
+        status: enabled ? "connected" : "off",
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(deploymentChannels.deploymentId, args.agentId),
+          eq(deploymentChannels.channelType, channelType),
+        ),
+      );
   }
 
-  await db
-    .update(deploymentChannels)
-    .set({ enabled, updatedAt: new Date() })
-    .where(
-      and(
-        eq(deploymentChannels.deploymentId, args.agentId),
-        eq(deploymentChannels.channelType, channelType),
-      ),
-    );
+  // Reconcile the inbound transport whether or not the DB row changed, so a
+  // poll loop that drifted out of sync (e.g. left running by an older code
+  // path) is corrected: disabling stops it (no more messages reach the CEO),
+  // enabling respawns it. Without this a "disabled" channel can stay
+  // functionally on. Telegram is the only channel with a live inbound
+  // transport today. Dynamic import avoids a static cycle (orchestrator →
+  // chat-handler → this module).
+  if (channelType === "telegram") {
+    void import("../../../features/channels/transport/telegram-orchestrator")
+      .then((m) => m.reloadTelegramChannel(args.agentId))
+      .catch((err) =>
+        log.error(
+          { err, deploymentId: args.agentId },
+          "TOGGLE_CHANNEL: telegram transport reload failed",
+        ),
+      );
+  }
 
   log.info(
     {
@@ -863,7 +887,7 @@ export async function handleToggleChannelBlock(
     kind: "channel_toggled",
     channelType,
     enabled,
-    alreadyAtTarget: false,
+    alreadyAtTarget,
   };
 }
 
@@ -1397,4 +1421,170 @@ export async function handleReportBlock(
   // Validation passed; commit decision deferred to dispatcher (it owns
   // the cross-block bypass-delegation check).
   return { kind: "report_pending", summary };
+}
+
+// PROPOSE_DEPLOYMENT: CEO proposes adding an agent. This creates a
+// ZERO-AUTHORITY pending proposal (an approvals row) — it does NOT
+// deploy. The operator opens the proposal in the OS, supplies the
+// gateway endpoint + token, and signs; only that operator-driven action
+// provisions the agent. The marker validates every field against an
+// operator-curated catalog (role ∈ role catalog, runtime ∈ registered
+// adapters, skills ∈ company catalog), so a prompt-injected CEO can at
+// worst produce a junk proposal the operator rejects. No credential,
+// endpoint, or signature ever rides this marker.
+export async function handleProposeDeploymentBlock(
+  args: ActionBlockHandlerArgs,
+): Promise<ActionBlockOutcome> {
+  const reject = (
+    reason: DeploymentProposeRejectReason,
+  ): ActionBlockOutcome => ({
+    kind: "deployment_propose_rejected",
+    reason,
+  });
+
+  if (getTier(args.agentRole) !== "ceo") {
+    log.warn(
+      { agentId: args.agentId, agentRole: args.agentRole },
+      "PROPOSE_DEPLOYMENT block rejected: only CEO tier may emit PROPOSE_DEPLOYMENT",
+    );
+    return reject("permission_denied");
+  }
+
+  const parsed = proposeDeploymentBlockPayload.safeParse(args.block.body);
+  if (!parsed.success) {
+    log.warn(
+      { detail: parsed.error.flatten() },
+      "PROPOSE_DEPLOYMENT block rejected: invalid payload",
+    );
+    return reject("invalid_body");
+  }
+  const { role, runtime, skills, suggestedName } = parsed.data;
+
+  // One CEO per company — the CEO cannot propose another CEO. (role
+  // already passed the catalog enum; this blocks the top tier specifically.)
+  if (getTier(role) === "ceo") {
+    log.warn(
+      { agentId: args.agentId, role },
+      "PROPOSE_DEPLOYMENT block rejected: cannot propose a ceo-tier role",
+    );
+    return reject("role_not_allowed");
+  }
+
+  // Defense in depth: runtime passed the static enum, but assert it is
+  // actually registered so the enum and the live registry can't drift.
+  if (!getAdapter(runtime)) {
+    log.warn(
+      { agentId: args.agentId, runtime },
+      "PROPOSE_DEPLOYMENT block rejected: runtime not registered",
+    );
+    return reject("runtime_not_registered");
+  }
+
+  // Singleton roles (c-suite + heads) are one-per-company. If a non-
+  // retired agent already holds this role, reject the duplicate — the
+  // deterministic backstop to the prompt's "don't propose a taken
+  // singleton" rule, so a misbehaving CEO still can't queue one.
+  const isSingletonRole = CSUITE_ROLES.has(role) || getTier(role) === "head";
+  if (isSingletonRole) {
+    const [existing] = await db
+      .select({ id: deployments.id })
+      .from(deployments)
+      .where(
+        and(
+          eq(deployments.companyId, args.companyId),
+          eq(deployments.role, role),
+          inArray(deployments.status, ["active", "paused"]),
+        ),
+      )
+      .limit(1);
+    if (existing) {
+      log.warn(
+        { agentId: args.agentId, role },
+        "PROPOSE_DEPLOYMENT block rejected: singleton role already filled",
+      );
+      return reject("role_already_filled");
+    }
+  }
+
+  // Every proposed skill must exist in the company catalog (built-in or
+  // owned by the emitter's company) AND allow the proposed role. Mirrors
+  // handleInstallSkillBlock's catalog + role gate, applied per key.
+  const uniqueSkills = [...new Set(skills)];
+  if (uniqueSkills.length > 0) {
+    const rows = await db
+      .select({
+        key: companySkills.key,
+        allowedRoles: companySkills.allowedRoles,
+      })
+      .from(companySkills)
+      .where(
+        and(
+          inArray(companySkills.key, uniqueSkills),
+          or(
+            isNull(companySkills.companyId),
+            eq(companySkills.companyId, args.companyId),
+          ),
+        ),
+      );
+    const allowedByKey = new Map(rows.map((r) => [r.key, r.allowedRoles]));
+    for (const key of uniqueSkills) {
+      const allowedRoles = allowedByKey.get(key);
+      if (!allowedRoles) {
+        log.warn(
+          { agentId: args.agentId, skillKey: key },
+          "PROPOSE_DEPLOYMENT block rejected: skill not in company catalog",
+        );
+        return reject("skill_not_found");
+      }
+      if (allowedRoles.length > 0 && !allowedRoles.includes(role)) {
+        log.warn(
+          { agentId: args.agentId, skillKey: key, role, allowedRoles },
+          "PROPOSE_DEPLOYMENT block rejected: skill not allowed for proposed role",
+        );
+        return reject("role_not_allowed");
+      }
+    }
+  }
+
+  const [row] = await db
+    .insert(approvals)
+    .values({
+      companyId: args.companyId,
+      requestedByDeploymentId: args.agentId,
+      actionType: "propose_deployment",
+      payload: {
+        role,
+        runtime,
+        desiredSkills: uniqueSkills,
+        suggestedName: suggestedName ?? null,
+      },
+    })
+    .returning();
+
+  // Fire-and-forget operator notification with a deep link into the
+  // Approvals window. Degraded (not broken) if it fails — the row is
+  // still visible in the window. The operator deploys it from the
+  // "Deploy this" handoff (operator-signed); approve alone never deploys.
+  void notifyApprovalCreated(row);
+
+  log.info(
+    {
+      ceoDeploymentId: args.agentId,
+      proposalId: row.id,
+      role,
+      runtime,
+      skillCount: uniqueSkills.length,
+      traceId: args.traceId,
+    },
+    "PROPOSE_DEPLOYMENT proposal created",
+  );
+
+  return {
+    kind: "deployment_proposed",
+    proposalId: row.id,
+    role,
+    runtime,
+    skillCount: uniqueSkills.length,
+    suggestedName: suggestedName ?? null,
+  };
 }

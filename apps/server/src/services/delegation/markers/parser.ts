@@ -16,6 +16,7 @@ import {
   handleDelegateBlock,
   handleDispatchRoutineBlock,
   handleInstallSkillBlock,
+  handleProposeDeploymentBlock,
   handleReportBlock,
   handleToggleChannelBlock,
   handleToggleRoutineBlock,
@@ -129,6 +130,8 @@ async function routeBlock(
       return handleDispatchRoutineBlock(args);
     case "ASSIGN_ROUTINE":
       return handleAssignRoutineBlock(args);
+    case "PROPOSE_DEPLOYMENT":
+      return handleProposeDeploymentBlock(args);
     default:
       log.warn({ token }, "unknown action-block token, ignored");
       return { kind: "ignored", reason: "unknown_token" };

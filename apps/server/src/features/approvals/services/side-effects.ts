@@ -14,6 +14,12 @@ export async function runApprovalSideEffect(
   switch (approval.actionType) {
     case "delegate":
       return runDelegate(approval);
+    case "propose_deployment":
+      // No provisioning side effect. A deployment proposal is fulfilled
+      // by the operator-signed "Deploy this" flow (the deploy modal),
+      // which provisions the agent and then marks this row resolved.
+      // Approve here only closes the proposal — it never deploys.
+      return approval;
     default:
       // Unknown actionType: no-op. Approve still flips the row.
       return approval;

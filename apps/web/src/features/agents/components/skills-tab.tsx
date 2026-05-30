@@ -63,6 +63,11 @@ export function SkillsTab({
     loading: skillsLoading,
     error: skillsError,
   } = useSkills(true, { role: agent.role });
+  // Full company library (every role). Used to tell a genuinely deleted
+  // skill (true orphan) apart from one that's simply assigned outside this
+  // role's default set — the CEO/operator added the latter deliberately, so
+  // it should render as a real skill, not as "missing from library".
+  const { skills: allSkills, loading: libraryLoading } = useSkills(true);
   const { syncDesiredSkills } = useAgentSkills(onReloadMe);
   const {
     syncs,
@@ -164,12 +169,20 @@ export function SkillsTab({
     [syncs],
   );
 
-  // Partition available (in library) vs orphan keys (assigned but no longer in lib)
+  // Partition into: skills shown in the toggle list vs true orphans.
+  // `available` = this role's default-scoped skills PLUS any assigned skill
+  // that exists in the full company library but falls outside the role
+  // scope (deliberately added — render it as a real, toggleable skill).
+  // `orphans` = assigned keys with NO library row at all (skill deleted).
   const { available, orphans } = useMemo(() => {
-    const libKeys = new Set(skills.map((s) => s.key));
-    const orphanKeys = Array.from(selected).filter((k) => !libKeys.has(k));
-    return { available: skills, orphans: orphanKeys };
-  }, [skills, selected]);
+    const roleKeys = new Set(skills.map((s) => s.key));
+    const allByKey = new Map(allSkills.map((s) => [s.key, s]));
+    const crossRole = Array.from(selected)
+      .filter((k) => !roleKeys.has(k) && allByKey.has(k))
+      .map((k) => allByKey.get(k)!);
+    const orphanKeys = Array.from(selected).filter((k) => !allByKey.has(k));
+    return { available: [...skills, ...crossRole], orphans: orphanKeys };
+  }, [skills, allSkills, selected]);
 
   return (
     <div className="p-5 space-y-4">
@@ -185,7 +198,7 @@ export function SkillsTab({
         <SaveIndicator state={save} errorMsg={errorMsg} />
       </div>
 
-      {skillsLoading || syncsLoading ? (
+      {skillsLoading || syncsLoading || libraryLoading ? (
         <div className="flex items-center gap-2 text-xs text-white/40 py-8 justify-center">
           <Loader2 className="size-3.5 animate-spin" /> Loading skills…
         </div>

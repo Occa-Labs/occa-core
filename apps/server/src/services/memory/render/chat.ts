@@ -273,6 +273,41 @@ function formatCeoOpsState(spec: ContextSpec): string | null {
     }
   }
 
+  // Who already fills each role, so the CEO never proposes a duplicate of
+  // a singleton role that's taken. Team excludes self (CEO), which is fine
+  // since ceo is not a proposable role.
+  const occupancyByRole = new Map<string, string[]>();
+  for (const m of spec.org.team) {
+    const names = occupancyByRole.get(m.role) ?? [];
+    names.push(m.name);
+    occupancyByRole.set(m.role, names);
+  }
+
+  lines.push(``);
+  lines.push(
+    `PROPOSABLE ROLES (use 'key' as PROPOSE_DEPLOYMENT.role — the only roles you may propose). A role marked ALREADY DEPLOYED is filled: NEVER propose a duplicate of a singleton (head_* / c-suite) role; only propose another of a non-singleton role if the owner explicitly asks for an additional one:`,
+  );
+  for (const r of spec.ceoOps.proposableRoles) {
+    const filledBy = occupancyByRole.get(r.key) ?? [];
+    let line = `- key: ${r.key} (${r.label}, tier ${r.tier})`;
+    if (filledBy.length > 0) {
+      const taken = r.singleton
+        ? " — TAKEN, do not propose (one per company)"
+        : "";
+      line += ` — ALREADY DEPLOYED: ${filledBy.join(", ")}${taken}`;
+    }
+    lines.push(line);
+    if (r.description) lines.push(`  ${r.description}`);
+  }
+
+  lines.push(``);
+  const runtimeTypes = spec.ceoOps.proposableRuntimes.map((rt) => rt.type);
+  lines.push(
+    `PROPOSABLE RUNTIMES (use one as PROPOSE_DEPLOYMENT.runtime): ${
+      runtimeTypes.length > 0 ? runtimeTypes.join(", ") : "(none registered)"
+    }`,
+  );
+
   return lines.join("\n");
 }
 
@@ -282,6 +317,7 @@ function formatInstallSkillMarkerSpec(spec: ContextSpec): string | null {
     `INSTALL_SKILL MARKER (use when the owner asks to install a skill on an agent):`,
     `- Look up the target agent's deployment uuid from YOUR ACTIVE TEAM above (or use your own id if installing on yourself).`,
     `- Look up the exact skill key from INSTALLABLE SKILL CATALOG above. Do NOT invent keys — if the catalog is empty for the owner's request, say so and stop.`,
+    `- Respect each skill's allowedRoles: only suggest or install a skill on an agent whose role is in that skill's allowedRoles. allowedRoles '(any)' means no restriction. Do NOT offer a skill the target's role isn't allowed — it will be rejected.`,
     `- One marker per (agent, skill). Multiple markers per reply are allowed when the owner asks for several installs at once.`,
     `- This is auto-executed. Do not ask for confirmation. Do not write a fake "✓" in your prose — the runtime appends the receipt automatically.`,
     `- Skill activates on the target agent's NEXT task, not retroactively.`,
@@ -392,6 +428,23 @@ function formatInstallSkillMarkerSpec(spec: ContextSpec): string | null {
     `  "assigneeDeploymentId": "<deployment uuid from YOUR ACTIVE TEAM, or null>"`,
     `}`,
     `[[/OCCA:ASSIGN_ROUTINE]]`,
+    ``,
+    `PROPOSE_DEPLOYMENT MARKER (use when the owner asks to add / deploy a new agent):`,
+    `- This does NOT deploy. It creates a PROPOSAL the owner opens in the Approvals window ("Deploy this"), where THEY enter the gateway endpoint + token and sign. Nothing is provisioned from chat.`,
+    `- You NEVER supply a gateway URL, an API key / token, or a signature — those are operator-only, entered in the OS. If the owner pastes a token in chat, refuse it and tell them to enter it in the deploy modal.`,
+    `- 'role' MUST be a key from PROPOSABLE ROLES above. 'runtime' MUST be one from PROPOSABLE RUNTIMES above. Do NOT invent either — if what the owner wants isn't in the catalog, say so and stop.`,
+    `- 'skills' is optional: keys from INSTALLABLE SKILL CATALOG above that the proposed role is allowed to use. Omit or pass [] if unsure.`,
+    `- 'suggestedName' MUST be a realistic HUMAN persona name in the same style as YOUR ACTIVE TEAM above (a first + last name like "Noa Reinhardt" or a single given name like "Juno") — NEVER the role title or a job label like "On-chain Analyst". Invent a fresh name that isn't already on the team. The owner can rename in the modal.`,
+    `- Auto-creates the proposal on emit. After it, tell the owner you've queued it and they can deploy it from the Approvals window. Do NOT write a fake "✓" — the runtime appends the receipt.`,
+    ``,
+    `[[OCCA:PROPOSE_DEPLOYMENT]]`,
+    `{`,
+    `  "role": "<key from PROPOSABLE ROLES above>",`,
+    `  "runtime": "<type from PROPOSABLE RUNTIMES above>",`,
+    `  "skills": ["<optional keys from INSTALLABLE SKILL CATALOG above>"],`,
+    `  "suggestedName": "<optional display name>"`,
+    `}`,
+    `[[/OCCA:PROPOSE_DEPLOYMENT]]`,
   ].join("\n");
 }
 

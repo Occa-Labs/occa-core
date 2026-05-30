@@ -410,6 +410,13 @@ export const ROLE_SLUG_MAX = 32;
 export const ADAPTER_TYPES = ["openclaw", "hermes"] as const;
 export type AdapterType = (typeof ADAPTER_TYPES)[number];
 
+// Narrow an arbitrary string to a registered adapter type. Use when a
+// runtime value arrives as a plain string (e.g. from an approval payload)
+// before it can be passed where an AdapterType is required.
+export function isAdapterType(value: string): value is AdapterType {
+  return (ADAPTER_TYPES as readonly string[]).includes(value);
+}
+
 export interface OpenclawAdapterConfig {
   gatewayUrl: string;
   apiKey: string;
@@ -1143,7 +1150,12 @@ export interface ListActivityResponse {
 // Free-form action discriminator. Known actions are listed in
 // APPROVAL_ACTION_TYPES; the schema accepts any string so future action
 // kinds can land without a migration.
-export const APPROVAL_ACTION_TYPES = ["delegate"] as const;
+// "propose_deployment" rows are created by the CEO PROPOSE_DEPLOYMENT
+// marker and surfaced in the Approvals window, where the operator opens
+// the "Deploy this" handoff (the pre-filled deploy modal) rather than a
+// plain approve — the agent is provisioned only by that operator-signed
+// deploy, never by approve alone.
+export const APPROVAL_ACTION_TYPES = ["delegate", "propose_deployment"] as const;
 export type ApprovalActionType =
   | (typeof APPROVAL_ACTION_TYPES)[number]
   | (string & {});
@@ -1168,6 +1180,21 @@ export interface DelegatePayload {
   description: string;
   acceptanceCriteria?: string;
   parentTaskId?: string | null;
+}
+
+// Payload schema for actionType === "propose_deployment" — the CEO
+// proposes adding an agent to the company from chat. ZERO-AUTHORITY:
+// nothing is created until the operator opens the proposal in the OS,
+// supplies the gateway endpoint + token, and signs. The payload carries
+// ONLY operator-curated catalog selections (role, runtime, skill keys)
+// — never an endpoint, a credential, or a signature. `suggestedName` is
+// a display label the CEO proposes; the operator edits it in the deploy
+// modal.
+export interface ProposeDeploymentPayload {
+  role: AgentRole;
+  runtime: AdapterType;
+  desiredSkills: string[];
+  suggestedName: string | null;
 }
 
 // Body for the agent-self approval submission endpoint.

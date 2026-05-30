@@ -5,6 +5,8 @@
 // payload type per token.
 
 import { z } from "zod";
+import { ADAPTER_TYPES } from "@occa/shared/types";
+import { ROLE_ORDER } from "@occa/shared/role-catalog";
 import { LIMITS } from "../../../lib/limits";
 
 const titleField = z.string().trim().min(1).max(LIMITS.TITLE);
@@ -98,6 +100,24 @@ export const assignRoutineBlockPayload = z.object({
   // null clears the assignee (routine effectively pauses since
   // fireTrigger short-circuits on no_assignee).
   assigneeDeploymentId: z.string().uuid().nullable(),
+});
+
+// PROPOSE_DEPLOYMENT: CEO proposes adding an agent to the company. The
+// marker does NOT deploy — it creates a zero-authority pending proposal
+// (an approvals row) the operator must open in the OS, where they
+// supply the gateway endpoint + token and sign. So the payload carries
+// ONLY operator-curated catalog selections: a role from the role
+// catalog, a runtime from the registered adapters, and skill keys from
+// the company catalog. No endpoint, no credential, no signature ever
+// rides this marker. companyId is derived from the emitter.
+export const proposeDeploymentBlockPayload = z.object({
+  role: z.enum(ROLE_ORDER),
+  runtime: z.enum(ADAPTER_TYPES),
+  skills: z
+    .array(z.string().trim().min(1).max(LIMITS.KEY))
+    .max(LIMITS.DESIRED_SKILLS_MAX)
+    .default([]),
+  suggestedName: z.string().trim().min(1).max(LIMITS.NAME).optional(),
 });
 
 // REPORT marker is intentionally schema-less: its body is plain
@@ -204,6 +224,24 @@ export type RoutineAssignRejectReason =
   | "routine_not_found"
   | "assignee_not_in_company"
   | "assignee_retired"
+  | "permission_denied"
+  | "invalid_body";
+
+export type ProposeDeploymentBlockPayload = z.infer<
+  typeof proposeDeploymentBlockPayload
+>;
+
+// role_not_allowed = catalog role that can't be proposed (the ceo tier
+// — one CEO per company) or a skill the proposed role isn't allowed.
+// runtime_not_registered = enum passed but the live registry lacks it
+// (drift guard). skill_not_found = a key absent from the company
+// catalog. role/runtime out-of-catalog values fail the schema enum and
+// surface as invalid_body.
+export type DeploymentProposeRejectReason =
+  | "role_not_allowed"
+  | "role_already_filled"
+  | "skill_not_found"
+  | "runtime_not_registered"
   | "permission_denied"
   | "invalid_body";
 
@@ -331,4 +369,20 @@ export type ActionBlockOutcome =
       kind: "routine_assign_rejected";
       reason: RoutineAssignRejectReason;
       routineId: string;
+    }
+  // PROPOSE_DEPLOYMENT: a zero-authority pending proposal row was
+  // created. The receipt deep-links the operator to the Approvals
+  // window to supply the gateway token and deploy — nothing is
+  // provisioned by this marker.
+  | {
+      kind: "deployment_proposed";
+      proposalId: string;
+      role: string;
+      runtime: string;
+      skillCount: number;
+      suggestedName: string | null;
+    }
+  | {
+      kind: "deployment_propose_rejected";
+      reason: DeploymentProposeRejectReason;
     };

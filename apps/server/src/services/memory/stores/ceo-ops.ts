@@ -23,12 +23,16 @@ import {
   routines,
   workflows,
 } from "@occa/shared/schema";
+import { CSUITE_ROLES, ROLE_CATALOG } from "@occa/shared/role-catalog";
 import { db } from "../../../infra/database/client";
+import { listAdapterTypes } from "../../../lib/adapter-registry";
 import type {
   ContextCeoOps,
   ContextChannelState,
   ContextInstallableSkill,
   ContextInstallableTool,
+  ContextProposableRole,
+  ContextProposableRuntime,
   ContextRoutineState,
   ContextWorkflowState,
 } from "../spec";
@@ -203,6 +207,23 @@ export async function loadCeoOps(args: {
     };
   });
 
+  // Proposable catalogs are static (role catalog + adapter registry),
+  // no DB read. Drop the ceo tier — one CEO per company, so the CEO can
+  // never propose a second one.
+  const proposableRoles: ContextProposableRole[] = ROLE_CATALOG.filter(
+    (r) => r.tier !== "ceo",
+  ).map((r) => ({
+    key: r.key,
+    label: r.label,
+    tier: r.tier,
+    description: r.description,
+    // c-suite + head roles are one-per-company.
+    singleton: CSUITE_ROLES.has(r.key) || r.tier === "head",
+  }));
+  const proposableRuntimes: ContextProposableRuntime[] = listAdapterTypes().map(
+    (type) => ({ type }),
+  );
+
   return {
     installableSkills,
     installableTools,
@@ -211,5 +232,7 @@ export async function loadCeoOps(args: {
     channels,
     workflows: workflowsState,
     routines: routinesState,
+    proposableRoles,
+    proposableRuntimes,
   };
 }

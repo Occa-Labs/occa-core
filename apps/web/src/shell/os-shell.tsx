@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { UseMeResult } from "@/hooks/use-me";
 import {
   Anchor,
@@ -23,9 +23,16 @@ import {
 import { useAuth } from "@/features/auth/hooks/use-auth";
 import { Dock } from "@/components/ui/dock";
 import { FEATURES, IS_DEV_MODE } from "@/lib/env-flags";
+import { isAdapterType } from "@occa/shared/types";
 import { TaskManager } from "@/features/tasks/components/task-manager";
 import { AgentsWindow } from "@/features/agents/components/agents-window";
+import {
+  DeployAgentModal,
+  type DeployPrefill,
+} from "@/features/agents/components/deploy-agent-modal";
 import { ApprovalsWindow } from "@/features/approvals/components/approvals-window";
+import { useDecideApproval } from "@/features/approvals/api/use-decide-approval";
+import type { DeployProposalRequest } from "@/features/approvals/utils";
 import { CompanyWindow } from "@/features/companies/components/company-window";
 import { ChainWindow } from "@/features/chain/components/chain-window";
 import { OrgChartWindow } from "@/features/agents/components/org-chart-window";
@@ -145,6 +152,19 @@ export function OsShell({
   );
   const effectiveAgentFocusId = localAgentFocusId ?? focusedAgentId ?? null;
 
+  // A CEO deployment proposal the operator chose to deploy ("Deploy this"
+  // in Approvals). Non-null = the pre-filled deploy modal is open. The
+  // modal collects the gateway endpoint + token (operator-only) and runs
+  // the operator-signed deploy; the proposal carries ONLY catalog
+  // selections, never credentials.
+  const [deployProposal, setDeployProposal] =
+    useState<DeployProposalRequest | null>(null);
+  // Resolve a deployment proposal once the operator-signed deploy lands.
+  // Using the feature's mutation (not the raw api client) so the pending
+  // list drops the row immediately via its optimistic update + invalidate,
+  // instead of lingering until the 15s poll.
+  const decideApproval = useDecideApproval();
+
   // External focus request (theater click) → open AgentsWindow. Tracking
   // by id rather than truthy-check so re-clicking the same agent twice
   // still re-asserts the window when the user closed it manually.
@@ -180,6 +200,49 @@ export function OsShell({
     setActiveWindow(null);
     onClearPendingChain?.();
   }, [onClearPendingChain]);
+
+  // After the operator-signed deploy succeeds from a proposal: mark the
+  // proposal resolved (approve runs no provisioning side effect for
+  // propose_deployment — the agent was just provisioned above), refresh
+  // the roster, and surface the new agent. Closing is best-effort; if it
+  // fails the row stays pending and the Approvals list polls it away or
+  // the operator dismisses it.
+  const handleProposalDeployed = useCallback(
+    async (newAgentId: string) => {
+      const proposalId = deployProposal?.proposalId ?? null;
+      setDeployProposal(null);
+      if (proposalId) {
+        try {
+          await decideApproval.mutateAsync({
+            id: proposalId,
+            decision: "approve",
+          });
+        } catch {
+          // ignore — on error the mutation restores the row to pending;
+          // the operator can dismiss it manually
+        }
+      }
+      await me.reload();
+      setLocalAgentFocusId(newAgentId);
+      setActiveWindow("agents");
+    },
+    [deployProposal, me, decideApproval],
+  );
+
+  // Memoized so the modal's seed effect (deps [open, prefill]) only fires
+  // when the proposal actually changes — an inline object would get a new
+  // identity on every shell re-render and re-seed over the operator's edits.
+  const deployPrefill = useMemo<DeployPrefill | null>(() => {
+    if (!deployProposal) return null;
+    return {
+      name: deployProposal.suggestedName ?? undefined,
+      role: deployProposal.role || undefined,
+      adapterType: isAdapterType(deployProposal.runtime)
+        ? deployProposal.runtime
+        : undefined,
+      proposedSkills: deployProposal.desiredSkills,
+    };
+  }, [deployProposal]);
 
   if (!authenticated || !me.company) return null;
 
@@ -355,6 +418,7 @@ export function OsShell({
         <ApprovalsWindow
           agents={me.agents}
           initialApprovalId={pendingApprovalId}
+          onDeployProposal={setDeployProposal}
           onClose={closeApprovalsWindow}
         />
       )}
@@ -435,6 +499,17 @@ export function OsShell({
           onToggleWalkRecord={onToggleWalkRecord}
         />
       )}
+      {/* Deploy modal driven by a CEO proposal. Mounted at the shell so
+          the Approvals → Agents handoff composes across features without
+          either importing the other. Credentials are entered here by the
+          operator; the proposal only pre-seeds catalog choices. */}
+      <DeployAgentModal
+        open={deployProposal !== null}
+        prefill={deployPrefill}
+        agents={me.agents}
+        onClose={() => setDeployProposal(null)}
+        onDeployed={handleProposalDeployed}
+      />
       <CeoChatBubble agents={agentList} />
     </>
   );
