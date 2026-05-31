@@ -186,6 +186,20 @@ export interface ContextProposableRole {
 export interface ContextProposableRuntime {
   type: string;
 }
+// Active board snapshot — open tasks the CEO can move (SET_TASK_STATUS)
+// or remove (PROPOSE_TASK_DELETE). Carries the UUID because both markers
+// address a task by id; without this listing the CEO has no way to learn
+// a task's id from chat. Excludes done + archived (done shows under
+// RECENT WORK and can't be reopened from chat anyway).
+export interface ContextBoardTask {
+  // UUID — what SET_TASK_STATUS.taskId / PROPOSE_TASK_DELETE.taskId reference.
+  id: string;
+  // Human-facing task number ("Task #42") for receipt + prose.
+  number: number;
+  title: string;
+  status: string; // todo | in_progress | review | blocked
+  assigneeName: string | null;
+}
 export interface ContextCeoOps {
   installableSkills: ContextInstallableSkill[];
   installableTools: ContextInstallableTool[];
@@ -201,6 +215,8 @@ export interface ContextCeoOps {
   // All workflows for this company. CEO can toggle any of them.
   workflows: ContextWorkflowState[];
   routines: ContextRoutineState[];
+  // Open tasks on the board (todo/in_progress/review/blocked, non-archived).
+  activeTasks: ContextBoardTask[];
   // Whitelists the CEO proposes a new deployment from. The proposal is a
   // zero-authority pending row; the operator deploys it from the OS.
   proposableRoles: ContextProposableRole[];

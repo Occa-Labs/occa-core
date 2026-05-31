@@ -12,8 +12,9 @@
 // full body, just key/name/description/allowedRoles to decide which to
 // install). Renderer formats both as flat tables.
 
-import { eq, isNull, or, and } from "drizzle-orm";
+import { eq, isNull, ne, or, and, asc } from "drizzle-orm";
 import {
+  agentIdentities,
   agentRuntimeProfile,
   companySkills,
   companyTools,
@@ -21,12 +22,14 @@ import {
   deployments,
   routineTriggers,
   routines,
+  tasks,
   workflows,
 } from "@occa/shared/schema";
 import { CSUITE_ROLES, ROLE_CATALOG } from "@occa/shared/role-catalog";
 import { db } from "../../../infra/database/client";
 import { listAdapterTypes } from "../../../lib/adapter-registry";
 import type {
+  ContextBoardTask,
   ContextCeoOps,
   ContextChannelState,
   ContextInstallableSkill,
@@ -51,6 +54,7 @@ export async function loadCeoOps(args: {
     workflowRows,
     routineRows,
     routineTriggerRows,
+    boardRows,
   ] = await Promise.all([
       db
         .select({
@@ -136,6 +140,31 @@ export async function loadCeoOps(args: {
         .from(routineTriggers)
         .innerJoin(routines, eq(routines.id, routineTriggers.routineId))
         .where(eq(routines.companyId, args.companyId)),
+      // Active board — open tasks the CEO can move/remove. Left join the
+      // assignee so unassigned tasks still appear. `done` excluded (it's
+      // terminal + already in RECENT WORK); archived excluded.
+      db
+        .select({
+          id: tasks.id,
+          number: tasks.taskNumber,
+          title: tasks.title,
+          status: tasks.status,
+          assigneeName: agentIdentities.name,
+        })
+        .from(tasks)
+        .leftJoin(deployments, eq(tasks.assignedDeploymentId, deployments.id))
+        .leftJoin(
+          agentIdentities,
+          eq(deployments.agentIdentityId, agentIdentities.id),
+        )
+        .where(
+          and(
+            eq(tasks.companyId, args.companyId),
+            isNull(tasks.archivedAt),
+            ne(tasks.status, "done"),
+          ),
+        )
+        .orderBy(asc(tasks.taskNumber)),
     ]);
 
   const installableSkills: ContextInstallableSkill[] = skillCatalogRows.map(
@@ -224,6 +253,14 @@ export async function loadCeoOps(args: {
     (type) => ({ type }),
   );
 
+  const activeTasks: ContextBoardTask[] = boardRows.map((r) => ({
+    id: r.id,
+    number: r.number,
+    title: r.title,
+    status: r.status,
+    assigneeName: r.assigneeName,
+  }));
+
   return {
     installableSkills,
     installableTools,
@@ -232,6 +269,7 @@ export async function loadCeoOps(args: {
     channels,
     workflows: workflowsState,
     routines: routinesState,
+    activeTasks,
     proposableRoles,
     proposableRuntimes,
   };

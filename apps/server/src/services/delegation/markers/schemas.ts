@@ -5,7 +5,14 @@
 // payload type per token.
 
 import { z } from "zod";
-import { ADAPTER_TYPES } from "@occa/shared/types";
+import {
+  ADAPTER_TYPES,
+  EFFORT_LEVELS,
+  TASK_PRIORITIES,
+  TASK_STATUSES,
+  TASK_TYPES,
+  type TaskStatus,
+} from "@occa/shared/types";
 import { ROLE_ORDER } from "@occa/shared/role-catalog";
 import { LIMITS } from "../../../lib/limits";
 import { roleSchema } from "../../../lib/role-schema";
@@ -268,11 +275,68 @@ export const proposeWorkflowDeleteBlockPayload = z.object({
   workflowYamlId: z.string().trim().min(1).max(LIMITS.KEY),
 });
 
+// COMMENT_TASK: CEO posts a comment on a task. Autonomous — runs
+// immediately. Body may carry `@Name` mentions; an mentioned agent who is
+// assigned to this task is re-woken to pick it up (createTaskComment +
+// wakeAgentForComment). Body validation mirrors the comment route
+// (commentBody): trimmed, non-empty, capped at DESCRIPTION.
+export const commentTaskBlockPayload = z.object({
+  taskId: z.string().uuid(),
+  body: z.string().trim().min(1).max(LIMITS.DESCRIPTION),
+});
+
+// EDIT_TASK: CEO patches a task's metadata (autonomous). Mirrors the
+// editable surface of the task PATCH route's updateTaskBody, minus status
+// (use SET_TASK_STATUS), assignment (reassign is disabled), and the
+// content blocks (description body is not edited from chat). Adds
+// acceptanceCriteria. At least one editable field is required. A
+// nullable dueDate/acceptanceCriteria lets the CEO clear it.
+export const editTaskBlockPayload = z
+  .object({
+    taskId: z.string().uuid(),
+    title: z.string().trim().min(1).max(LIMITS.TITLE).optional(),
+    priority: z.enum(TASK_PRIORITIES).optional(),
+    taskType: z.enum(TASK_TYPES).optional(),
+    effortLevel: z.enum(EFFORT_LEVELS).optional(),
+    tags: z
+      .array(z.string().trim().min(1).max(LIMITS.TAG))
+      .max(LIMITS.TAGS_MAX)
+      .optional(),
+    dueDate: z.string().datetime().nullable().optional(),
+    acceptanceCriteria: z
+      .string()
+      .trim()
+      .max(LIMITS.DESCRIPTION_SHORT)
+      .nullable()
+      .optional(),
+  })
+  .refine(
+    (v) =>
+      v.title !== undefined ||
+      v.priority !== undefined ||
+      v.taskType !== undefined ||
+      v.effortLevel !== undefined ||
+      v.tags !== undefined ||
+      v.dueDate !== undefined ||
+      v.acceptanceCriteria !== undefined,
+    { message: "at least one field to edit is required" },
+  );
+
 // PROPOSE_TASK_DELETE: CEO drafts deletion of a task by id. With-approval (the
 // only with-approval task action — create/edit/status/comment/archive are
 // autonomous). The marker NEVER writes; approve runs the delete.
 export const proposeTaskDeleteBlockPayload = z.object({
   taskId: z.string().uuid(),
+});
+
+// SET_TASK_STATUS: CEO moves a task between kanban columns. Autonomous —
+// runs immediately, no approval. Respects the SAME user FSM gate the
+// task-detail dropdown obeys (isUserStatusTransitionAllowed); `done` is
+// terminal because completing a task bills the company
+// (ensureInvoiceForCompletedTask), so it can never be walked back from chat.
+export const setTaskStatusBlockPayload = z.object({
+  taskId: z.string().uuid(),
+  status: z.enum(TASK_STATUSES),
 });
 
 // REPORT marker is intentionally schema-less: its body is plain
@@ -467,6 +531,37 @@ export type ProposeTaskDeleteBlockPayload = z.infer<
 export type WorkflowDeleteProposeRejectReason =
   | "permission_denied"
   | "invalid_body";
+export type SetTaskStatusBlockPayload = z.infer<
+  typeof setTaskStatusBlockPayload
+>;
+
+export type CommentTaskBlockPayload = z.infer<
+  typeof commentTaskBlockPayload
+>;
+
+export type EditTaskBlockPayload = z.infer<typeof editTaskBlockPayload>;
+
+export type TaskEditRejectReason =
+  | "task_not_found"
+  | "task_archived"
+  | "task_locked"
+  | "permission_denied"
+  | "invalid_body";
+
+export type TaskCommentRejectReason =
+  | "task_not_found"
+  | "task_archived"
+  | "permission_denied"
+  | "invalid_body";
+
+export type TaskStatusChangeRejectReason =
+  | "task_not_found"
+  | "task_archived"
+  | "task_locked"
+  | "invalid_transition"
+  | "permission_denied"
+  | "invalid_body";
+
 export type TaskDeleteProposeRejectReason =
   | "permission_denied"
   | "invalid_body";
@@ -688,4 +783,47 @@ export type ActionBlockOutcome =
   | {
       kind: "task_delete_propose_rejected";
       reason: TaskDeleteProposeRejectReason;
+    }
+  // SET_TASK_STATUS: autonomous kanban move. `alreadyAtTarget` short-
+  // circuits when the task is already in the requested column (idempotent
+  // ack, no event/invoice fired). `billed` flags that the move into `done`
+  // triggered invoice-on-task-complete so the receipt can say so.
+  | {
+      kind: "task_status_set";
+      taskId: string;
+      taskNumber: number;
+      from: TaskStatus;
+      to: TaskStatus;
+      alreadyAtTarget: boolean;
+      billed: boolean;
+    }
+  | {
+      kind: "task_status_set_rejected";
+      reason: TaskStatusChangeRejectReason;
+    }
+  // COMMENT_TASK: a comment was posted. `mentionCount` = resolved @mentions,
+  // `wokenCount` = mentioned agents that were assigned to this task and got
+  // re-dispatched to pick it up (subset of mentionCount).
+  | {
+      kind: "task_commented";
+      taskId: string;
+      taskNumber: number;
+      mentionCount: number;
+      wokenCount: number;
+    }
+  | {
+      kind: "task_comment_rejected";
+      reason: TaskCommentRejectReason;
+    }
+  // EDIT_TASK: task metadata patched. `fields` = human labels of what
+  // changed, for the receipt ("Updated #42: priority, tags").
+  | {
+      kind: "task_edited";
+      taskId: string;
+      taskNumber: number;
+      fields: string[];
+    }
+  | {
+      kind: "task_edit_rejected";
+      reason: TaskEditRejectReason;
     };

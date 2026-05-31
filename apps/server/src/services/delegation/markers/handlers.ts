@@ -13,7 +13,7 @@
 // `infra/`, which features ARE allowed to import directly.
 
 import { and, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
-import type { AgentRole, ContentBlock } from "@occa/shared/types";
+import type { AgentRole, ContentBlock, TaskStatus } from "@occa/shared/types";
 import {
   agentIdentities,
   agentRuntimeProfile,
@@ -51,6 +51,9 @@ import {
   proposeTaskDeleteBlockPayload,
   proposeToolEditBlockPayload,
   proposeWorkflowDeleteBlockPayload,
+  setTaskStatusBlockPayload,
+  commentTaskBlockPayload,
+  editTaskBlockPayload,
   toggleChannelBlockPayload,
   toggleRoutineBlockPayload,
   toggleWorkflowBlockPayload,
@@ -65,6 +68,9 @@ import {
   type RoutineEditProposeRejectReason,
   type SkillLibraryEditProposeRejectReason,
   type TaskDeleteProposeRejectReason,
+  type TaskStatusChangeRejectReason,
+  type TaskCommentRejectReason,
+  type TaskEditRejectReason,
   type ToolEditProposeRejectReason,
   type WorkflowDeleteProposeRejectReason,
   type RoutineDispatchRejectReason,
@@ -101,7 +107,14 @@ import {
   deleteWorkflow,
   findWorkflowByYamlId,
 } from "../../../features/workflows/repositories/workflows";
-import { deleteTaskInCompany } from "../../../features/tasks/repositories/tasks";
+import {
+  deleteTaskInCompany,
+  findTaskInCompany,
+  updateTask,
+} from "../../../features/tasks/repositories/tasks";
+import { isUserStatusTransitionAllowed } from "../../../features/tasks/domain/status-transitions";
+import { appendTaskEventBestEffort } from "../../../features/tasks/services/events";
+import { ensureInvoiceForCompletedTask } from "../../../features/billing/services/invoice-on-task-complete";
 
 const log = childLogger("services:delegation:markers");
 
@@ -2218,6 +2231,280 @@ export async function applyWorkflowDeleteApproval(
 // PROPOSE_TASK_DELETE (with-approval). Drafts deletion of a task by id; the
 // marker NEVER writes. On approve, delete by id (company-scoped). Missing task
 // throws task_not_found.
+// SET_TASK_STATUS: autonomous kanban move. Runs immediately. Replicates
+// the task PATCH route's status path so chat and the board behave
+// identically — same FSM gate (isUserStatusTransitionAllowed), same lock
+// guard, same task_status_changed audit event, and the same
+// invoice-on-`done` billing. `done` is terminal: completing a task bills
+// the company, so it can never be walked back from chat.
+export async function handleSetTaskStatusBlock(
+  args: ActionBlockHandlerArgs,
+): Promise<ActionBlockOutcome> {
+  const reject = (
+    reason: TaskStatusChangeRejectReason,
+  ): ActionBlockOutcome => ({
+    kind: "task_status_set_rejected",
+    reason,
+  });
+
+  if (getTier(args.agentRole) !== "ceo") {
+    log.warn(
+      { agentId: args.agentId, agentRole: args.agentRole },
+      "SET_TASK_STATUS block rejected: only CEO tier may emit it",
+    );
+    return reject("permission_denied");
+  }
+
+  const parsed = setTaskStatusBlockPayload.safeParse(args.block.body);
+  if (!parsed.success) {
+    log.warn(
+      { detail: parsed.error.flatten() },
+      "SET_TASK_STATUS block rejected: invalid payload",
+    );
+    return reject("invalid_body");
+  }
+  const { taskId, status: toStatus } = parsed.data;
+
+  const task = await findTaskInCompany(taskId, args.companyId);
+  if (!task) return reject("task_not_found");
+  if (task.archivedAt) return reject("task_archived");
+
+  const fromStatus = task.status as TaskStatus;
+
+  // Idempotent ack — already in the requested column. No event, no invoice.
+  if (fromStatus === toStatus) {
+    return {
+      kind: "task_status_set",
+      taskId: task.id,
+      taskNumber: task.taskNumber,
+      from: fromStatus,
+      to: toStatus,
+      alreadyAtTarget: true,
+      billed: false,
+    };
+  }
+
+  // A task the worker is actively running is owned by the dispatcher.
+  // Mirrors the TASK_LOCKED guard in the task PATCH route.
+  if (task.status === "in_progress" && task.linkedTraceId) {
+    return reject("task_locked");
+  }
+
+  // Same FSM gate the task-detail dropdown obeys.
+  if (!isUserStatusTransitionAllowed(fromStatus, toStatus)) {
+    return reject("invalid_transition");
+  }
+
+  const updated = await updateTask(task.id, { status: toStatus });
+  if (!updated) return reject("task_not_found");
+
+  // Audit row. actorType "agent" (the CEO deployment) with reason
+  // "user_edit": an owner-directed move via chat, not autonomous task work
+  // (agent_action) nor a system transition.
+  void appendTaskEventBestEffort({
+    companyId: args.companyId,
+    taskId: updated.id,
+    eventType: "task_status_changed",
+    actorType: "agent",
+    actorId: args.agentId,
+    traceId: args.traceId,
+    payload: { from: fromStatus, to: toStatus, reason: "user_edit" },
+  });
+
+  // A manual move to `done` bills the company, identical to the task PATCH
+  // route and the dispatcher finalize path. Idempotent — the unique index
+  // keeps it to one invoice per task even if the dispatcher also fired.
+  let billed = false;
+  if (updated.status === "done") {
+    billed = true;
+    void ensureInvoiceForCompletedTask({ taskId: updated.id }).catch((err) => {
+      log.error(
+        { err, taskId: updated.id },
+        "ensureInvoiceForCompletedTask failed (non-fatal)",
+      );
+    });
+  }
+
+  log.info(
+    {
+      ceoDeploymentId: args.agentId,
+      taskId: updated.id,
+      from: fromStatus,
+      to: toStatus,
+      billed,
+      traceId: args.traceId,
+    },
+    "SET_TASK_STATUS applied",
+  );
+
+  return {
+    kind: "task_status_set",
+    taskId: updated.id,
+    taskNumber: updated.taskNumber,
+    from: fromStatus,
+    to: toStatus,
+    alreadyAtTarget: false,
+    billed,
+  };
+}
+
+// EDIT_TASK: autonomous. Patches a task's metadata (title / priority /
+// type / effort / tags / due date / acceptance criteria). Mirrors the
+// task PATCH route: same lock + archived guards, and like that route it
+// emits NO task event for metadata-only edits (only status changes are
+// audited). Status + assignment are out of scope here (SET_TASK_STATUS /
+// reassign-disabled).
+export async function handleEditTaskBlock(
+  args: ActionBlockHandlerArgs,
+): Promise<ActionBlockOutcome> {
+  const reject = (reason: TaskEditRejectReason): ActionBlockOutcome => ({
+    kind: "task_edit_rejected",
+    reason,
+  });
+
+  if (getTier(args.agentRole) !== "ceo") {
+    log.warn(
+      { agentId: args.agentId, agentRole: args.agentRole },
+      "EDIT_TASK block rejected: only CEO tier may emit it",
+    );
+    return reject("permission_denied");
+  }
+
+  const parsed = editTaskBlockPayload.safeParse(args.block.body);
+  if (!parsed.success) {
+    log.warn(
+      { detail: parsed.error.flatten() },
+      "EDIT_TASK block rejected: invalid payload",
+    );
+    return reject("invalid_body");
+  }
+  const data = parsed.data;
+
+  const task = await findTaskInCompany(data.taskId, args.companyId);
+  if (!task) return reject("task_not_found");
+  if (task.archivedAt) return reject("task_archived");
+
+  // A task the worker is actively running is owned by the dispatcher.
+  // Mirrors the TASK_LOCKED guard in the task PATCH route.
+  if (task.status === "in_progress" && task.linkedTraceId) {
+    return reject("task_locked");
+  }
+
+  const fields: Parameters<typeof updateTask>[1] = {};
+  const changed: string[] = [];
+  if (data.title !== undefined) {
+    fields.title = data.title;
+    changed.push("title");
+  }
+  if (data.priority !== undefined) {
+    fields.priority = data.priority;
+    changed.push("priority");
+  }
+  if (data.taskType !== undefined) {
+    fields.taskType = data.taskType;
+    changed.push("type");
+  }
+  if (data.effortLevel !== undefined) {
+    fields.effortLevel = data.effortLevel;
+    changed.push("effort");
+  }
+  if (data.tags !== undefined) {
+    fields.tags = data.tags;
+    changed.push("tags");
+  }
+  if (data.dueDate !== undefined) {
+    fields.dueDate = data.dueDate ? new Date(data.dueDate) : null;
+    changed.push("due date");
+  }
+  if (data.acceptanceCriteria !== undefined) {
+    fields.acceptanceCriteria = data.acceptanceCriteria;
+    changed.push("acceptance criteria");
+  }
+
+  const updated = await updateTask(task.id, fields);
+  if (!updated) return reject("task_not_found");
+
+  log.info(
+    {
+      ceoDeploymentId: args.agentId,
+      taskId: updated.id,
+      changed,
+      traceId: args.traceId,
+    },
+    "EDIT_TASK applied",
+  );
+
+  return {
+    kind: "task_edited",
+    taskId: updated.id,
+    taskNumber: updated.taskNumber,
+    fields: changed,
+  };
+}
+
+// COMMENT_TASK: autonomous. Posts a comment authored by the CEO on a task.
+// `@Name` mentions in the body are resolved + the mentioned agent re-woken
+// if they're assigned to this task — all handled by createTaskComment,
+// which also emits the comment_added audit event.
+export async function handleCommentTaskBlock(
+  args: ActionBlockHandlerArgs,
+): Promise<ActionBlockOutcome> {
+  const reject = (
+    reason: TaskCommentRejectReason,
+  ): ActionBlockOutcome => ({
+    kind: "task_comment_rejected",
+    reason,
+  });
+
+  if (getTier(args.agentRole) !== "ceo") {
+    log.warn(
+      { agentId: args.agentId, agentRole: args.agentRole },
+      "COMMENT_TASK block rejected: only CEO tier may emit it",
+    );
+    return reject("permission_denied");
+  }
+
+  const parsed = commentTaskBlockPayload.safeParse(args.block.body);
+  if (!parsed.success) {
+    log.warn(
+      { detail: parsed.error.flatten() },
+      "COMMENT_TASK block rejected: invalid payload",
+    );
+    return reject("invalid_body");
+  }
+  const { taskId, body } = parsed.data;
+
+  const task = await findTaskInCompany(taskId, args.companyId);
+  if (!task) return reject("task_not_found");
+  if (task.archivedAt) return reject("task_archived");
+
+  const result = await createTaskComment({
+    taskId: task.id,
+    companyId: args.companyId,
+    body,
+    authorAgentId: args.agentId,
+  });
+
+  log.info(
+    {
+      ceoDeploymentId: args.agentId,
+      taskId: task.id,
+      mentionCount: result.comment.mentions.length,
+      wokenCount: result.wokenAgentIds.length,
+      traceId: args.traceId,
+    },
+    "COMMENT_TASK applied",
+  );
+
+  return {
+    kind: "task_commented",
+    taskId: task.id,
+    taskNumber: task.taskNumber,
+    mentionCount: result.comment.mentions.length,
+    wokenCount: result.wokenAgentIds.length,
+  };
+}
+
 export async function handleProposeTaskDeleteBlock(
   args: ActionBlockHandlerArgs,
 ): Promise<ActionBlockOutcome> {

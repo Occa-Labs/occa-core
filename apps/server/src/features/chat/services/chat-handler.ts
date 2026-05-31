@@ -892,6 +892,70 @@ function formatOsMutationReceipt(outcome: ActionBlockOutcome): string {
           return "";
       }
       return "";
+    case "task_status_set": {
+      const ref = `Task #${outcome.taskNumber}`;
+      if (outcome.alreadyAtTarget) {
+        return `✓ ${ref} is already in "${outcome.to}".`;
+      }
+      const billedNote = outcome.billed
+        ? ` It's now complete — the company has been billed for it.`
+        : "";
+      return `✓ Moved ${ref} from "${outcome.from}" to "${outcome.to}".${billedNote}`;
+    }
+    case "task_status_set_rejected":
+      switch (outcome.reason) {
+        case "task_not_found":
+          return `× Task not found.`;
+        case "task_archived":
+          return `× That task is archived. Unarchive it from the board before moving it.`;
+        case "task_locked":
+          return `× That task is being worked on right now — wait for the agent to finish before moving it.`;
+        case "invalid_transition":
+          return `× That status move isn't allowed. A completed task can't be reopened from chat — rerun it from the board instead.`;
+        case "invalid_body":
+          return `× SET_TASK_STATUS payload invalid.`;
+        case "permission_denied":
+          return "";
+      }
+      return "";
+    case "task_commented": {
+      const ref = `Task #${outcome.taskNumber}`;
+      if (outcome.wokenCount > 0) {
+        return `✓ Commented on ${ref} and pinged ${outcome.wokenCount} agent(s) to pick it up.`;
+      }
+      if (outcome.mentionCount > 0) {
+        return `✓ Commented on ${ref}. Mentioned ${outcome.mentionCount} — none is currently on this task, so no one was woken.`;
+      }
+      return `✓ Commented on ${ref}.`;
+    }
+    case "task_comment_rejected":
+      switch (outcome.reason) {
+        case "task_not_found":
+          return `× Task not found.`;
+        case "task_archived":
+          return `× That task is archived. Unarchive it from the board before commenting.`;
+        case "invalid_body":
+          return `× COMMENT_TASK payload invalid (empty or over the length limit).`;
+        case "permission_denied":
+          return "";
+      }
+      return "";
+    case "task_edited":
+      return `✓ Updated Task #${outcome.taskNumber}: ${outcome.fields.join(", ")}.`;
+    case "task_edit_rejected":
+      switch (outcome.reason) {
+        case "task_not_found":
+          return `× Task not found.`;
+        case "task_archived":
+          return `× That task is archived. Unarchive it from the board before editing.`;
+        case "task_locked":
+          return `× That task is being worked on right now — wait for the agent to finish before editing it.`;
+        case "invalid_body":
+          return `× EDIT_TASK payload invalid (no editable fields, or a value out of range).`;
+        case "permission_denied":
+          return "";
+      }
+      return "";
     default:
       return "";
   }

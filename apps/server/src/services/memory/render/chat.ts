@@ -274,6 +274,22 @@ function formatCeoOpsState(spec: ContextSpec): string | null {
     }
   }
 
+  lines.push(``);
+  if (spec.ceoOps.activeTasks.length === 0) {
+    lines.push(`ACTIVE BOARD: (no open tasks)`);
+  } else {
+    lines.push(
+      `ACTIVE BOARD (open tasks — use 'id' as SET_TASK_STATUS.taskId or PROPOSE_TASK_DELETE.taskId; done tasks are not shown and cannot be reopened from chat):`,
+    );
+    for (const t of spec.ceoOps.activeTasks) {
+      const assignee = t.assigneeName ?? "(unassigned)";
+      lines.push(`- id: ${t.id}`);
+      lines.push(
+        `  #${t.number} "${t.title}" (${t.status}, assignee: ${assignee})`,
+      );
+    }
+  }
+
   // Who already fills each role, so the CEO never proposes a duplicate of
   // a singleton role that's taken. Team excludes self (CEO), which is fine
   // since ceo is not a proposable role.
