@@ -50,7 +50,11 @@ import { childLogger } from "../lib/logger";
 const log = childLogger("kickoff");
 import { db } from "../infra/database/client";
 import { upsert as upsertCompanyProfile } from "../features/companies/repositories/company-profiles";
-import { renderWorkspaceFiles, roleLabelFor } from "../lib/workspace-templates";
+import {
+  renderWorkspaceFiles,
+  roleLabelFor,
+  DEFAULT_PERSONA,
+} from "../lib/workspace-templates";
 import {
   autoAssignSkillsToNewAgent,
   enqueueSkillSyncs,
@@ -748,6 +752,7 @@ async function provisionOne(
       name: agentRow.name,
       role: agentRow.role,
       roleLabel: roleLabelFor(agentRow.role),
+      persona: DEFAULT_PERSONA,
     },
     company: { name: companyName },
     runtime: {

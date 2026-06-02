@@ -31,11 +31,16 @@ export const WORKSPACE_FILENAMES = [
 
 export type WorkspaceFilename = (typeof WORKSPACE_FILENAMES)[number];
 
+// Seeded into IDENTITY.md when the agent has no persona set, so the
+// `{{agent.persona}}` slot never renders blank or as a literal token.
+export const DEFAULT_PERSONA = "General-purpose (no specialty set)";
+
 export interface TemplateContext {
   agent: {
     name: string;
     role: string; // slug: "ceo" | "cto" | ...
     roleLabel: string; // display: "CEO" | "Chief Strategy Officer" | ...
+    persona: string; // intrinsic specialty; caller passes a default when unset
   };
   company: {
     name: string;

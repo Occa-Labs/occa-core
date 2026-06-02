@@ -3,6 +3,7 @@
 import { WalletConnectOverlay } from "@/features/auth/components/wallet-connect-overlay";
 import { NotificationCenter } from "@/features/notifications/components/notification-center";
 import type { ParsedNotificationLink } from "@/features/notifications/utils";
+import { Home } from "lucide-react";
 import { OccaLogo } from "@/components/icons/occa-logo";
 import { ChainBadge } from "./chain-badge";
 import { FpsIndicator } from "./fps-indicator";
@@ -23,8 +24,8 @@ interface TopMenuBarProps {
   /** Notification deep-link dispatcher. Fired when a notification card is
    *  clicked and carries a parseable link. */
   onNavigate?: (parsed: ParsedNotificationLink) => void;
-  /** When set, the OCCA logo becomes a button that leaves the company OS
-   *  and returns to the user dashboard. */
+  /** When set, a Home button appears next to the logo that leaves the
+   *  company OS and returns to the user dashboard. */
   onExitCompany?: () => void;
 }
 
@@ -42,27 +43,23 @@ export function TopMenuBar({
 }: TopMenuBarProps) {
   return (
     <div className="fixed inset-x-3 top-2 z-110 flex items-center justify-between text-white/70 pointer-events-none">
-      <div className="pointer-events-auto flex items-center pl-4">
-        {onExitCompany ? (
+      <div className="pointer-events-auto flex items-center gap-2 pl-4">
+        <OccaLogo className="text-white/85" width={22} height={22} />
+        {onExitCompany && (
           <button
             type="button"
             onClick={onExitCompany}
-            aria-label="Back to dashboard"
-            title="Back to dashboard"
-            className="cursor-pointer rounded-lg p-1 -m-1 text-white/85 transition-colors hover:text-white"
+            aria-label="Back to home"
+            title="Back to home"
+            className="flex h-7 cursor-pointer items-center gap-1.5 rounded-full bg-white/10 px-2.5 text-xs font-medium text-white/85 transition-colors hover:bg-white/15"
           >
-            <OccaLogo width={22} height={22} />
+            <Home className="size-4" />
+            Home
           </button>
-        ) : (
-          <OccaLogo
-            className="text-white/85 hover:text-white transition-colors"
-            width={22}
-            height={22}
-          />
         )}
       </div>
 
-      <div className="pointer-events-auto flex items-center gap-3">
+      <div className="pointer-events-auto flex items-center gap-2">
         <ChainBadge />
         <FpsIndicator embedded />
         {viewModeToggleEnabled && (

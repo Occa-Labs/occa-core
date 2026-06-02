@@ -25,7 +25,7 @@ export function ChainBadge({ className }: ChainBadgeProps) {
   return (
     <div
       className={cn(
-        "inline-flex items-center text-[11px] font-light text-white/55",
+        "inline-flex items-center text-xs font-light text-white/55",
         className,
       )}
       title={`Solana ${LABEL[cluster]}`}

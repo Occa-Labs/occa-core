@@ -51,6 +51,7 @@ import {
 import { wouldCreateCycle } from "../services/deployment-hierarchy";
 import {
   renderWorkspaceFiles,
+  DEFAULT_PERSONA,
   roleLabelFor,
 } from "../../../lib/workspace-templates";
 import { runCreateFlow } from "../services/create-flow";
@@ -413,6 +414,7 @@ router.post(
           name: identityRecord.name,
           role: deploymentRecord.role,
           roleLabel: roleLabelFor(deploymentRecord.role),
+          persona: identityRecord.persona ?? DEFAULT_PERSONA,
         },
         company: { name: companyRow?.name ?? "" },
         runtime: {

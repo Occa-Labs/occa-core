@@ -11,6 +11,7 @@ import { DesktopOnlyGate } from "@/shell/desktop-only-gate";
 import { OnboardingWindow } from "@/features/onboarding/components/onboarding-window";
 import { LoginScreen } from "@/features/auth/components/login-screen";
 import { HomeScreen } from "@/features/home/components/home-screen";
+import { CreateCompanyModal } from "@/features/home/components/create-company-modal";
 import { DeployAgentModal } from "@/features/agents/components/deploy-agent-modal";
 import { AgentDetail } from "@/features/agents/components/agents-window";
 import { Modal } from "@/components/ui/modal";
@@ -76,6 +77,10 @@ export default function HomePage() {
   // Lives here (app level) so features/home never imports features/agents
   // directly — composition happens in the page.
   const [deployOpen, setDeployOpen] = useState(false);
+
+  // Create-company modal, opened from the home dashboard once the $OCCA
+  // gate clears. App-level so features/home stays self-contained.
+  const [createCompanyOpen, setCreateCompanyOpen] = useState(false);
 
   // Home agent detail. Stored by id (not the snapshot) so the modal
   // reflects live status after pause/reload and auto-closes when the
@@ -355,6 +360,7 @@ export default function HomePage() {
             walletAddress={user?.walletAddress ?? null}
             onEnterCompany={() => setInCompany(true)}
             onAddAgent={() => setDeployOpen(true)}
+            onCreateCompany={() => setCreateCompanyOpen(true)}
             onOpenAgentDetail={(a) => setDetailAgentId(a.id)}
             onSignOut={signOut}
           />
@@ -369,6 +375,14 @@ export default function HomePage() {
             showBilling={false}
             showRole={false}
           />
+          <CreateCompanyModal
+            open={createCompanyOpen}
+            onClose={() => setCreateCompanyOpen(false)}
+            onCreated={() => {
+              void me.reload();
+              setCreateCompanyOpen(false);
+            }}
+          />
           <Modal
             open={detailAgent !== null}
             onClose={() => setDetailAgentId(null)}
@@ -382,12 +396,16 @@ export default function HomePage() {
                   agent={detailAgent}
                   agents={me.agents}
                   onReloadMe={me.reload}
-                  // Personal workspace (kind "user") = the agent's idle home,
-                  // NOT a real job → "Available". Only a real/shared company
-                  // counts as "Working". (Truly company-less idle lands in
-                  // Phase 2.)
+                  // Show the agent's actual company name whenever it is
+                  // assigned to one (personal company included — to the
+                  // owner it's a real company). Only a truly company-less
+                  // agent (companyId null) reads as "Not assigned /
+                  // Available". Single-company today: the only loaded company
+                  // is me.company; per-agent name lookup across many
+                  // companies arrives with Phase 4.
                   companyLabel={
-                    me.company && me.company.kind !== "user"
+                    detailAgent.companyId &&
+                    me.company?.id === detailAgent.companyId
                       ? me.company.name
                       : null
                   }

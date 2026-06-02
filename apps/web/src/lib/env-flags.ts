@@ -145,10 +145,10 @@ export const OCCA_GATE_RPC: string =
 // Minimum share of total $OCCA supply (in percent) a wallet must hold to
 // CREATE a company. The OS itself is open to anyone now — this gate fires
 // only at the create-company action so that only wallets with real skin
-// in the game spin up companies. Defaults to 1%.
+// in the game spin up companies. Defaults to 0.5%.
 export const OCCA_CREATE_GATE_PERCENT: number = (() => {
   const raw = Number(process.env.NEXT_PUBLIC_OCCA_CREATE_GATE_PERCENT);
-  return Number.isFinite(raw) && raw > 0 ? raw : 1;
+  return Number.isFinite(raw) && raw > 0 ? raw : 0.5;
 })();
 
 // Local opt-out: skip the token gate entirely so contributors without

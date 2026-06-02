@@ -63,20 +63,20 @@ export function ViewModeToggle({
       className={cn(
         "relative inline-flex items-center justify-center transition-colors duration-200",
         embedded
-          ? "h-8 w-8 rounded-full bg-white/10 text-white/70 hover:bg-white/15 hover:text-white"
+          ? "h-7 w-7 rounded-full bg-white/10 text-white/70 hover:bg-white/15 hover:text-white"
           : "h-9 w-9 rounded-xl",
         !embedded &&
           (enabled
             ? "bg-white text-black hover:bg-white/90"
             : "text-white/80 hover:bg-white/12 hover:text-white"),
-        embedded && enabled && "bg-white! text-black! hover:bg-white/90!",
+        embedded && enabled && "bg-white/20! text-white!",
       )}
       style={!embedded && !enabled ? surface.base : undefined}
     >
       {enabled ? (
-        <Boxes className="h-5 w-5" />
+        <Boxes className={embedded ? "size-4" : "h-5 w-5"} />
       ) : (
-        <ImageIcon className="h-5 w-5" />
+        <ImageIcon className={embedded ? "size-4" : "h-5 w-5"} />
       )}
     </button>
   );

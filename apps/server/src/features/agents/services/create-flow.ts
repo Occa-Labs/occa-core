@@ -30,6 +30,7 @@ import { normalizeGatewayUrl } from "../../../lib/gateway-url";
 import { PG_ERROR_CODES } from "../../../lib/pg-errors";
 import {
   renderWorkspaceFiles,
+  DEFAULT_PERSONA,
   roleLabelFor,
 } from "../../../lib/workspace-templates";
 import { toCompanyDTO } from "../../companies/domain/dto";
@@ -306,7 +307,12 @@ export async function runCreateFlow(args: RunCreateFlowArgs): Promise<void> {
   let rendered: Awaited<ReturnType<typeof renderWorkspaceFiles>>;
   try {
     rendered = await renderWorkspaceFiles({
-      agent: { name: identityRow.name, role, roleLabel: roleLabelFor(role) },
+      agent: {
+        name: identityRow.name,
+        role,
+        roleLabel: roleLabelFor(role),
+        persona: identityRow.persona ?? DEFAULT_PERSONA,
+      },
       company: { name: companyRow ? companyRow.name : "" },
       runtime: {
         externalAgentId: provision.externalAgentId,
@@ -382,7 +388,8 @@ export async function runCreateFlow(args: RunCreateFlowArgs): Promise<void> {
 
   // ── Step: assigning_skills (non-critical) ────────────────────────
   // Company-scoped skill auto-assign only runs once the agent is in a
-  // company. Idle agents get persona-driven skills later (Phase 3).
+  // company. Skills are role-driven; idle agents get theirs when they
+  // join a company. Persona drives identity (IDENTITY.md), not skills.
   stepStart("assigning_skills", "Assigning skills");
   if (companyId) {
     try {

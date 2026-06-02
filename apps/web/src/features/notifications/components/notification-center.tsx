@@ -153,12 +153,12 @@ function NotificationBell({
       className={cn(
         "relative inline-flex items-center justify-center transition-colors duration-200 cursor-pointer",
         embedded
-          ? "h-8 w-8 rounded-full bg-white/10 text-white/70 hover:bg-white/15 hover:text-white"
+          ? "h-7 w-7 rounded-full bg-white/10 text-white/70 hover:bg-white/15 hover:text-white"
           : "h-9 w-9 rounded-xl text-white/80 hover:bg-white/12 hover:text-white",
       )}
       style={embedded ? undefined : surface.base}
     >
-      <Bell className="h-5 w-5" />
+      <Bell className={embedded ? "size-4" : "h-5 w-5"} />
       {count > 0 && (
         <Badge
           variant="error"

@@ -7,7 +7,14 @@ import {
   type DeviceIdentity,
 } from "./keypair";
 
-const PROTOCOL_VERSION = 3;
+// Advertise a protocol RANGE, not a single version. The gateway accepts a
+// connect when its required version falls inside [min, max]. Spanning 3–4
+// keeps us compatible with both an older v3 gateway and the current v4 one
+// (OpenClaw 2026.5.27 requires v4). The handshake frames (challenge → signed
+// connect → hello-ok) are identical across 3 and 4 — only the version gate
+// changed — so one frame implementation serves both.
+const MIN_PROTOCOL_VERSION = 3;
+const MAX_PROTOCOL_VERSION = 4;
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 20_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 const CLIENT_VERSION = "0.1.0";
@@ -321,8 +328,8 @@ export class OpenClawClient {
       this.config.device.privateKey,
     );
     const params = {
-      minProtocol: PROTOCOL_VERSION,
-      maxProtocol: PROTOCOL_VERSION,
+      minProtocol: MIN_PROTOCOL_VERSION,
+      maxProtocol: MAX_PROTOCOL_VERSION,
       client: {
         id: CLIENT_ID,
         version: CLIENT_VERSION,
@@ -379,10 +386,16 @@ export class OpenClawClient {
     const resolve = this.connectResolve;
     this.connectResolve = null;
     this.connectReject = null;
+    // The gateway echoes the negotiated protocol; fall back to our ceiling
+    // when it doesn't so the field stays informative.
+    const negotiated =
+      typeof payload?.protocol === "number"
+        ? (payload.protocol as number)
+        : MAX_PROTOCOL_VERSION;
     resolve?.({
       connId: server?.connId ?? null,
       grantedScopes,
-      protocol: PROTOCOL_VERSION,
+      protocol: negotiated,
       deviceToken: auth?.deviceToken,
     });
   }

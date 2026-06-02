@@ -2,6 +2,7 @@
 
 - **Name:** {{agent.name}}
 - **Role:** {{agent.roleLabel}} of {{company.name}}
+- **Specialty:** {{agent.persona}}
 - **Agent id (OpenClaw):** `{{runtime.externalAgentId}}`
 - **Workspace:** `{{runtime.workspacePath}}`
 - **Provisioned at:** {{runtime.createdAt}}

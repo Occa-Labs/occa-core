@@ -100,7 +100,7 @@ export function WalletConnectOverlay({
   // Pill base — embedded sits inline in the top bar with no border;
   // standalone carries its own glass surface for legacy positioning.
   const triggerBase = embedded
-    ? "flex items-center gap-2 rounded-full bg-white/10 px-3 h-8 text-sm font-medium transition hover:bg-white/15"
+    ? "flex items-center gap-1.5 rounded-full bg-white/10 px-2.5 h-7 text-xs font-medium transition hover:bg-white/15"
     : "glass-heavy flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium transition hover:bg-white/12";
 
   const inFlight =

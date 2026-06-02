@@ -5,11 +5,10 @@ import {
   Building2,
   Bot,
   LogOut,
-  UserPlus,
   ArrowRight,
-  Store,
   Plus,
-  Users,
+  Copy,
+  Check,
 } from "lucide-react";
 import type { AgentDTO, CompanyDTO } from "@occa/shared/types";
 import { OccaLogo } from "@/components/icons/occa-logo";
@@ -19,7 +18,7 @@ import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
 import { AppWindow } from "@/components/ui/app-window";
 import { Dock, type DockItem } from "@/components/ui/dock";
-import { OCCA_CREATE_GATE_PERCENT } from "@/lib/env-flags";
+import { CreateCompanyCard } from "./create-company-card";
 
 // The personal home shown right after login — before any company OS.
 // Follows the OCCA macOS layout (not an admin dashboard): a wallpaper
@@ -34,6 +33,38 @@ function truncate(addr: string): string {
   return `${addr.slice(0, 4)}…${addr.slice(-4)}`;
 }
 
+// Click-to-copy wallet pill for the home top bar. Mirrors the company
+// shell's wallet behavior (copy the full address) without importing the
+// auth feature — feature boundaries forbid that, so this stays local.
+function WalletPill({ address }: { address: string }) {
+  const [copied, setCopied] = useState(false);
+  const onCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(address);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* clipboard denied — silent */
+    }
+  };
+  return (
+    <button
+      type="button"
+      onClick={onCopy}
+      title={copied ? "Copied" : "Copy address"}
+      aria-label={copied ? "Address copied" : "Copy address"}
+      className="flex h-8 cursor-pointer items-center gap-2 rounded-full bg-white/10 px-3 font-mono text-xs text-white/85 transition-colors hover:bg-white/15"
+    >
+      {truncate(address)}
+      {copied ? (
+        <Check className="size-3 text-emerald-400" />
+      ) : (
+        <Copy className="size-3 text-white/55" />
+      )}
+    </button>
+  );
+}
+
 interface HomeScreenProps {
   company: CompanyDTO | null;
   agents: AgentDTO[];
@@ -43,6 +74,8 @@ interface HomeScreenProps {
   onEnterCompany: () => void;
   /** Open the deploy-agent flow. */
   onAddAgent: () => void;
+  /** Open the create-company flow (fired after the $OCCA gate clears). */
+  onCreateCompany: () => void;
   /** Open the full agent detail (rendered at app level). */
   onOpenAgentDetail: (agent: AgentDTO) => void;
   onSignOut: () => void;
@@ -55,6 +88,7 @@ export function HomeScreen({
   walletAddress,
   onEnterCompany,
   onAddAgent,
+  onCreateCompany,
   onOpenAgentDetail,
   onSignOut,
 }: HomeScreenProps) {
@@ -73,20 +107,6 @@ export function HomeScreen({
       label: "My companies",
       active: section === "companies",
       onClick: () => setSection("companies"),
-    },
-    {
-      icon: <UserPlus className={iconCls} />,
-      label: "Join a company",
-      disabled: true,
-      disabledHint: "coming soon",
-      onClick: () => {},
-    },
-    {
-      icon: <Store className={iconCls} />,
-      label: "Marketplace",
-      disabled: true,
-      disabledHint: "coming soon",
-      onClick: () => {},
     },
     {
       icon: <LogOut className={iconCls} />,
@@ -122,11 +142,7 @@ export function HomeScreen({
             OCCA
           </span>
         </div>
-        {walletAddress && (
-          <span className="flex h-8 items-center gap-2 rounded-full bg-white/10 px-3 font-mono text-xs text-white/85">
-            {truncate(walletAddress)}
-          </span>
-        )}
+        {walletAddress && <WalletPill address={walletAddress} />}
       </div>
 
       {/* Content window */}
@@ -157,7 +173,9 @@ export function HomeScreen({
           ) : section === "companies" ? (
             <CompaniesSection
               company={company}
+              walletAddress={walletAddress}
               onEnterCompany={onEnterCompany}
+              onCreateCompany={onCreateCompany}
             />
           ) : (
             <AgentsSection
@@ -176,27 +194,31 @@ export function HomeScreen({
 
 function CompaniesSection({
   company,
+  walletAddress,
   onEnterCompany,
+  onCreateCompany,
 }: {
   company: CompanyDTO | null;
+  walletAddress: string | null;
   onEnterCompany: () => void;
+  onCreateCompany: () => void;
 }) {
+  // One company per user today: show the company if it exists, otherwise
+  // the gated create CTA. Never both at once — there's nothing to create
+  // once you already own one.
   return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+    <div className="mx-auto max-w-md">
       {company ? (
         <Card padding="lg" className="flex flex-col gap-4">
-          <div className="flex items-start justify-between gap-3">
-            <div className="flex size-11 items-center justify-center rounded-2xl bg-white/8">
-              <Building2 className="size-5 text-white/80" />
-            </div>
-            <Badge variant="success">Personal</Badge>
+          <div className="flex size-11 items-center justify-center rounded-2xl bg-white/8">
+            <Building2 className="size-5 text-white/80" />
           </div>
           <div className="min-w-0">
             <h3 className="truncate text-base font-semibold text-white">
               {company.name}
             </h3>
             <p className="mt-1 line-clamp-2 text-xs text-white/45">
-              {company.tagline ?? "Your personal workspace."}
+              {company.tagline ?? "Your company."}
             </p>
           </div>
           <Button
@@ -211,43 +233,12 @@ function CompaniesSection({
           </Button>
         </Card>
       ) : (
-        <Card
-          padding="lg"
-          className="flex min-h-44 flex-col items-center justify-center gap-2 text-center"
-        >
-          <div className="flex size-11 items-center justify-center rounded-2xl bg-white/8">
-            <Building2 className="size-5 text-white/60" />
-          </div>
-          <p className="text-sm font-medium text-white/70">
-            No workspace yet
-          </p>
-          <p className="max-w-xs text-xs text-white/40">
-            Add your first agent and your personal workspace is created
-            automatically.
-          </p>
-        </Card>
+        <CreateCompanyCard
+          hasCompany={false}
+          walletAddress={walletAddress}
+          onProceed={onCreateCompany}
+        />
       )}
-
-      {/* Shareable multi-user company — the gated path (1% of $OCCA
-          supply), landing in a later phase. */}
-      <Card
-        padding="lg"
-        className="flex min-h-44 flex-col items-center justify-center gap-2 text-center opacity-60"
-      >
-        <div className="flex size-11 items-center justify-center rounded-2xl bg-white/8">
-          <Users className="size-5 text-white/60" />
-        </div>
-        <div className="flex items-center gap-2">
-          <p className="text-sm font-semibold text-white/80">
-            Create a company
-          </p>
-          <Badge variant="muted">Soon</Badge>
-        </div>
-        <p className="max-w-xs text-xs text-white/40">
-          Shareable company others can join. Requires holding{" "}
-          {OCCA_CREATE_GATE_PERCENT}% of $OCCA supply.
-        </p>
-      </Card>
     </div>
   );
 }
@@ -262,8 +253,8 @@ function AgentsSection({
   onSelect: (agent: AgentDTO) => void;
 }) {
   if (agents.length === 0) {
-    // Agents are free — no company required. Adding the first one
-    // auto-provisions the user's personal workspace behind the scenes.
+    // Agents are free and independent — they live here at the user level
+    // (idle until deployed into a company; no company auto-created).
     return (
       <Card
         padding="lg"

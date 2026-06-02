@@ -47,6 +47,7 @@ import { db } from "../../../infra/database/client";
 import { childLogger } from "../../../lib/logger";
 import {
   renderWorkspaceFiles,
+  DEFAULT_PERSONA,
   roleLabelFor,
 } from "../../../lib/workspace-templates";
 import {
@@ -359,6 +360,7 @@ export async function createDeploymentInternal(
         name: identityRow.name,
         role: deploymentRow.role,
         roleLabel: roleLabelFor(deploymentRow.role),
+        persona: identityRow.persona ?? DEFAULT_PERSONA,
       },
       company: { name: companyName },
       runtime: {
