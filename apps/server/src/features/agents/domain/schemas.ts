@@ -55,6 +55,9 @@ const taskRateLamportsSchema = z
 const createAgentSharedFields = {
   name: z.string().trim().min(1).max(LIMITS.NAME),
   role: roleSchema,
+  // Free-text specialty ("specialist for X"). Intrinsic to the agent,
+  // persisted on the identity. Optional.
+  persona: z.string().trim().max(LIMITS.DESCRIPTION_SHORT).nullable().optional(),
   // Used only on first-time onboarding (user has no company yet). Ignored
   // when the user already owns a company — agents always attach to the
   // existing one so we never end up with split companies.

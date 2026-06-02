@@ -19,16 +19,26 @@ import { Modal } from "@/components/ui/modal";
 import { MODEL_POOL } from "@/features/theater/constants";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { formatWhen } from "./_shared";
 
 export function OverviewTab({
   agent,
   agents,
   onReloadMe,
+  companyLabel,
+  hideSeating,
 }: {
   agent: AgentDTO;
   agents: AgentDTO[];
   onReloadMe: () => Promise<void> | void;
+  /** Where this agent works — company name, or null = idle. When provided
+   *  (home view), a "Company" row is shown. Omit inside a company OS where
+   *  the company is implicit. */
+  companyLabel?: string | null;
+  /** Hide the 3D-office Seat + Character rows. They only make sense inside
+   *  a company's office, so the home view turns them off. */
+  hideSeating?: boolean;
 }) {
   const [seatModalOpen, setSeatModalOpen] = useState(false);
 
@@ -47,9 +57,25 @@ export function OverviewTab({
           ? "—"
           : "— (top-level)";
 
-  const rows: { label: string; value: string }[] = [
+  type Row = {
+    label: string;
+    value: string;
+    badge?: { text: string; variant: "success" | "warning" };
+  };
+  const rows: Row[] = [
     { label: "Name", value: agent.name },
     { label: "Role", value: formatRoleLabel(agent.role) },
+    ...(companyLabel !== undefined
+      ? [
+          {
+            label: "Company",
+            value: companyLabel ?? "Not assigned",
+            badge: companyLabel
+              ? { text: "Working", variant: "success" as const }
+              : { text: "Available", variant: "warning" as const },
+          },
+        ]
+      : []),
     { label: "Reports to", value: reportsToValue },
     { label: "Adapter", value: agent.adapterType },
     { label: "External ID", value: agent.externalAgentId ?? "—" },
@@ -79,20 +105,29 @@ export function OverviewTab({
           className="grid grid-cols-[140px_1fr] gap-3 py-2 border-b border-white/6 last:border-0"
         >
           <div className="text-xs text-white/40">{r.label}</div>
-          <div className="text-xs text-white/80 font-mono truncate">
-            {r.value}
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="text-xs text-white/80 font-mono truncate">
+              {r.value}
+            </span>
+            {r.badge && (
+              <Badge variant={r.badge.variant}>{r.badge.text}</Badge>
+            )}
           </div>
         </div>
       ))}
-      <SeatRow agent={agent} onChangeClick={() => setSeatModalOpen(true)} />
-      <CharacterRow agent={agent} onReloadMe={onReloadMe} />
-      <SeatPickerModal
-        open={seatModalOpen}
-        agent={agent}
-        agents={agents}
-        onClose={() => setSeatModalOpen(false)}
-        onReloadMe={onReloadMe}
-      />
+      {!hideSeating && (
+        <>
+          <SeatRow agent={agent} onChangeClick={() => setSeatModalOpen(true)} />
+          <CharacterRow agent={agent} onReloadMe={onReloadMe} />
+          <SeatPickerModal
+            open={seatModalOpen}
+            agent={agent}
+            agents={agents}
+            onClose={() => setSeatModalOpen(false)}
+            onReloadMe={onReloadMe}
+          />
+        </>
+      )}
     </div>
   );
 }

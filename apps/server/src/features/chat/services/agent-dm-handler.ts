@@ -212,7 +212,7 @@ export async function processAgentDmTurn(
   const [traceRow] = await db
     .insert(traces)
     .values({
-      companyId: callee.companyId,
+      companyId: callee.companyId!,
       deploymentId: callee.id,
       invocationSource: "chat",
       conversationId: `agent-dm-${threadId}`,
@@ -300,7 +300,7 @@ export async function processAgentDmTurn(
       } else if (getTier(target.role) === "head") {
         // Recursive: open another agent_dm thread one tier down.
         const opened = await openAgentDmThread({
-          companyId: callee.companyId,
+          companyId: callee.companyId!,
           callerDeploymentId: callee.id,
           calleeDeploymentId: target.id,
           parentThreadId: threadId,
@@ -327,7 +327,7 @@ export async function processAgentDmTurn(
         // so cascade bubbles the synthesised result there first, then
         // recurses up via parentThreadId.
         const opened = await openAgentDmThread({
-          companyId: callee.companyId,
+          companyId: callee.companyId!,
           callerDeploymentId: callee.id,
           calleeDeploymentId: target.id,
           parentThreadId: threadId,
@@ -341,7 +341,7 @@ export async function processAgentDmTurn(
           autoDispatch: false,
         });
         const taskRow = await createTaskRecord({
-          companyId: callee.companyId,
+          companyId: callee.companyId!,
           title: dp.title,
           blocks: [{ type: "paragraph", text: dp.description }],
           status: "todo",
@@ -372,7 +372,7 @@ export async function processAgentDmTurn(
     const cb = readCreateTaskBody(createBlock.body);
     if (cb) {
       const taskRow = await createTaskRecord({
-        companyId: callee.companyId,
+        companyId: callee.companyId!,
         title: cb.title,
         blocks: [{ type: "paragraph", text: cb.brief }],
         status: "todo",
@@ -401,7 +401,7 @@ export async function processAgentDmTurn(
   const cleanReply = stripOccaMarkers(result.reply);
   await insertMessage({
     threadId,
-    companyId: callee.companyId,
+    companyId: callee.companyId!,
     deploymentId: callee.id,
     role: "assistant",
     content: cleanReply.length > 0 ? cleanReply : "(empty reply)",

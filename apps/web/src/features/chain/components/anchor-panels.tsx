@@ -35,14 +35,14 @@ export function AnchorAgentPanel({
   const handleAnchor = useCallback(() => {
     if (walletStatus.kind !== "ready") return;
     if (stage !== "idle") return;
-    void prepare({ companyId: agent.companyId, agentIds: [agent.id] });
+    void prepare({ companyId: agent.companyId ?? "", agentIds: [agent.id] });
   }, [walletStatus, stage, prepare, agent.companyId, agent.id]);
 
   useEffect(() => {
     if (stage !== "ready-to-sign") return;
     if (walletStatus.kind !== "ready") return;
     void signAndRegister({
-      companyId: agent.companyId,
+      companyId: agent.companyId ?? "",
       wallet: walletStatus.wallet,
     });
   }, [stage, walletStatus, signAndRegister, agent.companyId]);

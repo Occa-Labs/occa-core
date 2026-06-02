@@ -41,6 +41,11 @@ export async function backfillDeploymentSeats(): Promise<void> {
   let assigned = 0;
   let skipped = 0;
   for (const row of rows) {
+    // Idle agents (no company) have no office seat to backfill.
+    if (!row.companyId) {
+      skipped++;
+      continue;
+    }
     const seat = await assignSeatForCompany({
       companyId: row.companyId,
       role: row.role,

@@ -265,7 +265,7 @@ router.post(
         )
         .where(
           and(
-            eq(deployments.companyId, deploymentRecord.companyId),
+            eq(deployments.companyId, deploymentRecord.companyId!),
             eq(deployments.role, CEO_ROLE),
           ),
         )
@@ -403,7 +403,7 @@ router.post(
     const [companyRow] = await db
       .select()
       .from(companies)
-      .where(eq(companies.id, deploymentRecord.companyId))
+      .where(eq(companies.id, deploymentRecord.companyId!))
       .limit(1);
 
     let rendered: Awaited<ReturnType<typeof renderWorkspaceFiles>>;
@@ -477,17 +477,19 @@ router.post(
     // Step: assign skills + enqueue installs (non-critical)
     stepStart("assigning_skills", "Assigning skills");
     try {
-      const keys = await autoAssignSkillsToNewAgent(
-        deploymentRecord.id,
-        deploymentRecord.role,
-        deploymentRecord.companyId,
-      );
-      if (keys.length > 0) {
-        await enqueueSkillSyncs({
-          deploymentId: deploymentRecord.id,
-          companyId: deploymentRecord.companyId,
-          skillKeys: keys,
-        });
+      if (deploymentRecord.companyId) {
+        const keys = await autoAssignSkillsToNewAgent(
+          deploymentRecord.id,
+          deploymentRecord.role,
+          deploymentRecord.companyId,
+        );
+        if (keys.length > 0) {
+          await enqueueSkillSyncs({
+            deploymentId: deploymentRecord.id,
+            companyId: deploymentRecord.companyId,
+            skillKeys: keys,
+          });
+        }
       }
     } catch (err) {
       log.error({ err }, "reprovision: auto-assign / enqueue skills failed");
@@ -1041,9 +1043,9 @@ router.delete("/:id", requireAuth, async (req: Request, res: Response) => {
   if (getTier(existing.role) === "head") {
     try {
       await reparentOnHeadRetire({
-        companyId: existing.companyId,
+        companyId: existing.companyId!,
         retiringHeadDeploymentId: existing.id,
-        retiringHeadDeploymentIndex: existing.deploymentIndex,
+        retiringHeadDeploymentIndex: existing.deploymentIndex!,
       });
     } catch (err) {
       log.warn(

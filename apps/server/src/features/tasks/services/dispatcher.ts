@@ -629,7 +629,7 @@ async function loadAgentForDispatch(
       and(eq(deployments.id, deploymentId), eq(deployments.companyId, companyId)),
     )
     .limit(1);
-  return joined ?? null;
+  return joined ? { ...joined, companyId: joined.companyId! } : null;
 }
 
 interface OpenTraceArgs {

@@ -163,7 +163,9 @@ async function loadAgent(deploymentId: string): Promise<LoadedAgent | null> {
     )
     .where(eq(deployments.id, deploymentId))
     .limit(1);
-  return row ?? null;
+  return row
+    ? { ...row, companyId: row.companyId!, deploymentIndex: row.deploymentIndex! }
+    : null;
 }
 
 // Direct reports of a deployment — the routine-wake delegation roster.

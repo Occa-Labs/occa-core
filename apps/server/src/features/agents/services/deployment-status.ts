@@ -85,6 +85,7 @@ function toDTO(args: {
     identityId: deployment.agentIdentityId,
     companyId: deployment.companyId,
     name: identity?.name ?? "",
+    persona: identity?.persona ?? null,
     role: deployment.role,
     adapterType: profile?.adapterType ?? "",
     externalAgentId: profile?.externalAgentId ?? null,
@@ -121,8 +122,13 @@ export async function hydrateDeploymentDTOs(
   const ids = rows.map((r) => r.id);
   const identityIds = Array.from(new Set(rows.map((r) => r.agentIdentityId)));
   // For parent-index → deployment.id lookup we need every deployment in
-  // each touched company (parents may be outside the input slice).
-  const companyIds = Array.from(new Set(rows.map((r) => r.companyId)));
+  // each touched company (parents may be outside the input slice). Idle
+  // agents (companyId null) have no company siblings — skip them here.
+  const companyIds = Array.from(
+    new Set(
+      rows.map((r) => r.companyId).filter((c): c is string => c !== null),
+    ),
+  );
 
   const [
     identityRows,
@@ -154,14 +160,22 @@ export async function hydrateDeploymentDTOs(
       WHERE ${inArray(traces.deploymentId, ids)}
       ORDER BY deployment_id, created_at DESC
     `),
-    db
-      .select({
-        id: deployments.id,
-        companyId: deployments.companyId,
-        deploymentIndex: deployments.deploymentIndex,
-      })
-      .from(deployments)
-      .where(inArray(deployments.companyId, companyIds)),
+    companyIds.length > 0
+      ? db
+          .select({
+            id: deployments.id,
+            companyId: deployments.companyId,
+            deploymentIndex: deployments.deploymentIndex,
+          })
+          .from(deployments)
+          .where(inArray(deployments.companyId, companyIds))
+      : Promise.resolve(
+          [] as {
+            id: string;
+            companyId: string | null;
+            deploymentIndex: number | null;
+          }[],
+        ),
   ]);
 
   const identityById = new Map(identityRows.map((r) => [r.id, r]));
@@ -200,6 +214,7 @@ export async function hydrateDeploymentDTOs(
   // (companyId → (deploymentIndex → deploymentId)) for parent resolution.
   const parentLookupByCompany = new Map<string, Map<number, string>>();
   for (const d of sameCompanyDeployments) {
+    if (d.companyId === null || d.deploymentIndex === null) continue;
     let m = parentLookupByCompany.get(d.companyId);
     if (!m) {
       m = new Map();
@@ -216,7 +231,9 @@ export async function hydrateDeploymentDTOs(
       runtimeState: runtimeStateByDeployment.get(deployment.id),
       latestTrace: latestByDeployment.get(deployment.id),
       parentDeploymentIdByIndex:
-        parentLookupByCompany.get(deployment.companyId) ?? new Map(),
+        (deployment.companyId
+          ? parentLookupByCompany.get(deployment.companyId)
+          : undefined) ?? new Map(),
     }),
   );
 }

@@ -9,8 +9,8 @@
 import { Router, type Request, type Response } from "express";
 import { ERROR_CODES } from "@occa/shared/error-codes";
 import { StatusCodes } from "http-status-codes";
-import { eq } from "drizzle-orm";
-import { deployments, users } from "@occa/shared/schema";
+import { eq, inArray } from "drizzle-orm";
+import { agentIdentities, deployments, users } from "@occa/shared/schema";
 import type { MeResponse } from "@occa/shared/types";
 import { db } from "../../../infra/database/client";
 import { requireAuth } from "../../../middleware/auth";
@@ -54,12 +54,20 @@ router.get("/", requireAuth, async (req: Request, res: Response) => {
     }
   }
 
-  const deploymentRows = loaded
-    ? await db
-        .select()
-        .from(deployments)
-        .where(eq(deployments.companyId, loaded.company.id))
-    : [];
+  // Agents are user-owned and independent: list ALL the user's agents by
+  // identity ownership (idle + working), not scoped to a single company.
+  const ownedIdentities = await db
+    .select({ id: agentIdentities.id })
+    .from(agentIdentities)
+    .where(eq(agentIdentities.ownerUserId, userId));
+  const identityIds = ownedIdentities.map((r) => r.id);
+  const deploymentRows =
+    identityIds.length > 0
+      ? await db
+          .select()
+          .from(deployments)
+          .where(inArray(deployments.agentIdentityId, identityIds))
+      : [];
 
   const response: MeResponse = {
     user: {

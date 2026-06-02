@@ -83,7 +83,7 @@ export async function setDesiredSkills(args: {
 // fields the skill-init worker expects (matches the old
 // `listAgentsAwaitingSkillInit` shape — id is now deploymentId).
 export async function listDeploymentsAwaitingSkillInit(): Promise<
-  Array<{ id: string; role: string; companyId: string }>
+  Array<{ id: string; role: string; companyId: string | null }>
 > {
   const rows = await db
     .select({

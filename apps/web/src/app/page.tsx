@@ -8,8 +8,12 @@ import { Spinner } from "@/components/ui/spinner";
 import { useViewMode } from "@/shell/view-mode-toggle";
 import { TopMenuBar } from "@/shell/top-menu-bar";
 import { DesktopOnlyGate } from "@/shell/desktop-only-gate";
-import { TokenGate } from "@/shell/token-gate";
 import { OnboardingWindow } from "@/features/onboarding/components/onboarding-window";
+import { LoginScreen } from "@/features/auth/components/login-screen";
+import { HomeScreen } from "@/features/home/components/home-screen";
+import { DeployAgentModal } from "@/features/agents/components/deploy-agent-modal";
+import { AgentDetail } from "@/features/agents/components/agents-window";
+import { Modal } from "@/components/ui/modal";
 import type { SceneAgent } from "@/features/theater/types";
 import { deriveAgentStatus } from "@/features/theater/utils";
 import { CEO_ROLE, getTier } from "@occa/shared/role-catalog";
@@ -62,6 +66,27 @@ export default function HomePage() {
   const [onboardingDismissed, setOnboardingDismissed] = useState(false);
   const showOnboarding =
     authenticated && onboardingRequired && !onboardingDismissed && !me.loading;
+
+  // Which surface the authed user sees: the personal dashboard (default)
+  // or a company's 3D OS. Entering a company is explicit now — the OS is
+  // no longer the post-login landing.
+  const [inCompany, setInCompany] = useState(false);
+
+  // Deploy-agent modal, opened from the home screen's My agents section.
+  // Lives here (app level) so features/home never imports features/agents
+  // directly — composition happens in the page.
+  const [deployOpen, setDeployOpen] = useState(false);
+
+  // Home agent detail. Stored by id (not the snapshot) so the modal
+  // reflects live status after pause/reload and auto-closes when the
+  // agent is retired (no longer in the list). Reuses the company OS's
+  // rich AgentDetail (tabs + lifecycle) — composed here, not imported
+  // by features/home.
+  const [detailAgentId, setDetailAgentId] = useState<string | null>(null);
+  const detailAgent =
+    detailAgentId !== null
+      ? me.agents.find((a) => a.id === detailAgentId) ?? null
+      : null;
 
   // 3D office vs flat background — driven purely by the user's view-mode
   // toggle now that there are no first-run cinematics owning the camera.
@@ -245,49 +270,58 @@ export default function HomePage() {
     [],
   );
 
+  // Outermost gate: until the user is authenticated, the only thing that
+  // renders is the login wall. The 3D office, top bar, dock, and OS shell
+  // do not mount behind it — login is the first surface, not a button
+  // nested inside the desktop.
+  if (!authenticated) {
+    return (
+      <DesktopOnlyGate>
+        <LoginScreen />
+      </DesktopOnlyGate>
+    );
+  }
+
   return (
     <DesktopOnlyGate>
-      <main
-        className="fixed inset-0 h-screen w-screen overflow-hidden"
-        style={{ background: "var(--app-bg-scene)" }}
-      >
-        {showScene ? (
-          <OfficeScene
-            agents={agentsForScene}
-            focusedAgentRole={focusedAgentRole}
-            focusedWorkstationId={focusedWorkstationId}
-            agentDevOverrides={agentDevOverrides}
-            onAgentClick={handleAgentClick}
-            tourActive={tourActive}
-            onTourEnd={handleTourEnd}
-            tourDialog={tourDialog}
-            onTourDialog={handleTourDialog}
-            onTourDialogDismiss={clearTourDialog}
-            devWalkRecord={devWalkRecord}
-          />
-        ) : (
-          <div
-            className="absolute inset-0"
-            style={{
-              backgroundImage: "url(/images/background.jpg)",
-              backgroundSize: "cover",
-              backgroundPosition: "center",
-              backgroundRepeat: "no-repeat",
-            }}
-          />
-        )}
-        <TopMenuBar
-          notificationsEnabled={authenticated && hasCompany}
-          viewMode3d={view.enabled}
-          onToggleViewMode={view.toggle}
-          viewModeToggleEnabled={true}
-          onNavigate={handleNavigate}
-        />
-        {authenticated && (
-          <TokenGate
-            walletAddress={user?.walletAddress ?? null}
-            onSignOut={signOut}
+      {inCompany ? (
+          <main
+            className="fixed inset-0 h-screen w-screen overflow-hidden"
+            style={{ background: "var(--app-bg-scene)" }}
           >
+            {showScene ? (
+              <OfficeScene
+                agents={agentsForScene}
+                focusedAgentRole={focusedAgentRole}
+                focusedWorkstationId={focusedWorkstationId}
+                agentDevOverrides={agentDevOverrides}
+                onAgentClick={handleAgentClick}
+                tourActive={tourActive}
+                onTourEnd={handleTourEnd}
+                tourDialog={tourDialog}
+                onTourDialog={handleTourDialog}
+                onTourDialogDismiss={clearTourDialog}
+                devWalkRecord={devWalkRecord}
+              />
+            ) : (
+              <div
+                className="absolute inset-0"
+                style={{
+                  backgroundImage: "url(/images/background.jpg)",
+                  backgroundSize: "cover",
+                  backgroundPosition: "center",
+                  backgroundRepeat: "no-repeat",
+                }}
+              />
+            )}
+            <TopMenuBar
+              notificationsEnabled={hasCompany}
+              viewMode3d={view.enabled}
+              onToggleViewMode={view.toggle}
+              viewModeToggleEnabled={true}
+              onNavigate={handleNavigate}
+              onExitCompany={() => setInCompany(false)}
+            />
             {showOnboarding && (
               <OnboardingWindow
                 me={me}
@@ -311,9 +345,59 @@ export default function HomePage() {
               pendingChainSection={pendingChainSection}
               onClearPendingChain={handleClearPendingChain}
             />
-          </TokenGate>
-        )}
-      </main>
+          </main>
+        ) : (
+        <>
+          <HomeScreen
+            company={me.company}
+            agents={me.agents}
+            loading={me.loading}
+            walletAddress={user?.walletAddress ?? null}
+            onEnterCompany={() => setInCompany(true)}
+            onAddAgent={() => setDeployOpen(true)}
+            onOpenAgentDetail={(a) => setDetailAgentId(a.id)}
+            onSignOut={signOut}
+          />
+          <DeployAgentModal
+            open={deployOpen}
+            onClose={() => setDeployOpen(false)}
+            onDeployed={() => {
+              void me.reload();
+              setDeployOpen(false);
+            }}
+            agents={me.agents}
+            showBilling={false}
+            showRole={false}
+          />
+          <Modal
+            open={detailAgent !== null}
+            onClose={() => setDetailAgentId(null)}
+            title="Agent"
+            width="min(680px, 94vw)"
+            maxHeight="min(680px, 86vh)"
+          >
+            {detailAgent && (
+              <div className="flex h-[min(580px,74vh)] flex-col">
+                <AgentDetail
+                  agent={detailAgent}
+                  agents={me.agents}
+                  onReloadMe={me.reload}
+                  // Personal workspace (kind "user") = the agent's idle home,
+                  // NOT a real job → "Available". Only a real/shared company
+                  // counts as "Working". (Truly company-less idle lands in
+                  // Phase 2.)
+                  companyLabel={
+                    me.company && me.company.kind !== "user"
+                      ? me.company.name
+                      : null
+                  }
+                  hideSeating
+                />
+              </div>
+            )}
+          </Modal>
+        </>
+      )}
     </DesktopOnlyGate>
   );
 }

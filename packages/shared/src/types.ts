@@ -302,8 +302,13 @@ export interface AgentDTO {
    *  identity-scoped routes (`/api/chain/agent-identities/:identityId/...`)
    *  without an extra lookup. */
   identityId: string;
-  companyId: string;
+  /** Company the agent currently works at, or null = idle/available
+   *  (not assigned to any company). */
+  companyId: string | null;
   name: string;
+  /** Free-text specialty / persona ("specialist for X"). Intrinsic to the
+   *  agent identity; null when unset. */
+  persona: string | null;
   role: string;
   adapterType: string;
   externalAgentId: string | null;
@@ -578,6 +583,8 @@ export interface ChannelUpsertRequest {
 export interface CreateAgentRequest {
   name: string;
   role: AgentRole;
+  // Free-text specialty ("specialist for X"). Persisted on the identity.
+  persona?: string | null;
   adapterType: AdapterType;
   adapterConfig: AdapterConfig;
   companyName?: string;

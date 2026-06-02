@@ -81,7 +81,13 @@ export function Modal({
       className="fixed inset-0 flex items-center justify-center"
       style={{
         zIndex,
-        background: "rgba(0, 0, 0, 0.55)",
+        // Blur lives ONLY on the dimmer overlay, never on the card. The
+        // 2026-05-11 rewrite removed the card's backdrop-filter to fix a
+        // click-through bug (compositing layer swallowed clicks); blurring
+        // this backdrop div is a separate element and safe.
+        background: "rgba(0, 0, 0, 0.5)",
+        backdropFilter: "blur(20px)",
+        WebkitBackdropFilter: "blur(20px)",
       }}
       // CRITICAL: stop pointerdown synth-bubble before it reaches the
       // AppWindow that hosts whatever opened this modal. React portal

@@ -23,6 +23,9 @@ interface TopMenuBarProps {
   /** Notification deep-link dispatcher. Fired when a notification card is
    *  clicked and carries a parseable link. */
   onNavigate?: (parsed: ParsedNotificationLink) => void;
+  /** When set, the OCCA logo becomes a button that leaves the company OS
+   *  and returns to the user dashboard. */
+  onExitCompany?: () => void;
 }
 
 // macOS-style top menu bar. Spans the full width: OCCA logo pinned to
@@ -35,15 +38,28 @@ export function TopMenuBar({
   onToggleViewMode,
   viewModeToggleEnabled,
   onNavigate,
+  onExitCompany,
 }: TopMenuBarProps) {
   return (
     <div className="fixed inset-x-3 top-2 z-110 flex items-center justify-between text-white/70 pointer-events-none">
       <div className="pointer-events-auto flex items-center pl-4">
-        <OccaLogo
-          className="text-white/85 hover:text-white transition-colors"
-          width={22}
-          height={22}
-        />
+        {onExitCompany ? (
+          <button
+            type="button"
+            onClick={onExitCompany}
+            aria-label="Back to dashboard"
+            title="Back to dashboard"
+            className="cursor-pointer rounded-lg p-1 -m-1 text-white/85 transition-colors hover:text-white"
+          >
+            <OccaLogo width={22} height={22} />
+          </button>
+        ) : (
+          <OccaLogo
+            className="text-white/85 hover:text-white transition-colors"
+            width={22}
+            height={22}
+          />
+        )}
       </div>
 
       <div className="pointer-events-auto flex items-center gap-3">

@@ -93,11 +93,16 @@ export async function runCreateFlow(args: RunCreateFlowArgs): Promise<void> {
     unknown
   >;
 
-  const existingCompanyId = await userCompanyId(userId);
-  if (!existingCompanyId && !parsedData.companyName) {
-    res.status(400).json({ error: "company_required" });
-    return;
-  }
+  // Agents are independent: creating one makes a bare IDLE agent (identity
+  // + deployment with companyId=NULL + runtime), NOT tied to any company.
+  // Assigning it to a company is a separate step. No company is created
+  // here — the agent simply exists, available, until deployed somewhere.
+  const [userRow] = await db
+    .select({ wallet: users.walletAddress })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  const ownerWallet = userRow?.wallet ?? `placeholder:${userId}`;
 
   // Switch to SSE — every error from here is streamed.
   res.setHeader("Content-Type", "text/event-stream");
@@ -179,35 +184,8 @@ export async function runCreateFlow(args: RunCreateFlowArgs): Promise<void> {
   let deploymentRow: typeof deployments.$inferSelect;
   try {
     const tx = await db.transaction(async (t) => {
-      let cid = existingCompanyId;
-      let createdCompanyRow: typeof companies.$inferSelect | null = null;
-      if (!cid) {
-        const [inserted] = await t
-          .insert(companies)
-          .values({
-            ownerUserId: userId,
-            name: parsedData.companyName!,
-            kind: "user",
-          })
-          .returning();
-        createdCompanyRow = inserted;
-        cid = inserted.id;
-      }
-
-      const workstationId = await assignSeatForCompany({
-        companyId: cid,
-        role,
-      });
-      if (!workstationId) throw new Error("office_full");
-
-      const [companyForOwner] = await t
-        .select({ ownerWallet: companies.ownerWallet })
-        .from(companies)
-        .where(eq(companies.id, cid))
-        .limit(1);
-      const ownerWallet =
-        companyForOwner?.ownerWallet ?? `placeholder:${cid}`;
-
+      // Idle agent: no company, no seat, no per-company index, no parent.
+      // All of those get assigned later when the agent joins a company.
       const [iRow] = await t
         .insert(agentIdentities)
         .values({
@@ -216,66 +194,38 @@ export async function runCreateFlow(args: RunCreateFlowArgs): Promise<void> {
           identityPda: synthPlaceholderKey("ag_pda"),
           ownerWallet,
           name,
+          persona: parsedData.persona ?? null,
         })
         .returning();
-
-      const sibs = await t
-        .select({ idx: deployments.deploymentIndex })
-        .from(deployments)
-        .where(eq(deployments.companyId, cid));
-      const nextIdx =
-        sibs.length === 0 ? 0 : Math.max(...sibs.map((r) => r.idx)) + 1;
-
-      let parentIdx: number | null = null;
-      if (parentAgentId) {
-        const [parentRow] = await t
-          .select({
-            id: deployments.id,
-            companyId: deployments.companyId,
-            deploymentIndex: deployments.deploymentIndex,
-            status: deployments.status,
-          })
-          .from(deployments)
-          .where(eq(deployments.id, parentAgentId))
-          .limit(1);
-        if (!parentRow || parentRow.companyId !== cid) {
-          throw new Error("parent_not_in_company");
-        }
-        if (parentRow.status !== "active") {
-          throw new Error("parent_not_active");
-        }
-        parentIdx = parentRow.deploymentIndex;
-      } else if (role !== CEO_ROLE) {
-        parentIdx = await resolveAutoParentIndex({
-          companyId: cid,
-          role,
-        });
-      }
 
       const [dRow] = await t
         .insert(deployments)
         .values({
-          companyId: cid,
+          companyId: null,
           agentIdentityId: iRow.id,
           deploymentPda: synthPlaceholderKey("dep_pda"),
-          deploymentIndex: nextIdx,
+          deploymentIndex: null,
           role,
           status: "active",
-          parentDeploymentIndex: parentIdx,
+          parentDeploymentIndex: null,
         })
         .returning();
 
       await t.insert(agentRuntimeProfile).values({
         deploymentId: dRow.id,
-        companyId: cid,
+        companyId: null,
         adapterType,
         adapterConfig: mergedAdapterConfig,
         provisioningState: "pending",
-        workstationId,
+        workstationId: null,
         taskRateLamports: taskRateLamports ?? null,
       });
 
-      return { iRow, dRow, createdCompanyRow };
+      return {
+        iRow,
+        dRow,
+        createdCompanyRow: null as typeof companies.$inferSelect | null,
+      };
     });
     identityRow = tx.iRow;
     deploymentRow = tx.dRow;
@@ -376,7 +326,7 @@ export async function runCreateFlow(args: RunCreateFlowArgs): Promise<void> {
     return;
   }
 
-  if (!companyRow) {
+  if (!companyRow && companyId) {
     const [existing] = await db
       .select()
       .from(companies)
@@ -431,22 +381,26 @@ export async function runCreateFlow(args: RunCreateFlowArgs): Promise<void> {
   stepDone("seeding_workspace");
 
   // ── Step: assigning_skills (non-critical) ────────────────────────
+  // Company-scoped skill auto-assign only runs once the agent is in a
+  // company. Idle agents get persona-driven skills later (Phase 3).
   stepStart("assigning_skills", "Assigning skills");
-  try {
-    const keys = await autoAssignSkillsToNewAgent(
-      deploymentRow.id,
-      deploymentRow.role,
-      companyId,
-    );
-    if (keys.length > 0) {
-      await enqueueSkillSyncs({
-        deploymentId: deploymentRow.id,
+  if (companyId) {
+    try {
+      const keys = await autoAssignSkillsToNewAgent(
+        deploymentRow.id,
+        deploymentRow.role,
         companyId,
-        skillKeys: keys,
-      });
+      );
+      if (keys.length > 0) {
+        await enqueueSkillSyncs({
+          deploymentId: deploymentRow.id,
+          companyId,
+          skillKeys: keys,
+        });
+      }
+    } catch (err) {
+      log.error({ err }, "auto-assign / enqueue skills failed");
     }
-  } catch (err) {
-    log.error({ err }, "auto-assign / enqueue skills failed");
   }
   stepDone("assigning_skills");
 
@@ -469,7 +423,11 @@ export async function runCreateFlow(args: RunCreateFlowArgs): Promise<void> {
   // specialists currently parented under CEO whose canonical parent is
   // this head's role under the new head. Silent no-op otherwise.
   let reparentedCount: number | undefined;
-  if (getTier(role) === "head") {
+  if (
+    getTier(role) === "head" &&
+    deploymentRow.companyId &&
+    deploymentRow.deploymentIndex !== null
+  ) {
     try {
       const result = await reparentOnHeadDeploy({
         companyId: deploymentRow.companyId,

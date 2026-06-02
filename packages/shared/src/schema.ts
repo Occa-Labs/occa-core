@@ -304,6 +304,11 @@ export const agentIdentities = pgTable(
     ownerWallet: text("owner_wallet").notNull(),
     // Tier 1 on-chain field.
     name: text("name").notNull(),
+    // Free-text specialty / persona for this agent — "specialist for X".
+    // Intrinsic to the agent (travels with the identity across companies),
+    // so it lives here, not on the deployment. Drives the agent's system
+    // prompt + skill selection (wired in a later phase).
+    persona: text("persona"),
     // Tier 2 metadata pointer + integrity hash (sha256 hex).
     metadataUri: text("metadata_uri"),
     metadataHash: text("metadata_hash"),
@@ -326,15 +331,18 @@ export const deployments = pgTable(
   "deployments",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    companyId: uuid("company_id")
-      .notNull()
-      .references(() => companies.id, { onDelete: "cascade" }),
+    // NULL = idle agent (not assigned to any company). A deployment row
+    // always exists per agent; companyId set = "working at" that company,
+    // NULL = "available/idle" (0-or-1 company per agent over time).
+    companyId: uuid("company_id").references(() => companies.id, {
+      onDelete: "cascade",
+    }),
     agentIdentityId: uuid("agent_identity_id")
       .notNull()
       .references(() => agentIdentities.id, { onDelete: "cascade" }),
     deploymentPda: text("deployment_pda").notNull().unique(),
-    // Per-company u32 counter — mirrors PDA seed.
-    deploymentIndex: integer("deployment_index").notNull(),
+    // Per-company u32 counter — mirrors PDA seed. NULL while idle.
+    deploymentIndex: integer("deployment_index"),
     // Capability persona (e.g. "ceo", "sdr"). NOT a job title — see §15.7.
     role: text("role").notNull(),
     // Reporting parent within this company (NULL = top-level). On-chain
@@ -384,9 +392,10 @@ export const agentRuntimeProfile = pgTable(
     deploymentId: uuid("deployment_id")
       .primaryKey()
       .references(() => deployments.id, { onDelete: "cascade" }),
-    companyId: uuid("company_id")
-      .notNull()
-      .references(() => companies.id, { onDelete: "cascade" }),
+    // NULL = idle agent's runtime (no company yet). Set on assignment.
+    companyId: uuid("company_id").references(() => companies.id, {
+      onDelete: "cascade",
+    }),
     // Derived from `deployments.adapter_id` (resolved to adapter package
     // type at provision time). Cached for fast lookups in worker.
     adapterType: text("adapter_type").notNull(),
@@ -898,9 +907,10 @@ export const deploymentRuntimeState = pgTable("deployment_runtime_state", {
   deploymentId: uuid("deployment_id")
     .primaryKey()
     .references(() => deployments.id, { onDelete: "cascade" }),
-  companyId: uuid("company_id")
-    .notNull()
-    .references(() => companies.id, { onDelete: "cascade" }),
+  // NULL = idle agent's runtime state (no company yet).
+  companyId: uuid("company_id").references(() => companies.id, {
+    onDelete: "cascade",
+  }),
   stateJson: jsonb("state_json")
     .notNull()
     .default(sql`'{}'::jsonb`),
@@ -1161,9 +1171,10 @@ export const deploymentWorkspaceFiles = pgTable(
     deploymentId: uuid("deployment_id")
       .notNull()
       .references(() => deployments.id, { onDelete: "cascade" }),
-    companyId: uuid("company_id")
-      .notNull()
-      .references(() => companies.id, { onDelete: "cascade" }),
+    // NULL = idle agent's workspace files (no company yet).
+    companyId: uuid("company_id").references(() => companies.id, {
+      onDelete: "cascade",
+    }),
     // Filename inside the OpenClaw workspace root (no leading slash).
     // Canonical set: AGENTS.md, SOUL.md, IDENTITY.md, USER.md, TOOLS.md,
     // HEARTBEAT.md, BOOTSTRAP.md, MEMORY.md. We don't constrain to an enum
@@ -1210,9 +1221,10 @@ export const deploymentSkillSyncs = pgTable(
     deploymentId: uuid("deployment_id")
       .notNull()
       .references(() => deployments.id, { onDelete: "cascade" }),
-    companyId: uuid("company_id")
-      .notNull()
-      .references(() => companies.id, { onDelete: "cascade" }),
+    // NULL = idle agent's skill sync (no company yet).
+    companyId: uuid("company_id").references(() => companies.id, {
+      onDelete: "cascade",
+    }),
     // Canonical skill key: "owner/repo/slug"
     skillKey: text("skill_key").notNull(),
     // pending | installing | installed | failed

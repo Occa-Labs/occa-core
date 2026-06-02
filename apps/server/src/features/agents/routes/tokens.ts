@@ -41,7 +41,7 @@ router.post("/:id/tokens", requireAuth, async (req: Request, res: Response) => {
   }
   const { rawKey, row } = await generateDeploymentKey({
     deploymentId: existing.id,
-    companyId: existing.companyId,
+    companyId: existing.companyId!,
     name: parsed.data.name,
   });
   const body: CreateAgentTokenResponse = {

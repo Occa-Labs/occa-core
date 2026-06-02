@@ -57,7 +57,7 @@ router.post(
     }
     const dedup = Array.from(new Set(parsed.data.enabledTools));
 
-    if (dedup.length > 0) {
+    if (dedup.length > 0 && existing.companyId) {
       const known = await db
         .select({ id: companyTools.id })
         .from(companyTools)

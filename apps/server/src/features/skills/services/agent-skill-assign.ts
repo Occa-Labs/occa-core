@@ -222,6 +222,8 @@ export async function backfillSkillsForAllAgents(): Promise<{
   const rows = await listDeploymentsAwaitingSkillInit();
   let updated = 0;
   for (const row of rows) {
+    // Idle agents (no company) skip company-scoped skill backfill.
+    if (!row.companyId) continue;
     const keys = await autoAssignSkillsToNewAgent(
       row.id,
       row.role as AgentRole,

@@ -138,7 +138,7 @@ export async function reparentOnHeadDeploy(args: {
     .where(
       and(
         eq(deployments.companyId, args.companyId),
-        eq(deployments.parentDeploymentIndex, ceo.deploymentIndex),
+        eq(deployments.parentDeploymentIndex, ceo.deploymentIndex!),
         eq(deployments.status, "active"),
       ),
     );

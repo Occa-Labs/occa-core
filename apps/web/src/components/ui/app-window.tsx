@@ -270,7 +270,13 @@ export function AppWindow({
       style={{
         ...surface.base,
         boxShadow: shadow.md,
-        zIndex,
+        // Maximized windows must sit ABOVE the OS chrome (top bar + dock at
+        // z-50) so they aren't clipped/overlapped when filling the screen.
+        // Stays below modals (z-200).
+        zIndex: maximized ? Math.max(zIndex, 60) : zIndex,
+        // Square the corners when filling the screen — rounded edges over a
+        // full-bleed window leave wallpaper slivers at the corners.
+        borderRadius: maximized ? 0 : undefined,
         opacity: visible ? 1 : 0,
         transform: visible ? "scale(1)" : "scale(0.97)",
         transitionProperty: isInteracting ? "opacity" : "opacity, transform",

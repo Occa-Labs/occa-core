@@ -1,0 +1,1 @@
+ALTER TABLE "agent_identities" ADD COLUMN "persona" text;

@@ -469,8 +469,11 @@ async function maxDeploymentIndexForCompanyTx(
     .select({ idx: deployments.deploymentIndex })
     .from(deployments)
     .where(eq(deployments.companyId, companyId));
-  if (rows.length === 0) return undefined;
-  return Math.max(...rows.map((r) => r.idx));
+  const idxs = rows
+    .map((r) => r.idx)
+    .filter((n): n is number => n !== null);
+  if (idxs.length === 0) return undefined;
+  return Math.max(...idxs);
 }
 
 async function resolveOwnerUserId(

@@ -525,14 +525,21 @@ function SidebarTreeRow({
 
 // ── Detail ───────────────────────────────────────────────────────────────────
 
-function AgentDetail({
+export function AgentDetail({
   agent,
   agents,
   onReloadMe,
+  companyLabel,
+  hideSeating,
 }: {
   agent: AgentDTO;
   agents: AgentDTO[];
   onReloadMe: () => Promise<void> | void;
+  /** Passed through to OverviewTab — shows a "Company" row (home view).
+   *  Omit inside the company OS where the company is implicit. */
+  companyLabel?: string | null;
+  /** Hide 3D-office Seat + Character rows (home view). */
+  hideSeating?: boolean;
 }) {
   const [tab, setTab] = useState<TabId>("overview");
   const [retireModalOpen, setRetireModalOpen] = useState(false);
@@ -637,7 +644,13 @@ function AgentDetail({
       <div className="flex-1 min-h-0">
         {tab === "overview" ? (
           <div className="h-full overflow-y-auto">
-            <OverviewTab agent={agent} agents={agents} onReloadMe={onReloadMe} />
+            <OverviewTab
+              agent={agent}
+              agents={agents}
+              onReloadMe={onReloadMe}
+              companyLabel={companyLabel}
+              hideSeating={hideSeating}
+            />
           </div>
         ) : tab === "skills" ? (
           <div className="h-full overflow-y-auto">

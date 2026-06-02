@@ -305,7 +305,7 @@ export async function startKickoff(
         .from(deployments)
         .where(eq(deployments.companyId, companyId));
       const nextIdx =
-        sibs.length === 0 ? 0 : Math.max(...sibs.map((r) => r.idx)) + 1;
+        sibs.length === 0 ? 0 : Math.max(...sibs.map((r) => r.idx ?? 0)) + 1;
 
       const [deployment] = await tx
         .insert(deployments)
@@ -512,7 +512,7 @@ export async function processKickoffProvisioning(
 
     try {
       await provisionOne(
-        agentRow,
+        { ...agentRow, companyId: agentRow.companyId! },
         gatewayUrl,
         apiKey,
         ceoKeypair,

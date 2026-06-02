@@ -91,10 +91,12 @@ router.get(
       .from(companySkills)
       .where(
         and(
-          or(
-            eq(companySkills.companyId, existing.companyId),
-            isNull(companySkills.companyId),
-          ),
+          existing.companyId
+            ? or(
+                eq(companySkills.companyId, existing.companyId),
+                isNull(companySkills.companyId),
+              )
+            : isNull(companySkills.companyId),
           inArray(companySkills.key, skillKeys),
         ),
       );
@@ -162,10 +164,12 @@ router.post(
         .from(companySkills)
         .where(
           and(
-            or(
-              eq(companySkills.companyId, existing.companyId),
-              isNull(companySkills.companyId),
-            ),
+            existing.companyId
+              ? or(
+                  eq(companySkills.companyId, existing.companyId),
+                  isNull(companySkills.companyId),
+                )
+              : isNull(companySkills.companyId),
             inArray(companySkills.key, dedup),
           ),
         );

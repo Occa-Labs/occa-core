@@ -759,7 +759,7 @@ router.post(
       }
     }
 
-    const companyRow = await findCompanyById(agent.companyId);
+    const companyRow = await findCompanyById(agent.companyId!);
     if (!companyRow || !companyRow.companyPda) {
       res
         .status(StatusCodes.PRECONDITION_FAILED)
@@ -799,7 +799,7 @@ router.post(
 
     // Pick a free deployment_index. Prefer the row's reserved index if any.
     let agentIndex =
-      agent.deploymentIndex ?? (await nextAgentIndex(agent.companyId));
+      agent.deploymentIndex ?? (await nextAgentIndex(agent.companyId!));
     let agentPda: PublicKey | null = null;
     for (let attempt = 0; attempt < 16; attempt += 1) {
       const probe = deriveDeploymentPda(companyPda, agentIndex);
@@ -913,7 +913,7 @@ router.post(
       }
     }
 
-    const companyRow = await findCompanyById(agent.companyId);
+    const companyRow = await findCompanyById(agent.companyId!);
     if (!companyRow || !companyRow.companyPda) {
       res
         .status(StatusCodes.PRECONDITION_FAILED)
@@ -1042,7 +1042,7 @@ router.post(
       }
     }
 
-    const companyRow = await findCompanyById(agent.companyId);
+    const companyRow = await findCompanyById(agent.companyId!);
     if (!companyRow || !companyRow.companyPda) {
       res
         .status(StatusCodes.PRECONDITION_FAILED)
@@ -1104,7 +1104,7 @@ router.post(
     // Allocate a free deployment_index. Same probe-loop as the legacy
     // single-ix path so behaviour matches.
     let agentIndex =
-      agent.deploymentIndex ?? (await nextAgentIndex(agent.companyId));
+      agent.deploymentIndex ?? (await nextAgentIndex(agent.companyId!));
     let agentPda: PublicKey | null = null;
     for (let attempt = 0; attempt < 16; attempt += 1) {
       const probe = deriveDeploymentPda(companyPda, agentIndex);
@@ -1255,7 +1255,7 @@ router.post(
       }
     }
 
-    const companyRow = await findCompanyById(agent.companyId);
+    const companyRow = await findCompanyById(agent.companyId!);
     if (!companyRow || !companyRow.companyPda) {
       res
         .status(StatusCodes.PRECONDITION_FAILED)

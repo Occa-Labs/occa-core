@@ -5,7 +5,7 @@
 // skills) live in `agent_runtime_profile` — see ./agent-runtime-profile.
 
 import { and, eq, isNull } from "drizzle-orm";
-import { companies, deployments } from "@occa/shared/schema";
+import { agentIdentities, companies, deployments } from "@occa/shared/schema";
 import { getTier } from "@occa/shared/role-catalog";
 import { db } from "../../../infra/database/client";
 
@@ -43,9 +43,10 @@ export async function findByIdInCompany(args: {
   return row;
 }
 
-// Resolve a deployment owned by the given user via their active
-// 'user'-kind company. Single round-trip via JOIN. Returns undefined if
-// the user has no company OR doesn't own the deployment.
+// Resolve a deployment owned by the given user via the AGENT IDENTITY
+// owner (not the company). Agents are user-owned and independent: this
+// works whether the agent is idle (companyId NULL) or working at any
+// company. Returns undefined if the user doesn't own the deployment.
 export async function findOwnedByUserId(args: {
   userId: string;
   deploymentId: string;
@@ -53,13 +54,14 @@ export async function findOwnedByUserId(args: {
   const [row] = await db
     .select()
     .from(deployments)
-    .innerJoin(companies, eq(deployments.companyId, companies.id))
+    .innerJoin(
+      agentIdentities,
+      eq(deployments.agentIdentityId, agentIdentities.id),
+    )
     .where(
       and(
         eq(deployments.id, args.deploymentId),
-        eq(companies.ownerUserId, args.userId),
-        eq(companies.kind, "user"),
-        isNull(companies.deletedAt),
+        eq(agentIdentities.ownerUserId, args.userId),
       ),
     )
     .limit(1);
@@ -106,7 +108,7 @@ export async function findActiveByRoleInCompany(args: {
     );
   if (rows.length === 0) return undefined;
   return rows.reduce((lo, r) =>
-    r.deploymentIndex < lo.deploymentIndex ? r : lo,
+    (r.deploymentIndex ?? 0) < (lo.deploymentIndex ?? 0) ? r : lo,
   );
 }
 
@@ -131,7 +133,7 @@ export async function findCeoForCompany(
   const ceos = rows.filter((r) => getTier(r.role) === "ceo");
   if (ceos.length === 0) return undefined;
   return ceos.reduce((lo, r) =>
-    r.deploymentIndex < lo.deploymentIndex ? r : lo,
+    (r.deploymentIndex ?? 0) < (lo.deploymentIndex ?? 0) ? r : lo,
   );
 }
 
@@ -153,8 +155,11 @@ export async function maxDeploymentIndexForCompany(
     .select({ idx: deployments.deploymentIndex })
     .from(deployments)
     .where(eq(deployments.companyId, companyId));
-  if (rows.length === 0) return undefined;
-  return Math.max(...rows.map((r) => r.idx));
+  const idxs = rows
+    .map((r) => r.idx)
+    .filter((n): n is number => n !== null);
+  if (idxs.length === 0) return undefined;
+  return Math.max(...idxs);
 }
 
 export async function insertDeployment(

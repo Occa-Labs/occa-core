@@ -82,7 +82,12 @@ async function loadCompanyNodes(
   return new Map(
     rows.map((r) => [
       r.id,
-      { ...r, status: r.status as DeploymentNode["status"] },
+      {
+        ...r,
+        companyId: r.companyId!,
+        deploymentIndex: r.deploymentIndex!,
+        status: r.status as DeploymentNode["status"],
+      },
     ]),
   );
 }
@@ -116,7 +121,12 @@ async function loadDeploymentNode(id: string): Promise<DeploymentNode | null> {
     .where(eq(deployments.id, id))
     .limit(1);
   if (!row) return null;
-  return { ...row, status: row.status as DeploymentNode["status"] };
+  return {
+    ...row,
+    companyId: row.companyId!,
+    deploymentIndex: row.deploymentIndex!,
+    status: row.status as DeploymentNode["status"],
+  };
 }
 
 // Returns whether `requesterId` may delegate work to `targetId`. Walks

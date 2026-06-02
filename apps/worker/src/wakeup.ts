@@ -138,12 +138,12 @@ export async function wakeup(input: WakeupInput): Promise<WakeupResult> {
     // Create a new queued trace.
     const skillsUsed = await snapshotDeploymentSkills(
       input.agentId,
-      agent.companyId,
+      agent.companyId!,
     );
     const [trace] = await tx
       .insert(traces)
       .values({
-        companyId: agent.companyId,
+        companyId: agent.companyId!,
         deploymentId: input.agentId,
         invocationSource: input.source,
         triggerDetail: input.triggerDetail ?? null,

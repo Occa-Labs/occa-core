@@ -125,7 +125,7 @@ async function resolveOwnerAndCompany(
     .where(eq(deployments.id, deploymentId))
     .limit(1);
   if (!row || !row.ownerUserId) return null;
-  return { companyId: row.companyId, ownerUserId: row.ownerUserId };
+  return { companyId: row.companyId!, ownerUserId: row.ownerUserId };
 }
 
 async function persistTransportState(

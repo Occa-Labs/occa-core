@@ -1,9 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertCircle,
   CheckCircle2,
+  HelpCircle,
   Loader2,
   Network,
   Plus,
@@ -11,6 +12,7 @@ import {
   Server,
 } from "lucide-react";
 import { Modal } from "@/components/ui/modal";
+import { FloatingPanel } from "@/components/ui/floating-panel";
 import { Autocomplete } from "@/components/ui/autocomplete";
 import { ApiError, adaptersApi, agentsApi } from "@/lib/api";
 import type {
@@ -68,15 +70,26 @@ export function DeployAgentModal({
   onDeployed,
   agents,
   prefill = null,
+  showBilling = true,
+  showRole = true,
 }: {
   open: boolean;
   onClose: () => void;
   onDeployed: (agentId: string) => void;
   agents: AgentDTO[];
   prefill?: DeployPrefill | null;
+  /** Hide the per-task billing rate. Task rates are a company concern, so
+   *  the personal home's Add-agent flow turns this off. */
+  showBilling?: boolean;
+  /** Hide the org role picker. Role is an org-hierarchy concern; the
+   *  personal home's Add-agent flow turns this off and tags the agent
+   *  "specialist" in metadata. */
+  showRole?: boolean;
 }) {
   const [name, setName] = useState("");
   const [role, setRole] = useState("");
+  // Free-text specialty ("specialist for X"). Intrinsic to the agent.
+  const [persona, setPersona] = useState("");
   // Adapter tab selection. Default to openclaw — matches the onboarding
   // stepper default and keeps post-onboarding muscle memory intact.
   const [adapterType, setAdapterType] = useState<AdapterType>("openclaw");
@@ -111,10 +124,25 @@ export function DeployAgentModal({
   const [spinnerFrame, setSpinnerFrame] = useState(0);
   const [failedAgentId, setFailedAgentId] = useState<string | null>(null);
 
+  // "How to get these" help popover, anchored to the info button next to
+  // the Runtime credentials header. Content switches per adapter.
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [helpRect, setHelpRect] = useState<DOMRect | null>(null);
+  const helpTriggerRef = useRef<HTMLButtonElement>(null);
+  const openHelp = useCallback(() => {
+    setHelpRect(helpTriggerRef.current?.getBoundingClientRect() ?? null);
+    setHelpOpen(true);
+  }, []);
+
+  // When the role picker is hidden (personal home flow), the agent is
+  // tagged "specialist" in metadata and role validation is a no-op.
+  const PERSONAL_DEFAULT_ROLE = "specialist";
+  const effectiveRole = showRole ? role.trim() : PERSONAL_DEFAULT_ROLE;
   const roleValid =
-    role.trim().length > 0 &&
-    /^[a-z0-9_-]+$/.test(role.trim()) &&
-    role.trim().length <= 32;
+    !showRole ||
+    (role.trim().length > 0 &&
+      /^[a-z0-9_-]+$/.test(role.trim()) &&
+      role.trim().length <= 32);
   // Rate is optional. When filled it must parse to a finite non-negative
   // number; empty stays valid (no rate set).
   const taskRateValid =
@@ -151,6 +179,7 @@ export function DeployAgentModal({
     if (open) return;
     setName("");
     setRole("");
+    setPersona("");
     setAdapterType("openclaw");
     setGatewayUrl("");
     setApiKey("");
@@ -264,7 +293,8 @@ export function DeployAgentModal({
       const res = await agentsApi.createStream(
         {
           name: name.trim(),
-          role: role.trim(),
+          role: effectiveRole,
+          persona: persona.trim() || null,
           adapterType,
           adapterConfig,
           parentAgentId: parentAgentId || null,
@@ -385,30 +415,49 @@ export function DeployAgentModal({
                 className="w-full rounded-xl bg-white/5 ring-1 ring-inset ring-white/10 focus:ring-white/22 focus:outline-none px-3.5 py-2.5 text-[13px] text-white/85 placeholder:text-white/22 transition disabled:opacity-50"
               />
             </div>
-            <Autocomplete
-              label="Role"
-              value={role}
-              onChange={(v) =>
-                setRole(v.toLowerCase().replace(/[^a-z0-9_-]/g, ""))
-              }
-              onSelect={(opt) => setRole(opt.value)}
-              options={ROLE_ORDER.map((r) => ({
-                value: r,
-                description: ROLE_LABELS[r] ?? r,
-                disabled:
-                  CSUITE_ROLES.has(r) && agents.some((a) => a.role === r),
-              }))}
-              placeholder="ceo, eng, researcher…"
-              disabled={busy}
-              error={
-                role && !roleValid
-                  ? "Lowercase letters, numbers, _ and - only (max 32 chars)"
-                  : undefined
-              }
-            />
+            <div>
+              <span className="text-[11px] text-white/50 mb-1.5 block">
+                Specialist for{" "}
+                <span className="text-white/30">
+                  (what this agent is good at — shapes its skills + behavior)
+                </span>
+              </span>
+              <textarea
+                value={persona}
+                onChange={(e) => setPersona(e.target.value)}
+                placeholder="e.g. crypto market research, Solidity audits, growth copywriting…"
+                rows={2}
+                disabled={busy}
+                className="w-full resize-none rounded-xl bg-white/5 ring-1 ring-inset ring-white/10 focus:ring-white/22 focus:outline-none px-3.5 py-2.5 text-[13px] text-white/85 placeholder:text-white/22 transition disabled:opacity-50"
+              />
+            </div>
+            {showRole && (
+              <Autocomplete
+                label="Role"
+                value={role}
+                onChange={(v) =>
+                  setRole(v.toLowerCase().replace(/[^a-z0-9_-]/g, ""))
+                }
+                onSelect={(opt) => setRole(opt.value)}
+                options={ROLE_ORDER.map((r) => ({
+                  value: r,
+                  description: ROLE_LABELS[r] ?? r,
+                  disabled:
+                    CSUITE_ROLES.has(r) && agents.some((a) => a.role === r),
+                }))}
+                placeholder="ceo, eng, researcher…"
+                disabled={busy}
+                error={
+                  role && !roleValid
+                    ? "Lowercase letters, numbers, _ and - only (max 32 chars)"
+                    : undefined
+                }
+              />
+            )}
             {/* Parent picker — only when active candidates exist + role
                 is not CEO. Blank = auto-resolve from catalog. */}
-            {role !== "ceo" &&
+            {showRole &&
+              role !== "ceo" &&
               agents.filter((a) => a.status === "active" && a.role !== role)
                 .length > 0 && (
                 <label className="block">
@@ -452,40 +501,46 @@ export function DeployAgentModal({
         </section>
 
         {/* Divider */}
-        <div style={{ height: "1px", background: "rgba(255,255,255,0.06)" }} />
+        {showBilling && (
+          <>
+            <div
+              style={{ height: "1px", background: "rgba(255,255,255,0.06)" }}
+            />
 
-        {/* Billing */}
-        <section className="space-y-3">
-          <h3 className="text-[10px] uppercase tracking-widest text-white/30 font-semibold">
-            Billing
-          </h3>
-          <label className="block">
-            <span className="text-[11px] text-white/50 mb-1.5 block">
-              Task rate{" "}
-              <span className="text-white/30">
-                (optional — SOL invoiced per completed task)
-              </span>
-            </span>
-            <div className="relative">
-              <input
-                value={taskRateSol}
-                onChange={(e) =>
-                  setTaskRateSol(e.target.value.replace(/[^0-9.]/g, ""))
-                }
-                placeholder="0.05"
-                inputMode="decimal"
-                disabled={busy}
-                className="w-full rounded-xl bg-white/5 ring-1 ring-inset ring-white/10 focus:ring-white/22 focus:outline-none px-3.5 py-2.5 pr-14 text-[13px] text-white/85 placeholder:text-white/22 transition disabled:opacity-50 font-mono"
-              />
-              <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-[12px] text-white/35 font-medium">
-                SOL
-              </span>
-            </div>
-            <span className="text-[11px] text-white/30 mt-1.5 block">
-              Leave blank to set later from the agent&apos;s Wallet tab.
-            </span>
-          </label>
-        </section>
+            {/* Billing */}
+            <section className="space-y-3">
+              <h3 className="text-[10px] uppercase tracking-widest text-white/30 font-semibold">
+                Billing
+              </h3>
+              <label className="block">
+                <span className="text-[11px] text-white/50 mb-1.5 block">
+                  Task rate{" "}
+                  <span className="text-white/30">
+                    (optional — SOL invoiced per completed task)
+                  </span>
+                </span>
+                <div className="relative">
+                  <input
+                    value={taskRateSol}
+                    onChange={(e) =>
+                      setTaskRateSol(e.target.value.replace(/[^0-9.]/g, ""))
+                    }
+                    placeholder="0.05"
+                    inputMode="decimal"
+                    disabled={busy}
+                    className="w-full rounded-xl bg-white/5 ring-1 ring-inset ring-white/10 focus:ring-white/22 focus:outline-none px-3.5 py-2.5 pr-14 text-[13px] text-white/85 placeholder:text-white/22 transition disabled:opacity-50 font-mono"
+                  />
+                  <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-[12px] text-white/35 font-medium">
+                    SOL
+                  </span>
+                </div>
+                <span className="text-[11px] text-white/30 mt-1.5 block">
+                  Leave blank to set later from the agent&apos;s Wallet tab.
+                </span>
+              </label>
+            </section>
+          </>
+        )}
 
         {/* Divider */}
         <div style={{ height: "1px", background: "rgba(255,255,255,0.06)" }} />
@@ -515,6 +570,21 @@ export function DeployAgentModal({
               />
             </div>
           </div>
+
+          {/* Visible help trigger — sits right where the user enters the
+              creds so it actually gets noticed, not a tiny header icon. */}
+          <button
+            ref={helpTriggerRef}
+            type="button"
+            onClick={openHelp}
+            className="flex w-full items-center gap-1.5 rounded-lg px-3 py-2 text-[11.5px] text-white/45 transition-colors hover:bg-white/5 hover:text-white/75"
+            style={{ border: "1px dashed rgba(255,255,255,0.10)" }}
+          >
+            <HelpCircle className="size-3.5 shrink-0" />
+            Where do I find the {adapterType === "openclaw" ? "OpenClaw" : "Hermes"}{" "}
+            Gateway URL and API key?
+          </button>
+
           {adapterType === "openclaw" ? (
             <div className="space-y-2.5">
               <label className="block">
@@ -683,7 +753,146 @@ export function DeployAgentModal({
           </div>
         )}
       </div>
+
+      {helpOpen && (
+        <FloatingPanel
+          title={
+            adapterType === "openclaw"
+              ? "OpenClaw credentials"
+              : "Hermes credentials"
+          }
+          subtitle="Where to get the URL + key"
+          triggerRect={helpRect}
+          width={420}
+          zIndex={300}
+          backdrop="transparent"
+          onClose={() => setHelpOpen(false)}
+        >
+          <AdapterCredsHelp adapter={adapterType} />
+        </FloatingPanel>
+      )}
     </Modal>
+  );
+}
+
+function C({ children }: { children: React.ReactNode }) {
+  return (
+    <code className="rounded bg-white/8 px-1 py-0.5 font-mono text-[11px] text-white/75">
+      {children}
+    </code>
+  );
+}
+
+function HelpField({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-white/65">
+        {label}
+      </p>
+      <div className="space-y-1.5 text-[12px] leading-relaxed text-white/50">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function AdapterCredsHelp({ adapter }: { adapter: AdapterType }) {
+  if (adapter === "openclaw") {
+    return (
+      <div className="space-y-4 px-4 py-4">
+        <p className="text-[12px] leading-relaxed text-white/45">
+          OpenClaw is a self-hosted runtime (protocol-v3 over WebSocket, with
+          Ed25519 device auth). You run the gateway; OCCA connects to it and
+          owns identity, context, and orchestration.
+        </p>
+
+        <HelpField label="Gateway URL">
+          <p>
+            The gateway&apos;s public WebSocket endpoint, always{" "}
+            <C>wss://</C> (TLS). The OpenClaw daemon binds a loopback port (
+            <C>gateway.port</C> in <C>~/.openclaw/openclaw.json</C>, default{" "}
+            <C>18789</C>); you front it with Caddy or nginx + a TLS cert so it
+            is reachable as <C>wss://your-host</C>.
+          </p>
+          <p>
+            OCCA hosted gateway: <C>wss://gateway.occa.team</C>.
+          </p>
+        </HelpField>
+
+        <HelpField label="API key">
+          <p>
+            The bearer token from <C>~/.openclaw/openclaw.json</C> on the
+            gateway box. It scopes the session that OCCA opens. One gateway can
+            host many agents on the same token.
+          </p>
+        </HelpField>
+
+        <HelpField label="What happens on Deploy">
+          <p>
+            On first deploy OCCA generates an Ed25519 device keypair and runs
+            the <C>device.pair</C> flow against the gateway, then provisions the
+            agent (<C>openclawAgentId</C>) and seeds its workspace. The keypair
+            + device token are persisted and reused, so later deploys skip
+            re-pairing. If your gateway requires manual pairing approval,
+            approve the pending device once on the gateway side.
+          </p>
+        </HelpField>
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-4 px-4 py-4">
+      <p className="text-[12px] leading-relaxed text-white/45">
+        Hermes (Nous Research) is driven over an OpenAI-compatible HTTP
+        gateway. OCCA holds a public HTTPS URL + bearer and calls{" "}
+        <C>/v1/chat/completions</C> per agent turn. One box serves many agents.
+      </p>
+
+      <HelpField label="Gateway URL">
+        <p>
+          The public <C>https://</C> URL fronting the Hermes API server (
+          <C>https://</C>, not OpenClaw&apos;s <C>wss://</C>).
+        </p>
+        <p>
+          On the VPS, enable it in <C>~/.hermes/.env</C>:{" "}
+          <C>API_SERVER_ENABLED=true</C>, <C>HOST=127.0.0.1</C>,{" "}
+          <C>PORT=8642</C>, run <C>hermes gateway</C>, then front it with Caddy
+          (<C>reverse_proxy localhost:8642</C>) + TLS. Result:{" "}
+          <C>https://your-host</C>.
+        </p>
+        <p>
+          OCCA hosted box: <C>https://hermes.occa.team</C>.
+        </p>
+      </HelpField>
+
+      <HelpField label="API key">
+        <p>
+          The <C>API_SERVER_KEY</C> value you set in <C>~/.hermes/.env</C>,
+          sent as <C>Authorization: Bearer</C>. OCCA&apos;s probe hits{" "}
+          <C>GET /v1/capabilities</C> with it to verify the connection.
+        </p>
+        <p>
+          To rotate: change <C>API_SERVER_KEY</C> on the VPS, restart{" "}
+          <C>hermes-gateway.service</C>, then use Rotate bearer on each Hermes
+          deployment.
+        </p>
+      </HelpField>
+
+      <HelpField label="Multi-agent on one box">
+        <p>
+          Many OCCA agents can share one Hermes URL + key. They are isolated by
+          a per-agent session key (<C>agent:&lt;id&gt;:task:&lt;id&gt;</C>),
+          which scopes both conversation history and long-term memory. Saves
+          you running a box per agent.
+        </p>
+      </HelpField>
+    </div>
   );
 }
 

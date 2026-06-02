@@ -75,7 +75,7 @@ export async function loadIdentity(
       coverageExcluded: companyProfile.coverageExcluded,
     })
     .from(companyProfile)
-    .where(eq(companyProfile.companyId, head.companyId))
+    .where(eq(companyProfile.companyId, head.companyId!))
     .limit(1);
 
   const profile: ContextCompanyProfile = profileRow
@@ -98,7 +98,7 @@ export async function loadIdentity(
     tier: getTier(head.agentRole) ?? "unknown",
   };
   const company: ContextCompany = {
-    id: head.companyId,
+    id: head.companyId!,
     name: head.companyName,
     profile,
   };

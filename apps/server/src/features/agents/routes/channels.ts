@@ -254,7 +254,7 @@ router.post(
     }
     const kind = String(req.body?.kind ?? "treasury_readiness");
     const row = await emitNotification({
-      companyId: deployment.companyId,
+      companyId: deployment.companyId!,
       userId: req.user!.userId,
       kind,
       title:
