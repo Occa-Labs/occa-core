@@ -4,7 +4,7 @@
 // Runtime/ephemeral fields (provisioning state, adapter config, desired
 // skills) live in `agent_runtime_profile` — see ./agent-runtime-profile.
 
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, or } from "drizzle-orm";
 import { agentIdentities, companies, deployments } from "@occa/shared/schema";
 import { getTier } from "@occa/shared/role-catalog";
 import { db } from "../../../infra/database/client";
@@ -62,6 +62,38 @@ export async function findOwnedByUserId(args: {
       and(
         eq(deployments.id, args.deploymentId),
         eq(agentIdentities.ownerUserId, args.userId),
+      ),
+    )
+    .limit(1);
+  return row?.deployments;
+}
+
+// Resolve a deployment the user may ACCESS at the deployment level: either
+// they own the agent identity, OR the agent is deployed to a company they
+// own. The second arm covers cross-owner marketplace hires — the hiring
+// company operates the deployment (read wallet/invoices, reparent, pause,
+// retire, configure skills/tools/channels) even though they don't own the
+// identity. IDENTITY-level mutations (rename, receiving wallet, marketplace
+// availability) stay owner-scoped via findOwnedByUserId.
+export async function findAccessibleByUserId(args: {
+  userId: string;
+  deploymentId: string;
+}): Promise<DeploymentRow | undefined> {
+  const [row] = await db
+    .select()
+    .from(deployments)
+    .innerJoin(
+      agentIdentities,
+      eq(deployments.agentIdentityId, agentIdentities.id),
+    )
+    .leftJoin(companies, eq(deployments.companyId, companies.id))
+    .where(
+      and(
+        eq(deployments.id, args.deploymentId),
+        or(
+          eq(agentIdentities.ownerUserId, args.userId),
+          eq(companies.ownerUserId, args.userId),
+        ),
       ),
     )
     .limit(1);

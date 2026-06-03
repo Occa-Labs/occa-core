@@ -22,7 +22,7 @@ import {
   buildUpdateOperationsCapabilityInstruction,
   deriveOperationsPda,
   type OperationsKind,
-} from "occa-sdk";
+} from "@occa/sdk";
 import { childLogger } from "../../../lib/logger";
 import { requireAuth } from "../../../middleware/auth";
 import { findOwnedById as findOwnedCompanyById } from "../../companies/repositories/companies";

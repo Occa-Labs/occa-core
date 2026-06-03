@@ -8,7 +8,7 @@ import {
   TREASURY_PROGRAM_ID,
   deriveOperationsPda,
   type OperationsKind,
-} from "occa-sdk";
+} from "@occa/sdk";
 import { getConnection } from "../../../infra/solana/connection";
 import { childLogger } from "../../../lib/logger";
 

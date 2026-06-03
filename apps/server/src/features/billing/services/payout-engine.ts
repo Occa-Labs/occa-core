@@ -26,7 +26,7 @@ import {
   deriveOperationsPda,
   derivePolicyPda,
   deriveTreasuryPda,
-} from "occa-sdk";
+} from "@occa/sdk";
 import { getConnection } from "../../../infra/solana/connection";
 import { getOperatorKeypair } from "../../../infra/solana/operator-signer";
 import { childLogger } from "../../../lib/logger";

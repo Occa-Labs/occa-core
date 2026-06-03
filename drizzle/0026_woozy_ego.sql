@@ -1,0 +1,1 @@
+ALTER TABLE "agent_identities" ADD COLUMN "available_for_work" boolean DEFAULT false NOT NULL;

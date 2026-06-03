@@ -1,5 +1,7 @@
 import type {
   AgentResponse,
+  MarketplaceAgentsResponse,
+  MarketplaceInvitesResponse,
   AgentSkillSyncAction,
   ApprovalDTO,
   ApprovalStatus,
@@ -279,23 +281,23 @@ export interface ConfirmIdentityOnChainResponse {
   chainTxSignature: string | null;
 }
 
-export interface PrepareSetOperatingWalletRequest {
-  operatingWallet: string;
+export interface PrepareSetReceivingAddressRequest {
+  receivingAddress: string;
 }
 
-export interface PrepareSetOperatingWalletResponse extends PreparedTx {
-  operatingWallet: string;
+export interface PrepareSetReceivingAddressResponse extends PreparedTx {
+  receivingAddress: string;
 }
 
-export interface ConfirmSetOperatingWalletRequest {
+export interface ConfirmSetReceivingAddressRequest {
   signedTransaction: string;
   blockhash: string;
   lastValidBlockHeight: number;
-  operatingWallet: string;
+  receivingAddress: string;
 }
 
-export interface ConfirmSetOperatingWalletResponse {
-  operatingWallet: string;
+export interface ConfirmSetReceivingAddressResponse {
+  receivingAddress: string;
   signature: string;
 }
 
@@ -326,6 +328,29 @@ export const chainApi = {
       `/api/chain/agent-identities/${identityId}/register/confirm`,
       { method: "POST", body: JSON.stringify(body) },
     ),
+  prepareAgentReceivingAddress: (identityId: string, receivingAddress: string) =>
+    request<{
+      transaction: string;
+      blockhash: string;
+      lastValidBlockHeight: number;
+      receivingAddress: string;
+    }>(`/api/chain/agent-identities/${identityId}/receiving-address/prepare`, {
+      method: "POST",
+      body: JSON.stringify({ receivingAddress }),
+    }),
+  confirmAgentReceivingAddress: (
+    identityId: string,
+    body: {
+      signedTransaction: string;
+      blockhash: string;
+      lastValidBlockHeight: number;
+      receivingAddress: string;
+    },
+  ) =>
+    request<{ receivingAddress: string; signature: string }>(
+      `/api/chain/agent-identities/${identityId}/receiving-address/confirm`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
   prepareAgent: (agentId: string) =>
     request<PrepareAgentOnChainResponse>(
       `/api/chain/agents/${agentId}/register/prepare`,
@@ -349,20 +374,20 @@ export const chainApi = {
       `/api/chain/agents/${agentId}/register-combined/confirm`,
       { method: "POST", body: JSON.stringify(body) },
     ),
-  prepareSetOperatingWallet: (
+  prepareSetReceivingAddress: (
     agentId: string,
-    body: PrepareSetOperatingWalletRequest,
+    body: PrepareSetReceivingAddressRequest,
   ) =>
-    request<PrepareSetOperatingWalletResponse>(
-      `/api/chain/agents/${agentId}/operating-wallet/prepare`,
+    request<PrepareSetReceivingAddressResponse>(
+      `/api/chain/agents/${agentId}/receiving-address/prepare`,
       { method: "POST", body: JSON.stringify(body) },
     ),
-  confirmSetOperatingWallet: (
+  confirmSetReceivingAddress: (
     agentId: string,
-    body: ConfirmSetOperatingWalletRequest,
+    body: ConfirmSetReceivingAddressRequest,
   ) =>
-    request<ConfirmSetOperatingWalletResponse>(
-      `/api/chain/agents/${agentId}/operating-wallet/confirm`,
+    request<ConfirmSetReceivingAddressResponse>(
+      `/api/chain/agents/${agentId}/receiving-address/confirm`,
       { method: "POST", body: JSON.stringify(body) },
     ),
   getTreasury: (companyId: string) =>
@@ -833,6 +858,11 @@ export const agentsApi = {
     request<AgentResponse>(`/api/agents/${id}/pause`, { method: "POST" }),
   activate: (id: string) =>
     request<AgentResponse>(`/api/agents/${id}/activate`, { method: "POST" }),
+  setAvailability: (id: string, available: boolean) =>
+    request<AgentResponse>(`/api/agents/${id}/availability`, {
+      method: "POST",
+      body: JSON.stringify({ available }),
+    }),
   rotateBearer: (id: string, apiKey: string) =>
     request<{ ok: boolean; latencyMs: number }>(
       `/api/agents/${id}/adapter/rotate-bearer`,
@@ -1095,6 +1125,47 @@ export const agentsApi = {
       `/api/agents/${id}/activity${qs ? `?${qs}` : ""}`,
     );
   },
+};
+
+export const marketplaceApi = {
+  listAgents: () =>
+    request<MarketplaceAgentsResponse>("/api/marketplace/agents"),
+  createInvite: (targetIdentityId: string, role: string) =>
+    request<{ inviteId: string }>("/api/marketplace/invites", {
+      method: "POST",
+      body: JSON.stringify({ targetIdentityId, role }),
+    }),
+  listIncomingInvites: () =>
+    request<MarketplaceInvitesResponse>("/api/marketplace/invites/incoming"),
+  listOutgoingInvites: () =>
+    request<MarketplaceInvitesResponse>("/api/marketplace/invites/outgoing"),
+  rejectInvite: (id: string) =>
+    request<{ ok: boolean }>(`/api/marketplace/invites/${id}/reject`, {
+      method: "POST",
+    }),
+  prepareAcceptInvite: (id: string) =>
+    request<{
+      transaction: string;
+      blockhash: string;
+      lastValidBlockHeight: number;
+      deploymentIndex: number;
+    }>(`/api/marketplace/invites/${id}/accept/prepare`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
+  confirmAcceptInvite: (
+    id: string,
+    body: {
+      signedTransaction: string;
+      blockhash: string;
+      lastValidBlockHeight: number;
+      deploymentIndex: number;
+    },
+  ) =>
+    request<{ deploymentId: string; signature: string }>(
+      `/api/marketplace/invites/${id}/accept/confirm`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
 };
 
 export const tracesApi = {

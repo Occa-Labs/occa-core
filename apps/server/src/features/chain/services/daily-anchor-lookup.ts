@@ -9,7 +9,7 @@
 
 import { PublicKey } from "@solana/web3.js";
 import { eq, inArray } from "drizzle-orm";
-import { ACCOUNT_DISCRIMINATOR, REGISTRY_PROGRAM_ID } from "occa-sdk";
+import { ACCOUNT_DISCRIMINATOR, REGISTRY_PROGRAM_ID } from "@occa/sdk";
 import { getConnection } from "../../../infra/solana/connection";
 import { childLogger } from "../../../lib/logger";
 import { db } from "../../../infra/database/client";

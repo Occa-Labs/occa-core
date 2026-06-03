@@ -22,7 +22,7 @@ import {
   derivePolicyPda,
   deriveOperationsPda,
   deriveTreasuryPda,
-} from "occa-sdk";
+} from "@occa/sdk";
 import { db } from "../../../infra/database/client";
 import { deployments } from "@occa/shared/schema";
 import { getConnection } from "../../../infra/solana/connection";

@@ -6,7 +6,7 @@ import {
   deriveCompanyPda,
   deriveDeploymentPda,
   type DeploymentStatus,
-} from "occa-sdk";
+} from "@occa/sdk";
 import { getConnection } from "../../../infra/solana/connection";
 import { childLogger } from "../../../lib/logger";
 
@@ -264,6 +264,8 @@ export interface OnChainAgentIdentity {
   identityPda: PublicKey;
   agentPubkey: PublicKey;
   owner: PublicKey;
+  /** Personal receiving wallet (v2 layout). `PublicKey.default` = unset. */
+  receivingAddress: PublicKey;
   name: string;
   metadataUri: string;
   metadataHash: Buffer;
@@ -294,12 +296,21 @@ export async function fetchAgentIdentity(
     c.skip(1); // version
     const agentPubkey = c.readPubkey();
     const owner = c.readPubkey();
+    const receivingAddress = c.readPubkey(); // v2: personal receiving wallet
     c.skip(8); // created_at
     c.skip(8); // updated_at
     const name = c.readString();
     const metadataUri = c.readString();
     const metadataHash = c.readBytes32();
-    return { identityPda, agentPubkey, owner, name, metadataUri, metadataHash };
+    return {
+      identityPda,
+      agentPubkey,
+      owner,
+      receivingAddress,
+      name,
+      metadataUri,
+      metadataHash,
+    };
   } catch (err) {
     log.error(
       { pda: identityPda.toBase58(), err },
@@ -317,7 +328,7 @@ export interface OnChainDeployment {
   company: PublicKey;
   deploymentIndex: number;
   owner: PublicKey;
-  operatingWallet: PublicKey;
+  receivingAddress: PublicKey;
   adapterId: PublicKey;
   role: string;
   parentDeploymentIndex: number | null;
@@ -353,7 +364,7 @@ export async function fetchDeployment(
     const company = c.readPubkey();
     const deploymentIndex = c.readU32();
     const owner = c.readPubkey();
-    const operatingWallet = c.readPubkey();
+    const receivingAddress = c.readPubkey();
     const adapterId = c.readPubkey();
     const role = c.readString();
     const parentDeploymentIndex = c.readOptionU32();
@@ -374,7 +385,7 @@ export async function fetchDeployment(
       company,
       deploymentIndex,
       owner,
-      operatingWallet,
+      receivingAddress,
       adapterId,
       role,
       parentDeploymentIndex,
@@ -426,7 +437,7 @@ export async function listDeploymentsByCompany(
       const company = c.readPubkey();
       const deploymentIndex = c.readU32();
       const owner = c.readPubkey();
-      const operatingWallet = c.readPubkey();
+      const receivingAddress = c.readPubkey();
       const adapterId = c.readPubkey();
       const role = c.readString();
       const parentDeploymentIndex = c.readOptionU32();
@@ -445,7 +456,7 @@ export async function listDeploymentsByCompany(
         company,
         deploymentIndex,
         owner,
-        operatingWallet,
+        receivingAddress,
         adapterId,
         role,
         parentDeploymentIndex,

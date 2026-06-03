@@ -8,9 +8,145 @@
   },
   "instructions": [
     {
+      "name": "commit_daily_anchor",
+      "docs": [
+        "Commit a daily Merkle root anchor for a deployment's task hashes.",
+        "",
+        "Per Whitepaper §2 trace architecture: per-task records live off-chain",
+        "in OCCA's database; this anchor proves OCCA didn't tamper with that",
+        "day's task list. Anyone can re-hash off-chain records and verify",
+        "against `merkle_root`.",
+        "",
+        "Seeds: `[\"daily_anchor\", deployment_pda, day_unix_le_i64]`.",
+        "PDA collision = at most one anchor per (deployment, day). Re-attempts",
+        "on the same key fail naturally (Anchor `init` rejects).",
+        "",
+        "Authorization: signed by the Anchor Wallet registered as",
+        "`OperationsAccount[Anchor]` in the treasury program. The signer",
+        "pubkey must equal `operations.signer`; this ix's discriminator must",
+        "be in `operations.action_whitelist`. The OperationsAccount is",
+        "resolved via cross-program PDA lookup (`seeds::program = treasury::ID`).",
+        "",
+        "Phase 1 rate limit: NOT enforced. Registry cannot mutate the",
+        "treasury-owned OperationsAccount's `signatures_this_period` counter",
+        "without an extra CPI. PDA collision (one per deployment+day) provides",
+        "natural deduplication; rent burn (~0.002 SOL each) caps griefing.",
+        "If a stronger rate limit becomes necessary, add a treasury CPI ix",
+        "`tick_anchor_signature` and wire it here."
+      ],
+      "discriminator": [
+        18,
+        7,
+        3,
+        65,
+        58,
+        148,
+        164,
+        0
+      ],
+      "accounts": [
+        {
+          "name": "deployment",
+          "docs": [
+            "Deployment whose task stream this anchor covers."
+          ]
+        },
+        {
+          "name": "company",
+          "docs": [
+            "CompanyAccount referenced by deployment. Verified via",
+            "`deployment.company == company.key()` constraint in handler so we",
+            "can also resolve the OperationsAccount[Anchor] PDA."
+          ]
+        },
+        {
+          "name": "anchor_signer",
+          "docs": [
+            "Anchor Wallet — pubkey verified against `operations.signer`."
+          ],
+          "signer": true
+        },
+        {
+          "name": "operations",
+          "docs": [
+            "`OperationsAccount[Anchor]` from treasury program. Resolved via",
+            "cross-program PDA derivation. Anchor `Account<T>` auto-verifies",
+            "owner = treasury::ID via `OperationsAccount`'s `Owner` impl."
+          ]
+        },
+        {
+          "name": "daily_anchor",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  97,
+                  105,
+                  108,
+                  121,
+                  95,
+                  97,
+                  110,
+                  99,
+                  104,
+                  111,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "deployment"
+              },
+              {
+                "kind": "arg",
+                "path": "day_unix"
+              }
+            ]
+          }
+        },
+        {
+          "name": "payer",
+          "docs": [
+            "Pays rent for the DailyAnchorAccount PDA."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "day_unix",
+          "type": "i64"
+        },
+        {
+          "name": "merkle_root",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "task_count",
+          "type": "u32"
+        }
+      ]
+    },
+    {
       "name": "create_company",
       "docs": [
-        "Create a new CompanyAccount PDA.",
+        "Create a new CompanyAccount PDA + atomically initialize its",
+        "TreasuryAccount + PolicyAccount via CPI to the treasury program.",
+        "Per design §6: company creation never leaves a window where treasury",
+        "pointers are unset; any failure rolls back the entire transaction.",
         "",
         "Seeds: `[\"company\", owner, nonce_le_u32]`"
       ],
@@ -63,10 +199,32 @@
         {
           "name": "payer",
           "docs": [
-            "Pays rent. Typically the operator hot wallet (sponsored UX)."
+            "Pays rent for company + treasury + policy PDAs."
           ],
           "writable": true,
           "signer": true
+        },
+        {
+          "name": "treasury",
+          "docs": [
+            "TreasuryAccount PDA — created by `treasury::init_treasury` CPI in",
+            "the handler. Seed/owner verification happens inside that program."
+          ],
+          "writable": true
+        },
+        {
+          "name": "policy",
+          "docs": [
+            "PolicyAccount PDA — created by `treasury::init_treasury` CPI."
+          ],
+          "writable": true
+        },
+        {
+          "name": "treasury_program",
+          "docs": [
+            "Treasury program — invoked via CPI to atomically init treasury+policy."
+          ],
+          "address": "occaxyVLnurdjedWCBPrvDCCto8wGYadtTZ3nAmcVzh"
         },
         {
           "name": "system_program",
@@ -128,23 +286,29 @@
       ],
       "accounts": [
         {
-          "name": "company"
+          "name": "company",
+          "docs": [
+            "Company the agent is being deployed into. Referenced only — the",
+            "company owner's consent to the hire is captured off-chain (the",
+            "invite), so the company owner is NOT a required signer here."
+          ]
         },
         {
           "name": "identity",
           "docs": [
-            "AgentIdentity to deploy. Phase 1: must be owned by the same",
-            "wallet as the company (enforced in handler)."
+            "AgentIdentity being deployed. The IDENTITY owner signs — deploying",
+            "an agent (incl. into another owner's company, the marketplace case)",
+            "is authorized by the agent's owner accepting."
           ]
         },
         {
           "name": "owner",
           "docs": [
-            "Company owner (signer). Authority for state changes."
+            "Agent owner (signer) — authorizes deploying THEIR agent."
           ],
           "signer": true,
           "relations": [
-            "company"
+            "identity"
           ]
         },
         {
@@ -351,20 +515,60 @@
       "args": []
     },
     {
-      "name": "set_operating_wallet",
+      "name": "set_agent_receiving_address",
       "docs": [
-        "Set or replace the deployment's operating wallet. Pass",
-        "`Pubkey::default()` to clear. Owner-only."
+        "Set or replace the agent's PERSONAL receiving wallet — the passive",
+        "destination for funds disbursed to this agent, intrinsic to the",
+        "identity (no company/deployment required). Pass `Pubkey::default()`",
+        "to clear. Identity-owner only. NEVER a signer — it only receives."
       ],
       "discriminator": [
-        20,
-        151,
-        94,
-        114,
-        217,
-        30,
-        52,
-        132
+        197,
+        126,
+        122,
+        18,
+        38,
+        62,
+        179,
+        218
+      ],
+      "accounts": [
+        {
+          "name": "identity",
+          "writable": true
+        },
+        {
+          "name": "owner",
+          "signer": true,
+          "relations": [
+            "identity"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "new_receiving_address",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "set_receiving_address",
+      "docs": [
+        "Set or replace the deployment's receiving address — the passive",
+        "destination wallet that funds disbursed *to* this agent land in.",
+        "Pass `Pubkey::default()` to clear. Owner-only. NEVER a signer:",
+        "this address does not authorize on-chain actions, it only receives."
+      ],
+      "discriminator": [
+        70,
+        63,
+        44,
+        87,
+        16,
+        6,
+        156,
+        200
       ],
       "accounts": [
         {
@@ -381,7 +585,7 @@
       ],
       "args": [
         {
-          "name": "new_operating_wallet",
+          "name": "new_receiving_address",
           "type": "pubkey"
         }
       ]
@@ -638,6 +842,19 @@
       ]
     },
     {
+      "name": "DailyAnchorAccount",
+      "discriminator": [
+        218,
+        106,
+        107,
+        94,
+        194,
+        48,
+        111,
+        254
+      ]
+    },
+    {
       "name": "Deployment",
       "discriminator": [
         66,
@@ -701,6 +918,56 @@
       "code": 6009,
       "name": "IdentityOwnerMismatch",
       "msg": "identity owner does not match company owner"
+    },
+    {
+      "code": 6010,
+      "name": "EmptyAnchor",
+      "msg": "daily anchor must cover at least one task"
+    },
+    {
+      "code": 6011,
+      "name": "InvalidDayBoundary",
+      "msg": "day_unix must be > 0 and aligned to 00:00:00 UTC (multiple of 86400)"
+    },
+    {
+      "code": 6012,
+      "name": "FutureAnchor",
+      "msg": "daily anchor cannot be for a future day"
+    },
+    {
+      "code": 6013,
+      "name": "DeploymentNotActive",
+      "msg": "deployment must be active to commit anchor"
+    },
+    {
+      "code": 6014,
+      "name": "CompanyMismatch",
+      "msg": "deployment.company does not match passed company account"
+    },
+    {
+      "code": 6015,
+      "name": "OperationsRevoked",
+      "msg": "operations account is revoked"
+    },
+    {
+      "code": 6016,
+      "name": "OperationsExpired",
+      "msg": "operations account is past its expiry"
+    },
+    {
+      "code": 6017,
+      "name": "WrongOperationsKind",
+      "msg": "operations account kind does not match instruction expectation"
+    },
+    {
+      "code": 6018,
+      "name": "DiscriminatorNotWhitelisted",
+      "msg": "instruction discriminator is not whitelisted on operations account"
+    },
+    {
+      "code": 6019,
+      "name": "InvalidDiscriminator",
+      "msg": "could not parse instruction discriminator"
     }
   ],
   "types": [
@@ -727,6 +994,18 @@
             "name": "owner",
             "docs": [
               "Owning user wallet. Immutable — set at mint and never changes."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "receiving_address",
+            "docs": [
+              "The agent's PERSONAL receiving wallet — a passive destination for",
+              "funds disbursed to this agent, intrinsic to the identity (like a",
+              "person's bank account). Owner-set anytime via",
+              "`set_agent_receiving_address`, independent of any company/deployment.",
+              "At `create_deployment` the deployment's `receiving_address` defaults",
+              "to this. `Pubkey::default()` = unset. NEVER a signer."
             ],
             "type": "pubkey"
           },
@@ -880,6 +1159,86 @@
       }
     },
     {
+      "name": "DailyAnchorAccount",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "version",
+            "docs": [
+              "Schema version."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "deployment",
+            "docs": [
+              "Deployment whose task stream this anchor covers."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "company",
+            "docs": [
+              "CompanyAccount the deployment belongs to (denormalized for fast",
+              "indexing — avoids a deployment-account fetch on read)."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "day_unix",
+            "docs": [
+              "Unix timestamp of 00:00:00 UTC for the day this anchor covers.",
+              "Aligned by `day_unix % 86_400 == 0` constraint at commit time."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "merkle_root",
+            "docs": [
+              "Merkle root over that day's task hashes (off-chain DB)."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "task_count",
+            "docs": [
+              "Number of leaves (tasks) in the Merkle tree. Must be > 0 — empty",
+              "days produce no anchor (§2)."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "committed_at",
+            "docs": [
+              "Unix timestamp when this commit landed on-chain."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "committed_by",
+            "docs": [
+              "Anchor Wallet pubkey that signed the commit. Mirror of",
+              "`OperationsAccount[Anchor].signer` at commit time."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "bump",
+            "docs": [
+              "Bump for PDA verification."
+            ],
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
       "name": "Deployment",
       "type": {
         "kind": "struct",
@@ -920,10 +1279,14 @@
             "type": "pubkey"
           },
           {
-            "name": "operating_wallet",
+            "name": "receiving_address",
             "docs": [
-              "Externally-provided wallet for agent-side transactions.",
-              "Pubkey::default() = unset."
+              "Passive destination wallet for funds disbursed *to* this agent",
+              "(Agent Receiving Address per Whitepaper §8.2 v0.10). NOT a signer",
+              "— never authorizes on-chain actions. Treasury disburse instructions",
+              "match against this field to identify intra-company transfers and",
+              "deduct the Agent Operating Fee. `Pubkey::default()` = unset",
+              "(disbursements to this deployment will fail until set)."
             ],
             "type": "pubkey"
           },
@@ -997,6 +1360,109 @@
                 32
               ]
             }
+          }
+        ]
+      }
+    },
+    {
+      "name": "OperationsAccount",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "version",
+            "type": "u8"
+          },
+          {
+            "name": "company",
+            "type": "pubkey"
+          },
+          {
+            "name": "kind",
+            "docs": [
+              "What kind of operations key this is (Disbursement | Anchor).",
+              "Also encoded into the PDA seed so each company can host one of each."
+            ],
+            "type": {
+              "defined": {
+                "name": "OperationsKind"
+              }
+            }
+          },
+          {
+            "name": "signer",
+            "docs": [
+              "Pubkey of the registered wallet:",
+              "• Disbursement: operator-held only — OCCA never holds the privkey.",
+              "• Anchor: shared session key — operator + OCCA both hold privkey,",
+              "either can sign `commit_daily_anchor` (capability-scoped)."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "action_whitelist",
+            "docs": [
+              "Whitelist of allowed instruction discriminators (8-byte Anchor",
+              "discriminators). Defaults set at registration:",
+              "• Disbursement: `[disburse_routine]`",
+              "• Anchor:       `[commit_daily_anchor]` (lives in Registry program)"
+            ],
+            "type": {
+              "vec": {
+                "array": [
+                  "u8",
+                  8
+                ]
+              }
+            }
+          },
+          {
+            "name": "rate_limit_per_period",
+            "type": "u32"
+          },
+          {
+            "name": "signatures_this_period",
+            "type": "u32"
+          },
+          {
+            "name": "current_period_anchor",
+            "docs": [
+              "Unix timestamp of start-of-current-month UTC. `0` = uninitialized."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "expiry_unix",
+            "docs": [
+              "Hard expiry (unix timestamp). `0` = no expiry."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "revoked",
+            "docs": [
+              "Once true, all future signatures via this account are rejected.",
+              "Rotation flow: revoke → close → re-create with new `signer`."
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "OperationsKind",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Disbursement"
+          },
+          {
+            "name": "Anchor"
           }
         ]
       }

@@ -19,7 +19,7 @@ import type {
   ListAgentSkillSyncsResponse,
 } from "@occa/shared/types";
 import { db } from "../../../infra/database/client";
-import { findOwnedByUserId } from "../repositories/deployments";
+import { findAccessibleByUserId } from "../repositories/deployments";
 import { findByDeploymentId as findRuntimeProfile } from "../repositories/agent-runtime-profile";
 import { requireAuth } from "../../../middleware/auth";
 import {
@@ -36,7 +36,7 @@ router.get(
   "/:id/skills/syncs",
   requireAuth,
   async (req: Request, res: Response) => {
-    const existing = await findOwnedByUserId({
+    const existing = await findAccessibleByUserId({
       userId: req.user!.userId,
       deploymentId: req.params.id,
     });
@@ -130,7 +130,7 @@ router.post(
   "/:id/skills/sync",
   requireAuth,
   async (req: Request, res: Response) => {
-    const existing = await findOwnedByUserId({
+    const existing = await findAccessibleByUserId({
       userId: req.user!.userId,
       deploymentId: req.params.id,
     });
@@ -284,7 +284,7 @@ router.post(
   "/:id/skills/:key/resync",
   requireAuth,
   async (req: Request, res: Response) => {
-    const existing = await findOwnedByUserId({
+    const existing = await findAccessibleByUserId({
       userId: req.user!.userId,
       deploymentId: req.params.id,
     });

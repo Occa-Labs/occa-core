@@ -10,7 +10,7 @@ import { ERROR_CODES } from "@occa/shared/error-codes";
 import { CEO_ROLE } from "@occa/shared/role-catalog";
 import type { ChannelDTO } from "@occa/shared/types";
 import { requireAuth } from "../../../middleware/auth";
-import { findOwnedByUserId } from "../repositories/deployments";
+import { findAccessibleByUserId } from "../repositories/deployments";
 import {
   channelTypeSchema,
   channelUpsertSchema,
@@ -49,7 +49,7 @@ router.get(
         .json({ error: ERROR_CODES.INVALID_BODY });
       return;
     }
-    const deployment = await findOwnedByUserId({
+    const deployment = await findAccessibleByUserId({
       userId: req.user!.userId,
       deploymentId: parsed.data.id,
     });
@@ -89,7 +89,7 @@ router.put(
         });
       return;
     }
-    const deployment = await findOwnedByUserId({
+    const deployment = await findAccessibleByUserId({
       userId: req.user!.userId,
       deploymentId: paramsParsed.data.id,
     });
@@ -146,7 +146,7 @@ router.delete(
         .json({ error: ERROR_CODES.CHANNEL_TYPE_INVALID });
       return;
     }
-    const deployment = await findOwnedByUserId({
+    const deployment = await findAccessibleByUserId({
       userId: req.user!.userId,
       deploymentId: parsed.data.id,
     });
@@ -187,7 +187,7 @@ router.post(
         .json({ error: ERROR_CODES.CHANNEL_TYPE_INVALID });
       return;
     }
-    const deployment = await findOwnedByUserId({
+    const deployment = await findAccessibleByUserId({
       userId: req.user!.userId,
       deploymentId: parsed.data.id,
     });
@@ -238,7 +238,7 @@ router.post(
         .json({ error: ERROR_CODES.INVALID_BODY });
       return;
     }
-    const deployment = await findOwnedByUserId({
+    const deployment = await findAccessibleByUserId({
       userId: req.user!.userId,
       deploymentId: parsed.data.id,
     });

@@ -12,7 +12,7 @@ import {
   SOL_PSEUDO_MINT,
   deriveTreasuryPda,
   derivePolicyPda,
-} from "occa-sdk";
+} from "@occa/sdk";
 import { getConnection } from "../../../infra/solana/connection";
 import { childLogger } from "../../../lib/logger";
 

@@ -42,6 +42,7 @@ export const INSTRUCTION_DISCRIMINATOR = {
   updateDeploymentStatus: Buffer.from([225, 195, 150, 254, 178, 203, 53, 147]),
   retireDeployment: Buffer.from([45, 188, 162, 197, 136, 180, 202, 153]),
   setReceivingAddress: Buffer.from([70, 63, 44, 87, 16, 6, 156, 200]),
+  setAgentReceivingAddress: Buffer.from([197, 126, 122, 18, 38, 62, 179, 218]),
   commitDailyAnchor: Buffer.from([18, 7, 3, 65, 58, 148, 164, 0]),
 } as const;
 
@@ -454,6 +455,40 @@ export function buildSetReceivingAddressInstruction(
     programId,
     keys: [
       { pubkey: params.deploymentPda, isSigner: false, isWritable: true },
+      { pubkey: params.owner, isSigner: true, isWritable: false },
+    ],
+    data,
+  });
+  return { instruction };
+}
+
+export interface SetAgentReceivingAddressParams {
+  /** AgentIdentity PDA whose personal receiving wallet is being set. */
+  identityPda: PublicKey;
+  /** User wallet — must equal `identity.owner`. */
+  owner: PublicKey;
+  /** New personal receiving address (passive destination for funds
+   *  disbursed to this agent). Pass `PublicKey.default` to clear. NEVER a
+   *  signer — it never authorizes any on-chain action. */
+  newReceivingAddress: PublicKey;
+  programId?: PublicKey;
+}
+
+// Sets the agent's PERSONAL receiving wallet on the AgentIdentity itself —
+// independent of any company/deployment (Phase 4 marketplace). The deployment
+// receiving_address defaults from this at create_deployment.
+export function buildSetAgentReceivingAddressInstruction(
+  params: SetAgentReceivingAddressParams,
+): { instruction: TransactionInstruction } {
+  const programId = params.programId ?? REGISTRY_PROGRAM_ID;
+  const data = Buffer.concat([
+    INSTRUCTION_DISCRIMINATOR.setAgentReceivingAddress,
+    encodePubkey(params.newReceivingAddress),
+  ]);
+  const instruction = new TransactionInstruction({
+    programId,
+    keys: [
+      { pubkey: params.identityPda, isSigner: false, isWritable: true },
       { pubkey: params.owner, isSigner: true, isWritable: false },
     ],
     data,

@@ -27,7 +27,7 @@
     "express": "^4.21.0",
     "http-status-codes": "^2.3.0",
     "jsonwebtoken": "^9.0.2",
-    "occa-sdk": "workspace:*",
+    "@occa/sdk": "workspace:*",
     "pg": "^8.20.0",
     "pg-boss": "^12.16.0",
     "pino": "^10.3.1",

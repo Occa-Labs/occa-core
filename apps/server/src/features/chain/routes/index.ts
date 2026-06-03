@@ -9,6 +9,7 @@ import {
   buildCreateDeploymentInstruction,
   buildRegisterAgentIdentityInstruction,
   buildSetReceivingAddressInstruction,
+  buildSetAgentReceivingAddressInstruction,
   buildSetPolicyInstruction,
   buildDisburseDiscretionaryInstruction,
   deriveAgentIdentityPda,
@@ -17,7 +18,7 @@ import {
   deriveTreasuryPda,
   derivePolicyPda,
   SOL_PSEUDO_MINT,
-} from "occa-sdk";
+} from "@occa/sdk";
 import { Keypair } from "@solana/web3.js";
 import {
   findById as findIdentityById,
@@ -38,7 +39,7 @@ import {
 import {
   nextAgentIndex,
   persistAgentChainRegistration,
-  persistAgentOperatingWallet,
+  persistAgentReceivingAddress,
   persistCompanyChainRegistration,
   persistIdentityChainRegistration,
   reserveAgentIndex,
@@ -135,9 +136,9 @@ const confirmIdentityBody = z
   })
   .strict();
 
-const prepareSetOperatingWalletBody = z
+const prepareSetReceivingAddressBody = z
   .object({
-    operatingWallet: z.string().min(32).max(48),
+    receivingAddress: z.string().min(32).max(48),
   })
   .strict();
 
@@ -169,12 +170,12 @@ const confirmDisbursementBody = z
   })
   .strict();
 
-const confirmSetOperatingWalletBody = z
+const confirmSetReceivingAddressBody = z
   .object({
     signedTransaction: z.string().min(1),
     blockhash: z.string().min(32).max(64),
     lastValidBlockHeight: z.number().int().nonnegative(),
-    operatingWallet: z.string().min(32).max(48),
+    receivingAddress: z.string().min(32).max(48),
   })
   .strict();
 
@@ -699,6 +700,155 @@ router.post(
       identityPda: identityPda.toBase58(),
       agentPubkey: agentPubkeyPk.toBase58(),
       chainTxSignature: signature,
+    });
+  },
+);
+
+// ── Agent identity: personal receiving wallet ───────────────────────────────
+//
+// The agent's intrinsic on-chain receiving wallet (set_agent_receiving_address
+// on AgentIdentity). Owner-only, requires the identity to be anchored first.
+
+router.post(
+  "/agent-identities/:identityId/receiving-address/prepare",
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const userId = req.user!.userId;
+    const identityId = req.params.identityId;
+
+    const raw = (req.body as { receivingAddress?: unknown } | undefined)
+      ?.receivingAddress;
+    let newReceiving: PublicKey;
+    try {
+      newReceiving = new PublicKey(String(raw));
+    } catch {
+      res
+        .status(StatusCodes.BAD_REQUEST)
+        .json({ error: ERROR_CODES.INVALID_BODY });
+      return;
+    }
+
+    const identity = await findOwnedIdentityByUserId({ userId, identityId });
+    if (!identity) {
+      res
+        .status(StatusCodes.NOT_FOUND)
+        .json({ error: ERROR_CODES.AGENT_NOT_FOUND });
+      return;
+    }
+    // Must be anchored on-chain first — there's no AgentIdentity account to
+    // set the address on otherwise.
+    if (!identity.identityPda || !identity.chainTxSignature) {
+      res
+        .status(StatusCodes.CONFLICT)
+        .json({ error: ERROR_CODES.CHAIN_NOT_ANCHORED });
+      return;
+    }
+
+    const operator = operatorOrFail(res);
+    if (!operator) return;
+    const userWalletPk = new PublicKey(req.user!.walletAddress);
+
+    const { instruction } = buildSetAgentReceivingAddressInstruction({
+      identityPda: new PublicKey(identity.identityPda),
+      owner: userWalletPk,
+      newReceivingAddress: newReceiving,
+    });
+
+    let prepared: Awaited<ReturnType<typeof prepareOwnerSignedTx>>;
+    try {
+      prepared = await prepareOwnerSignedTx({
+        instructions: [instruction],
+        feePayer: operator,
+      });
+    } catch (err) {
+      log.error({ err, identityId }, "set_agent_receiving_address prepare failed");
+      res
+        .status(StatusCodes.BAD_GATEWAY)
+        .json({ error: ERROR_CODES.CHAIN_TX_FAILED });
+      return;
+    }
+
+    res.status(StatusCodes.OK).json({
+      transaction: prepared.transactionBase64,
+      blockhash: prepared.blockhash,
+      lastValidBlockHeight: prepared.lastValidBlockHeight,
+      receivingAddress: newReceiving.toBase58(),
+    });
+  },
+);
+
+router.post(
+  "/agent-identities/:identityId/receiving-address/confirm",
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const userId = req.user!.userId;
+    const identityId = req.params.identityId;
+
+    const body = (req.body ?? {}) as {
+      signedTransaction?: unknown;
+      blockhash?: unknown;
+      lastValidBlockHeight?: unknown;
+      receivingAddress?: unknown;
+    };
+    if (
+      typeof body.signedTransaction !== "string" ||
+      typeof body.blockhash !== "string" ||
+      typeof body.lastValidBlockHeight !== "number"
+    ) {
+      res
+        .status(StatusCodes.BAD_REQUEST)
+        .json({ error: ERROR_CODES.INVALID_BODY });
+      return;
+    }
+    let newReceiving: PublicKey;
+    try {
+      newReceiving = new PublicKey(String(body.receivingAddress));
+    } catch {
+      res
+        .status(StatusCodes.BAD_REQUEST)
+        .json({ error: ERROR_CODES.INVALID_BODY });
+      return;
+    }
+
+    const identity = await findOwnedIdentityByUserId({ userId, identityId });
+    if (!identity) {
+      res
+        .status(StatusCodes.NOT_FOUND)
+        .json({ error: ERROR_CODES.AGENT_NOT_FOUND });
+      return;
+    }
+
+    let signature: string;
+    try {
+      signature = await submitSignedTx({
+        signedTransactionBase64: body.signedTransaction,
+        blockhash: body.blockhash,
+        lastValidBlockHeight: body.lastValidBlockHeight,
+      });
+    } catch (err) {
+      log.error(
+        { err, identityId },
+        "set_agent_receiving_address submit failed",
+      );
+      res
+        .status(StatusCodes.BAD_GATEWAY)
+        .json({ error: ERROR_CODES.CHAIN_TX_FAILED });
+      return;
+    }
+
+    await updateIdentityById({
+      identityId,
+      patch: { receivingAddress: newReceiving.toBase58() },
+    });
+
+    log.info(
+      { identityId, receivingAddress: newReceiving.toBase58(), signature },
+      "agent personal receiving wallet set",
+    );
+
+    res.status(StatusCodes.OK).json({
+      receivingAddress: newReceiving.toBase58(),
+      signature,
     });
   },
 );
@@ -1356,22 +1506,22 @@ router.post(
   },
 );
 
-// ── Agent: set_operating_wallet ─────────────────────────────────────────────
+// ── Agent: set_receiving_address ─────────────────────────────────────────────
 
 /**
- * POST /api/chain/agents/:agentId/operating-wallet/prepare
+ * POST /api/chain/agents/:agentId/receiving-address/prepare
  *
- * Build a `set_operating_wallet` ix targeting an already-anchored agent.
+ * Build a `set_receiving_address` ix targeting an already-anchored agent.
  * The agent's `owner` (= user wallet) signs in the browser.
  */
 router.post(
-  "/agents/:agentId/operating-wallet/prepare",
+  "/agents/:agentId/receiving-address/prepare",
   requireAuth,
   async (req: Request, res: Response) => {
     const userId = req.user!.userId;
     const agentId = req.params.agentId;
 
-    const parsed = prepareSetOperatingWalletBody.safeParse(req.body ?? {});
+    const parsed = prepareSetReceivingAddressBody.safeParse(req.body ?? {});
     if (!parsed.success) {
       res
         .status(StatusCodes.BAD_REQUEST)
@@ -1379,9 +1529,9 @@ router.post(
       return;
     }
 
-    let newOperatingWallet: PublicKey;
+    let newReceivingAddress: PublicKey;
     try {
-      newOperatingWallet = new PublicKey(parsed.data.operatingWallet);
+      newReceivingAddress = new PublicKey(parsed.data.receivingAddress);
     } catch {
       res
         .status(StatusCodes.BAD_REQUEST)
@@ -1413,7 +1563,7 @@ router.post(
     const { instruction } = buildSetReceivingAddressInstruction({
       deploymentPda: new PublicKey(agent.deploymentPda),
       owner: userWalletPk,
-      newReceivingAddress: newOperatingWallet,
+      newReceivingAddress: newReceivingAddress,
     });
 
     let prepared: Awaited<ReturnType<typeof prepareOwnerSignedTx>>;
@@ -1423,7 +1573,7 @@ router.post(
         feePayer: operator,
       });
     } catch (err) {
-      log.error({ err, agentId }, "set_operating_wallet prepare failed");
+      log.error({ err, agentId }, "set_receiving_address prepare failed");
       res
         .status(StatusCodes.BAD_GATEWAY)
         .json({ error: ERROR_CODES.CHAIN_TX_FAILED });
@@ -1431,7 +1581,7 @@ router.post(
     }
 
     res.status(StatusCodes.OK).json({
-      operatingWallet: newOperatingWallet.toBase58(),
+      receivingAddress: newReceivingAddress.toBase58(),
       transaction: prepared.transactionBase64,
       blockhash: prepared.blockhash,
       lastValidBlockHeight: prepared.lastValidBlockHeight,
@@ -1440,18 +1590,18 @@ router.post(
 );
 
 /**
- * POST /api/chain/agents/:agentId/operating-wallet/confirm
+ * POST /api/chain/agents/:agentId/receiving-address/confirm
  *
- * Persist the new operating_wallet after the FE-broadcast tx confirms.
+ * Persist the new receiving_address after the FE-broadcast tx confirms.
  */
 router.post(
-  "/agents/:agentId/operating-wallet/confirm",
+  "/agents/:agentId/receiving-address/confirm",
   requireAuth,
   async (req: Request, res: Response) => {
     const userId = req.user!.userId;
     const agentId = req.params.agentId;
 
-    const parsed = confirmSetOperatingWalletBody.safeParse(req.body ?? {});
+    const parsed = confirmSetReceivingAddressBody.safeParse(req.body ?? {});
     if (!parsed.success) {
       res
         .status(StatusCodes.BAD_REQUEST)
@@ -1462,12 +1612,12 @@ router.post(
       signedTransaction,
       blockhash,
       lastValidBlockHeight,
-      operatingWallet,
+      receivingAddress,
     } = parsed.data;
 
-    let newOperatingWallet: PublicKey;
+    let newReceivingAddress: PublicKey;
     try {
-      newOperatingWallet = new PublicKey(operatingWallet);
+      newReceivingAddress = new PublicKey(receivingAddress);
     } catch {
       res
         .status(StatusCodes.BAD_REQUEST)
@@ -1494,30 +1644,30 @@ router.post(
         lastValidBlockHeight,
       });
     } catch (err) {
-      log.error({ err, agentId }, "set_operating_wallet submit failed");
+      log.error({ err, agentId }, "set_receiving_address submit failed");
       res
         .status(StatusCodes.BAD_GATEWAY)
         .json({ error: ERROR_CODES.CHAIN_TX_FAILED });
       return;
     }
 
-    await persistAgentOperatingWallet({
+    await persistAgentReceivingAddress({
       agentId,
-      operatingWallet: newOperatingWallet.toBase58(),
+      receivingAddress: newReceivingAddress.toBase58(),
     });
 
     log.info(
       {
         agentId,
         agentPda: agent.deploymentPda,
-        operatingWallet: newOperatingWallet.toBase58(),
+        receivingAddress: newReceivingAddress.toBase58(),
         signature,
       },
-      "agent operating_wallet updated",
+      "agent receiving_address updated",
     );
 
     res.status(StatusCodes.OK).json({
-      operatingWallet: newOperatingWallet.toBase58(),
+      receivingAddress: newReceivingAddress.toBase58(),
       signature,
     });
   },

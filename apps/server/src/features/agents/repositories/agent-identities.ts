@@ -3,12 +3,54 @@
 // any company. The same identity may be deployed to multiple companies
 // owned by the same wallet.
 
-import { and, eq } from "drizzle-orm";
-import { agentIdentities } from "@occa/shared/schema";
+import { and, eq, isNull, isNotNull } from "drizzle-orm";
+import { agentIdentities, deployments } from "@occa/shared/schema";
 import { db } from "../../../infra/database/client";
 
 export type AgentIdentityRow = typeof agentIdentities.$inferSelect;
 export type AgentIdentityInsert = typeof agentIdentities.$inferInsert;
+
+export interface MarketplaceAgentRow {
+  identityId: string;
+  name: string;
+  persona: string | null;
+  ownerWallet: string;
+  ownerUserId: string;
+  role: string;
+  identityPda: string;
+  receivingAddress: string | null;
+  createdAt: Date;
+}
+
+// Cross-owner marketplace listing: agents whose owner opted in
+// (available_for_work), that are anchored on-chain (real identity), and
+// currently idle (deployment.companyId IS NULL — not working anywhere).
+// Own agents stay in the list (so owners see their agent IS discoverable);
+// the caller tags them `isOwn` to suppress the invite action.
+export async function listMarketplaceAgents(): Promise<MarketplaceAgentRow[]> {
+  return db
+    .select({
+      identityId: agentIdentities.id,
+      name: agentIdentities.name,
+      persona: agentIdentities.persona,
+      ownerWallet: agentIdentities.ownerWallet,
+      ownerUserId: agentIdentities.ownerUserId,
+      role: deployments.role,
+      identityPda: agentIdentities.identityPda,
+      receivingAddress: agentIdentities.receivingAddress,
+      createdAt: agentIdentities.createdAt,
+    })
+    .from(agentIdentities)
+    .innerJoin(deployments, eq(deployments.agentIdentityId, agentIdentities.id))
+    .where(
+      and(
+        eq(agentIdentities.availableForWork, true),
+        isNotNull(agentIdentities.chainTxSignature),
+        isNotNull(agentIdentities.receivingAddress),
+        isNull(deployments.companyId),
+      ),
+    );
+}
 
 export async function findById(
   identityId: string,

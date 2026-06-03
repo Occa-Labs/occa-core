@@ -92,18 +92,18 @@ export async function persistIdentityChainRegistration(args: {
 }
 
 /**
- * Persist an updated `operating_wallet` after `set_operating_wallet`
+ * Persist an updated `receiving_address` after `set_receiving_address`
  * confirms on-chain. Lives on the deployment row (per-company), not
  * the identity.
  */
-export async function persistAgentOperatingWallet(args: {
+export async function persistAgentReceivingAddress(args: {
   agentId: string;
-  operatingWallet: string;
+  receivingAddress: string;
 }): Promise<void> {
   await db
     .update(deployments)
     .set({
-      operatingWallet: args.operatingWallet,
+      receivingAddress: args.receivingAddress,
       updatedAt: new Date(),
     })
     .where(eq(deployments.id, args.agentId));

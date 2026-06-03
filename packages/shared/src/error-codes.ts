@@ -144,6 +144,9 @@ export const ERROR_CODES = {
    *  still placeholders. Triggered by the kickoff guard so a user can't
    *  start hiring before onboarding's anchor flow has completed. */
   CHAIN_NOT_ANCHORED: "chain_not_anchored",
+  /** Listing an agent in the marketplace requires a personal receiving
+   *  wallet (payout destination) set on its identity. */
+  RECEIVING_WALLET_UNSET: "receiving_wallet_unset",
   /** A disbursement run was requested with no payable pending invoices. */
   NOTHING_TO_DISBURSE: "nothing_to_disburse",
   /** Too many agents in one disbursement batch to fit a single Solana tx. */

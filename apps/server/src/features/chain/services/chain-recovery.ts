@@ -167,9 +167,9 @@ export async function recoverFromChainIfMissing(args: {
         );
         continue;
       }
-      const operatingWalletStr = d.operatingWallet.equals(PublicKey.default)
+      const receivingAddressStr = d.receivingAddress.equals(PublicKey.default)
         ? null
-        : d.operatingWallet.toBase58();
+        : d.receivingAddress.toBase58();
       const adapterIdStr = d.adapterId.equals(PublicKey.default)
         ? null
         : d.adapterId.toBase58();
@@ -183,7 +183,7 @@ export async function recoverFromChainIfMissing(args: {
           role: d.role,
           parentDeploymentIndex: d.parentDeploymentIndex,
           adapterId: adapterIdStr,
-          operatingWallet: operatingWalletStr,
+          receivingAddress: receivingAddressStr,
           status: chainStatusToText(d.status),
           metadataUri: d.metadataUri || null,
           metadataHash: d.metadataHash.toString("hex"),

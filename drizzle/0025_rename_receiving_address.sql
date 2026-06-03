@@ -1,0 +1,1 @@
+ALTER TABLE "deployments" RENAME COLUMN "operating_wallet" TO "receiving_address";

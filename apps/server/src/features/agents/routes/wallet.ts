@@ -3,17 +3,17 @@
 // Mounts under `/api/agents/:id/wallet/*` + `/api/agents/:id/onchain`.
 // Pure RPC + chain-decode aggregation; no DB writes. The setter path
 // (set_receiving_address ix) is covered by the existing chain routes
-// at `/api/chain/agents/:agentId/operating-wallet/{prepare,confirm}`.
+// at `/api/chain/agents/:agentId/receiving-address/{prepare,confirm}`.
 
 import { Router, type Request, type Response } from "express";
 import { StatusCodes } from "http-status-codes";
 import { z } from "zod";
 import { PublicKey, type ConfirmedSignatureInfo } from "@solana/web3.js";
 import { ERROR_CODES } from "@occa/shared/error-codes";
-import { deriveAgentIdentityPda } from "occa-sdk";
+import { deriveAgentIdentityPda } from "@occa/sdk";
 import { requireAuth } from "../../../middleware/auth";
 import { getConnection } from "../../../infra/solana/connection";
-import { findOwnedByUserId } from "../repositories/deployments";
+import { findAccessibleByUserId } from "../repositories/deployments";
 import { findById as findIdentityById } from "../repositories/agent-identities";
 import {
   fetchDeployment,
@@ -66,7 +66,7 @@ router.get(
     const userId = req.user!.userId;
     const deploymentId = req.params.id;
 
-    const dep = await findOwnedByUserId({ userId, deploymentId });
+    const dep = await findAccessibleByUserId({ userId, deploymentId });
     if (!dep) {
       res
         .status(StatusCodes.NOT_FOUND)
@@ -74,9 +74,9 @@ router.get(
       return;
     }
 
-    const address = isUnsetReceivingAddress(dep.operatingWallet)
+    const address = isUnsetReceivingAddress(dep.receivingAddress)
       ? null
-      : dep.operatingWallet;
+      : dep.receivingAddress;
 
     if (!address) {
       res.status(StatusCodes.OK).json({
@@ -142,7 +142,7 @@ router.get(
     const limit = parsed.data.limit ?? DEFAULT_TX_PAGE_LIMIT;
     const before = parsed.data.before;
 
-    const dep = await findOwnedByUserId({ userId, deploymentId });
+    const dep = await findAccessibleByUserId({ userId, deploymentId });
     if (!dep) {
       res
         .status(StatusCodes.NOT_FOUND)
@@ -150,14 +150,14 @@ router.get(
       return;
     }
 
-    if (isUnsetReceivingAddress(dep.operatingWallet)) {
+    if (isUnsetReceivingAddress(dep.receivingAddress)) {
       res.status(StatusCodes.OK).json({ transactions: [], nextCursor: null });
       return;
     }
 
     let pubkey: PublicKey;
     try {
-      pubkey = new PublicKey(dep.operatingWallet!);
+      pubkey = new PublicKey(dep.receivingAddress!);
     } catch {
       res.status(StatusCodes.OK).json({ transactions: [], nextCursor: null });
       return;
@@ -213,7 +213,7 @@ router.get(
     const userId = req.user!.userId;
     const deploymentId = req.params.id;
 
-    const dep = await findOwnedByUserId({ userId, deploymentId });
+    const dep = await findAccessibleByUserId({ userId, deploymentId });
     if (!dep) {
       res
         .status(StatusCodes.NOT_FOUND)
@@ -270,15 +270,15 @@ router.get(
             agentIdentityPda: chainDeployment.agentIdentity.toBase58(),
             companyPda: chainDeployment.company.toBase58(),
             owner: chainDeployment.owner.toBase58(),
-            // chain-lookup.ts still exposes this field as `operatingWallet`
+            // chain-lookup.ts still exposes this field as `receivingAddress`
             // (legacy decoder name) — semantically it's the receiving address
             // per registry/lib.rs:740. Renamed at the API boundary here so
             // the FE can use the post-v0.10 vocabulary.
             receivingAddress: isUnsetReceivingAddress(
-              chainDeployment.operatingWallet.toBase58(),
+              chainDeployment.receivingAddress.toBase58(),
             )
               ? null
-              : chainDeployment.operatingWallet.toBase58(),
+              : chainDeployment.receivingAddress.toBase58(),
             adapterId: chainDeployment.adapterId.toBase58(),
             role: chainDeployment.role,
             parentDeploymentIndex: chainDeployment.parentDeploymentIndex,
@@ -311,7 +311,7 @@ router.get(
     const userId = req.user!.userId;
     const deploymentId = req.params.id;
 
-    const dep = await findOwnedByUserId({ userId, deploymentId });
+    const dep = await findAccessibleByUserId({ userId, deploymentId });
     if (!dep) {
       res
         .status(StatusCodes.NOT_FOUND)

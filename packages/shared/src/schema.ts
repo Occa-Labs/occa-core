@@ -309,6 +309,15 @@ export const agentIdentities = pgTable(
     // so it lives here, not on the deployment. Drives the agent's system
     // prompt + skill selection (wired in a later phase).
     persona: text("persona"),
+    // Owner opt-in: when true, this agent is listed in the cross-owner
+    // agent marketplace so other companies can invite it. Local/app state
+    // (Ephemeral) — visibility flag, not an on-chain field.
+    availableForWork: boolean("available_for_work").notNull().default(false),
+    // The agent's PERSONAL on-chain receiving wallet (Truth tier — mirrors
+    // AgentIdentity.receiving_address). Owner-set anytime, independent of
+    // any company; the deployment's receiving_address defaults from this at
+    // hire. NULL = unset.
+    receivingAddress: text("receiving_address"),
     // Tier 2 metadata pointer + integrity hash (sha256 hex).
     metadataUri: text("metadata_uri"),
     metadataHash: text("metadata_hash"),
@@ -351,9 +360,10 @@ export const deployments = pgTable(
     parentDeploymentIndex: integer("parent_deployment_index"),
     // Pinned adapter pubkey. `Pubkey::default()` on-chain → NULL here.
     adapterId: text("adapter_id"),
-    // Optional user-supplied transactional wallet. NULL = unset
-    // (on-chain shows `Pubkey::default()`).
-    operatingWallet: text("operating_wallet"),
+    // Agent Receiving Address (Whitepaper §8.2) — passive destination for
+    // funds disbursed TO this agent. Owner-set, NULL = unset (on-chain
+    // shows `Pubkey::default()`). Mirrors on-chain `Deployment.receiving_address`.
+    receivingAddress: text("receiving_address"),
     // On-chain status: "active" | "paused" | "retired" (text encoding of
     // the u8 enum 0/1/2). Retired is terminal.
     status: text("status").notNull().default("active"),
@@ -376,6 +386,42 @@ export const deployments = pgTable(
       t.companyId,
       t.deploymentIndex,
     ),
+  ],
+);
+
+// ── Agent invites — cross-owner marketplace hire handshake ───────────
+// A company (companyId) invites an agent (targetIdentityId, owned by
+// another user) for a role. The agent's owner accepts → a cross-owner
+// deployment is created. App-level coordination state (the on-chain
+// consent is the owner signing create_deployment at accept).
+export const agentInvites = pgTable(
+  "agent_invites",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    targetIdentityId: uuid("target_identity_id")
+      .notNull()
+      .references(() => agentIdentities.id, { onDelete: "cascade" }),
+    // Proposed function tag / role in the company.
+    role: text("role").notNull(),
+    // pending | accepted | rejected | cancelled
+    status: text("status").notNull().default("pending"),
+    // Company owner who sent the invite.
+    invitedByUserId: uuid("invited_by_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("idx_agent_invites_target").on(t.targetIdentityId),
+    index("idx_agent_invites_company").on(t.companyId),
   ],
 );
 

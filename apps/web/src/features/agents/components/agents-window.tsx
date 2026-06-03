@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   AlertTriangle,
   Loader2,
@@ -44,6 +44,7 @@ interface AgentsWindowProps {
 
 type TabId =
   | "overview"
+  | "chain"
   | "skills"
   | "tools"
   | "activity"
@@ -531,6 +532,7 @@ export function AgentDetail({
   onReloadMe,
   companyLabel,
   hideSeating,
+  chainTabSlot,
 }: {
   agent: AgentDTO;
   agents: AgentDTO[];
@@ -540,6 +542,10 @@ export function AgentDetail({
   companyLabel?: string | null;
   /** Hide 3D-office Seat + Character rows (home view). */
   hideSeating?: boolean;
+  /** Per-agent on-chain panel (anchor, receiving wallet, marketplace
+   *  listing). Injected at app level so the agents feature stays free of
+   *  chain imports. When provided, a "Chain" tab appears. */
+  chainTabSlot?: ReactNode;
 }) {
   const [tab, setTab] = useState<TabId>("overview");
   const [retireModalOpen, setRetireModalOpen] = useState(false);
@@ -618,7 +624,14 @@ export function AgentDetail({
           </div>
         </div>
         <div className="flex gap-1">
-          {TABS.map((t) => (
+          {(chainTabSlot
+            ? [
+                TABS[0],
+                { id: "chain" as TabId, label: "Chain" },
+                ...TABS.slice(1),
+              ]
+            : TABS
+          ).map((t) => (
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
@@ -652,6 +665,8 @@ export function AgentDetail({
               hideSeating={hideSeating}
             />
           </div>
+        ) : tab === "chain" ? (
+          <div className="h-full overflow-y-auto">{chainTabSlot}</div>
         ) : tab === "skills" ? (
           <div className="h-full overflow-y-auto">
             <SkillsTab agent={agent} onReloadMe={onReloadMe} />

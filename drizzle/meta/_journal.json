@@ -176,6 +176,34 @@
       "when": 1780390118140,
       "tag": "0024_dear_rage",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1780463419646,
+      "tag": "0025_rename_receiving_address",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1780468121755,
+      "tag": "0026_woozy_ego",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1780472241881,
+      "tag": "0027_mature_major_mapleleaf",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1780478159796,
+      "tag": "0028_lumpy_pepper_potts",
+      "breakpoints": true
     }
   ]
 }

@@ -1253,8 +1253,8 @@ function SetReceivingAddressModal({
     setErrorMsg(null);
 
     try {
-      const prep = await chainApi.prepareSetOperatingWallet(agent.id, {
-        operatingWallet: newAddress,
+      const prep = await chainApi.prepareSetReceivingAddress(agent.id, {
+        receivingAddress: newAddress,
       });
 
       setStage("awaiting-signature");
@@ -1275,15 +1275,15 @@ function SetReceivingAddressModal({
       }
 
       setStage("confirming");
-      await chainApi.confirmSetOperatingWallet(agent.id, {
+      await chainApi.confirmSetReceivingAddress(agent.id, {
         signedTransaction: toBase64(signedBytes),
         blockhash: prep.blockhash,
         lastValidBlockHeight: prep.lastValidBlockHeight,
-        operatingWallet: newAddress,
+        receivingAddress: newAddress,
       });
 
       // Refresh wallet, on-chain view, and the agents list (DTO mirrors
-      // operatingWallet from the same column we just updated).
+      // receivingAddress from the same column we just updated).
       await Promise.all([
         queryClient.invalidateQueries({
           queryKey: agentWalletKeys.wallet(agent.id),

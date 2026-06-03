@@ -31,12 +31,16 @@ import type {
 } from "@occa/shared/types";
 import { db } from "../../../infra/database/client";
 import {
+  findAccessibleByUserId,
   findOwnedByUserId,
   listByCompanyId as listDeploymentsByCompanyId,
   setStatus as setDeploymentStatus,
 } from "../repositories/deployments";
 import { findByDeploymentId as findRuntimeProfile } from "../repositories/agent-runtime-profile";
-import { findById as findIdentityById } from "../repositories/agent-identities";
+import {
+  findById as findIdentityById,
+  updateIdentityById,
+} from "../repositories/agent-identities";
 import { findByCompanyId as findCompanyProfileByCompanyId } from "../../companies/repositories/company-profiles";
 import { requireAuth } from "../../../middleware/auth";
 import { toCompanyDTO } from "../../companies/domain/dto";
@@ -86,8 +90,9 @@ import { log } from "./_shared";
 const router: Router = Router();
 
 // Local helper — single-row read used by GET / agent list when no
-// agent has been deployed yet (legitimate empty case). The
-// owner-scoped deployment lookups go through `findOwnedByUserId`.
+// agent has been deployed yet (legitimate empty case). Deployment-level
+// lookups go through `findAccessibleByUserId` (owner OR the company the
+// agent is deployed to); identity-level actions use `findOwnedByUserId`.
 async function userCompanyId(userId: string): Promise<string | null> {
   const [row] = await db
     .select({ id: companies.id })
@@ -162,7 +167,7 @@ router.post(
       | OpenclawAdapterConfig
       | undefined;
 
-    const deploymentRecord = await findOwnedByUserId({
+    const deploymentRecord = await findAccessibleByUserId({
       userId: req.user!.userId,
       deploymentId: req.params.id,
     });
@@ -541,7 +546,7 @@ router.get("/", requireAuth, async (req: Request, res: Response) => {
 
 // GET /api/agents/:id — detail.
 router.get("/:id", requireAuth, async (req: Request, res: Response) => {
-  const existing = await findOwnedByUserId({
+  const existing = await findAccessibleByUserId({
     userId: req.user!.userId,
     deploymentId: req.params.id,
   });
@@ -552,10 +557,59 @@ router.get("/:id", requireAuth, async (req: Request, res: Response) => {
   res.json({ agent: await hydrateDeploymentDTO(existing) });
 });
 
+// POST /api/agents/:id/availability — owner toggles whether this agent is
+// listed in the cross-owner marketplace. Turning it ON requires the agent
+// to be anchored on-chain (real identity, not a placeholder), so only
+// invitable + payable agents surface to other companies.
+router.post(
+  "/:id/availability",
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const available = (req.body as { available?: unknown } | undefined)
+      ?.available;
+    if (typeof available !== "boolean") {
+      res
+        .status(StatusCodes.BAD_REQUEST)
+        .json({ error: ERROR_CODES.INVALID_BODY });
+      return;
+    }
+    // Identity-level: marketplace availability is the agent OWNER's call,
+    // not the hiring company's. Stays owner-scoped.
+    const existing = await findOwnedByUserId({
+      userId: req.user!.userId,
+      deploymentId: req.params.id,
+    });
+    if (!existing) {
+      res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.NOT_FOUND });
+      return;
+    }
+    if (available) {
+      const identity = await findIdentityById(existing.agentIdentityId);
+      if (!identity?.chainTxSignature) {
+        res
+          .status(StatusCodes.CONFLICT)
+          .json({ error: ERROR_CODES.CHAIN_NOT_ANCHORED });
+        return;
+      }
+      if (!identity.receivingAddress) {
+        res
+          .status(StatusCodes.CONFLICT)
+          .json({ error: ERROR_CODES.RECEIVING_WALLET_UNSET });
+        return;
+      }
+    }
+    await updateIdentityById({
+      identityId: existing.agentIdentityId,
+      patch: { availableForWork: available },
+    });
+    res.json({ agent: await hydrateDeploymentDTO(existing) });
+  },
+);
+
 // GET /api/agents/:id/files — list workspace files from
 // deployment_workspace_files.
 router.get("/:id/files", requireAuth, async (req: Request, res: Response) => {
-  const existing = await findOwnedByUserId({
+  const existing = await findAccessibleByUserId({
     userId: req.user!.userId,
     deploymentId: req.params.id,
   });
@@ -590,7 +644,7 @@ router.patch(
   "/:id/files/:filename",
   requireAuth,
   async (req: Request, res: Response) => {
-    const existing = await findOwnedByUserId({
+    const existing = await findAccessibleByUserId({
       userId: req.user!.userId,
       deploymentId: req.params.id,
     });
@@ -697,7 +751,7 @@ router.patch(
 // parentDeploymentIndex), runtime profile (adapterConfig, workstationId,
 // modelOverride).
 router.patch("/:id", requireAuth, async (req: Request, res: Response) => {
-  const existing = await findOwnedByUserId({
+  const existing = await findAccessibleByUserId({
     userId: req.user!.userId,
     deploymentId: req.params.id,
   });
@@ -720,7 +774,17 @@ router.patch("/:id", requireAuth, async (req: Request, res: Response) => {
   const deploymentPatch: Partial<typeof deployments.$inferInsert> = {};
   const profilePatch: Partial<typeof agentRuntimeProfile.$inferInsert> = {};
 
-  if (parsed.data.name !== undefined) identityPatch.name = parsed.data.name;
+  // `name` is identity-level (portable, shared across every company the
+  // agent is in), so only the agent OWNER may change it. A hiring company
+  // can edit deployment-level fields below but not rename someone's agent.
+  if (parsed.data.name !== undefined) {
+    const identity = await findIdentityById(existing.agentIdentityId);
+    if (identity?.ownerUserId !== req.user!.userId) {
+      res.status(StatusCodes.FORBIDDEN).json({ error: ERROR_CODES.FORBIDDEN });
+      return;
+    }
+    identityPatch.name = parsed.data.name;
+  }
   if (parsed.data.role !== undefined) deploymentPatch.role = parsed.data.role;
 
   if (parsed.data.adapterConfig !== undefined) {
@@ -866,7 +930,7 @@ router.patch("/:id", requireAuth, async (req: Request, res: Response) => {
 // CEO deployment cannot be paused — every other agent borrows CEO's
 // device keypair, and chat surfaces the CEO as the sole contact.
 router.post("/:id/pause", requireAuth, async (req: Request, res: Response) => {
-  const existing = await findOwnedByUserId({
+  const existing = await findAccessibleByUserId({
     userId: req.user!.userId,
     deploymentId: req.params.id,
   });
@@ -884,7 +948,7 @@ router.post("/:id/pause", requireAuth, async (req: Request, res: Response) => {
     deploymentId: existing.id,
     status: "paused",
   });
-  const refreshed = await findOwnedByUserId({
+  const refreshed = await findAccessibleByUserId({
     userId: req.user!.userId,
     deploymentId: req.params.id,
   });
@@ -914,7 +978,7 @@ router.post(
       });
       return;
     }
-    const existing = await findOwnedByUserId({
+    const existing = await findAccessibleByUserId({
       userId: req.user!.userId,
       deploymentId: req.params.id,
     });
@@ -978,7 +1042,7 @@ router.post(
 );
 
 router.post("/:id/activate", requireAuth, async (req: Request, res: Response) => {
-  const existing = await findOwnedByUserId({
+  const existing = await findAccessibleByUserId({
     userId: req.user!.userId,
     deploymentId: req.params.id,
   });
@@ -990,7 +1054,7 @@ router.post("/:id/activate", requireAuth, async (req: Request, res: Response) =>
     deploymentId: existing.id,
     status: "active",
   });
-  const refreshed = await findOwnedByUserId({
+  const refreshed = await findAccessibleByUserId({
     userId: req.user!.userId,
     deploymentId: req.params.id,
   });
@@ -1003,7 +1067,7 @@ router.post("/:id/activate", requireAuth, async (req: Request, res: Response) =>
 // design (an identity may be deployed to multiple companies owned by
 // the same wallet).
 router.delete("/:id", requireAuth, async (req: Request, res: Response) => {
-  const existing = await findOwnedByUserId({
+  const existing = await findAccessibleByUserId({
     userId: req.user!.userId,
     deploymentId: req.params.id,
   });

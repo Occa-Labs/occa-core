@@ -20,7 +20,7 @@ import { useSignTransaction as useSolanaSignTransaction } from "@privy-io/react-
 import {
   INSTRUCTION_DISCRIMINATOR,
   TREASURY_INSTRUCTION_DISCRIMINATOR,
-} from "occa-sdk";
+} from "@occa/sdk";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";

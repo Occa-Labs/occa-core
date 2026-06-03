@@ -25,7 +25,7 @@ import {
   buildCommitDailyAnchorInstruction,
   deriveDailyAnchorPda,
   deriveOperationsPda,
-} from "occa-sdk";
+} from "@occa/sdk";
 import {
   companies,
   deployments,

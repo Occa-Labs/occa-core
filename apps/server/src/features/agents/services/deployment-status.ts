@@ -86,6 +86,9 @@ function toDTO(args: {
     companyId: deployment.companyId,
     name: identity?.name ?? "",
     persona: identity?.persona ?? null,
+    availableForWork: identity?.availableForWork ?? false,
+    identityAnchored: !!identity?.chainTxSignature,
+    receivingWallet: identity?.receivingAddress ?? null,
     role: deployment.role,
     adapterType: profile?.adapterType ?? "",
     externalAgentId: profile?.externalAgentId ?? null,
@@ -110,7 +113,7 @@ function toDTO(args: {
     agentPda: identity?.identityPda ?? null,
     agentIndex: deployment.deploymentIndex,
     ownerWallet: identity?.ownerWallet ?? null,
-    operatingWallet: deployment.operatingWallet ?? null,
+    receivingAddress: deployment.receivingAddress ?? null,
     agentChainTxSignature: deployment.chainTxSignature ?? null,
   };
 }

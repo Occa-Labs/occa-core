@@ -114,7 +114,7 @@ export interface PendingInvoiceWithAgent {
   deploymentId: string;
   deploymentPda: string;
   agentName: string;
-  /** On-chain receiving address — `operating_wallet` column. NULL = unset. */
+  /** On-chain receiving address — `receiving_address` column. NULL = unset. */
   receivingAddress: string | null;
 }
 
@@ -131,7 +131,7 @@ export async function listPendingInvoicesForCompany(
       amountLamports: invoices.amountLamports,
       deploymentId: invoices.deploymentId,
       deploymentPda: deployments.deploymentPda,
-      receivingAddress: deployments.operatingWallet,
+      receivingAddress: deployments.receivingAddress,
       agentName: agentIdentities.name,
     })
     .from(invoices)

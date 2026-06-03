@@ -128,10 +128,22 @@ export function OverviewTab({
           />
         </>
       )}
+      {hideSeating && agent.companyId === null && !agent.availableForWork && (
+        <div className="mt-4 rounded-2xl border border-white/8 bg-white/4 p-4">
+          <p className="text-xs text-white/55">
+            Not listed in the marketplace yet. Open the{" "}
+            <span className="font-medium text-white/80">Chain</span> tab to
+            anchor this agent on-chain and set a receiving wallet, then list it
+            so other companies can invite it.
+          </p>
+        </div>
+      )}
     </div>
   );
 }
 
+// Marketplace opt-in for an idle agent (home view). Listing requires the
+// agent to be anchored on-chain — the server rejects otherwise.
 // ── Seat row + picker modal ──────────────────────────────────────────────
 //
 // Surfaces the agent's current 3D office desk and lets the operator move

@@ -16,7 +16,7 @@ import type {
   WakeSource,
 } from "@occa/shared/types";
 import { db } from "../../../infra/database/client";
-import { findOwnedByUserId } from "../repositories/deployments";
+import { findAccessibleByUserId } from "../repositories/deployments";
 import { requireAuth } from "../../../middleware/auth";
 import {
   listAgentActivityQuery,
@@ -28,7 +28,7 @@ const router: Router = Router();
 
 // GET /api/agents/:id/traces?limit=N&cursor=<iso>
 router.get("/:id/traces", requireAuth, async (req: Request, res: Response) => {
-  const existing = await findOwnedByUserId({
+  const existing = await findAccessibleByUserId({
     userId: req.user!.userId,
     deploymentId: req.params.id,
   });
@@ -71,7 +71,7 @@ router.get(
   "/:id/activity",
   requireAuth,
   async (req: Request, res: Response) => {
-    const existing = await findOwnedByUserId({
+    const existing = await findAccessibleByUserId({
       userId: req.user!.userId,
       deploymentId: req.params.id,
     });

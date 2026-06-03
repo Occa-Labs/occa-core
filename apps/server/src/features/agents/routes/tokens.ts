@@ -10,7 +10,7 @@ import type {
   CreateAgentTokenResponse,
   ListAgentTokensResponse,
 } from "@occa/shared/types";
-import { findOwnedByUserId } from "../repositories/deployments";
+import { findAccessibleByUserId } from "../repositories/deployments";
 import { requireAuth } from "../../../middleware/auth";
 import { createAgentTokenBody } from "../domain/schemas";
 import {
@@ -24,7 +24,7 @@ const router: Router = Router();
 
 // POST /api/agents/:id/tokens — mint a new token. Raw key returned once.
 router.post("/:id/tokens", requireAuth, async (req: Request, res: Response) => {
-  const existing = await findOwnedByUserId({
+  const existing = await findAccessibleByUserId({
     userId: req.user!.userId,
     deploymentId: req.params.id,
   });
@@ -53,7 +53,7 @@ router.post("/:id/tokens", requireAuth, async (req: Request, res: Response) => {
 
 // GET /api/agents/:id/tokens — list (metadata only).
 router.get("/:id/tokens", requireAuth, async (req: Request, res: Response) => {
-  const existing = await findOwnedByUserId({
+  const existing = await findAccessibleByUserId({
     userId: req.user!.userId,
     deploymentId: req.params.id,
   });
@@ -73,7 +73,7 @@ router.delete(
   "/:id/tokens/:tokenId",
   requireAuth,
   async (req: Request, res: Response) => {
-    const existing = await findOwnedByUserId({
+    const existing = await findAccessibleByUserId({
       userId: req.user!.userId,
       deploymentId: req.params.id,
     });

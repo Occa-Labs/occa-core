@@ -46,6 +46,8 @@ import {
 } from "./features/tasks/routes";
 import skillsRouter from "./features/skills/routes";
 import agentsRouter from "./features/agents/routes";
+import marketplaceRouter from "./features/agents/routes/marketplace";
+import marketplaceInvitesRouter from "./features/chain/routes/invites";
 import companiesRouter from "./features/companies/routes";
 import chainRouter from "./features/chain/routes";
 import publicChainRouter from "./features/chain/routes/public";
@@ -88,6 +90,8 @@ app.use("/api/tasks", tasksFeatureRouter);
 app.use("/api/skills", skillsRouter);
 app.use("/api/agents", agentTaskCommentsRouter);
 app.use("/api/agents", agentsRouter);
+app.use("/api/marketplace", marketplaceRouter);
+app.use("/api/marketplace/invites", marketplaceInvitesRouter);
 app.use("/api/companies", companiesRouter);
 app.use("/api/chain", chainRouter);
 // Public, read-only, no-auth surface for scan.occaai.com — wide-open

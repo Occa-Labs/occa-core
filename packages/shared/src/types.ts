@@ -309,6 +309,17 @@ export interface AgentDTO {
   /** Free-text specialty / persona ("specialist for X"). Intrinsic to the
    *  agent identity; null when unset. */
   persona: string | null;
+  /** Owner opt-in: listed in the cross-owner agent marketplace so other
+   *  companies can invite it. */
+  availableForWork: boolean;
+  /** Whether the portable AgentIdentity is registered on-chain
+   *  (agent_identities.chain_tx_signature). Distinct from
+   *  agentChainTxSignature, which is the per-deployment (Phase C) anchor.
+   *  Marketplace eligibility gates on THIS. */
+  identityAnchored: boolean;
+  /** The agent's personal on-chain receiving wallet (intrinsic to the
+   *  identity). null = unset. Marketplace listing requires it set. */
+  receivingWallet: string | null;
   role: string;
   adapterType: string;
   externalAgentId: string | null;
@@ -358,12 +369,12 @@ export interface AgentDTO {
   // `ownerWallet` = user wallet (same as company.ownerWallet). Sole
   // signer for state-changing ix on this AgentAccount.
   //
-  // `operatingWallet` = optional user-supplied transactional wallet.
+  // `receivingAddress` = optional user-supplied transactional wallet.
   // NULL = not set yet (on-chain shows Pubkey::default()).
   agentPda: string | null;
   agentIndex: number | null;
   ownerWallet: string | null;
-  operatingWallet: string | null;
+  receivingAddress: string | null;
   agentChainTxSignature: string | null;
 }
 
@@ -413,6 +424,50 @@ export interface MeResponse {
   user: AuthUser;
   company: CompanyDTO | null;
   agents: AgentDTO[];
+}
+
+// Cross-owner marketplace listing — a public, lightweight view of an
+// available agent (owned by someone else). No internal/operational fields.
+export interface MarketplaceAgentDTO {
+  identityId: string;
+  name: string;
+  persona: string | null;
+  role: string;
+  ownerWallet: string;
+  // On-chain identity PDA — links to the block explorer as proof the
+  // agent is anchored (not just a DB row).
+  identityPda: string;
+  // The agent's personal on-chain receiving wallet. Always present for
+  // marketplace listings (the query requires it set).
+  receivingWallet: string;
+  // True when the viewer owns this agent — listed for visibility, but the
+  // invite action is suppressed (can't cross-owner invite yourself).
+  isOwn: boolean;
+  createdAt: string;
+}
+
+export interface MarketplaceAgentsResponse {
+  agents: MarketplaceAgentDTO[];
+}
+
+export type InviteStatus = "pending" | "accepted" | "rejected" | "cancelled";
+
+// An incoming cross-owner hire invite, shown in the agent owner's inbox.
+// The inbox keeps resolved invites as history, so `status` + `updatedAt`
+// (when the decision landed) ride along with each row.
+export interface MarketplaceInviteDTO {
+  id: string;
+  companyName: string;
+  agentName: string;
+  targetIdentityId: string;
+  role: string;
+  status: InviteStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MarketplaceInvitesResponse {
+  invites: MarketplaceInviteDTO[];
 }
 
 // ── Agent role — open vocabulary ────────────────────────────────────

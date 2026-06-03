@@ -1,16 +1,22 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import {
   Building2,
   Bot,
   LogOut,
   ArrowRight,
   Plus,
+  Store,
+  Inbox,
   Copy,
   Check,
 } from "lucide-react";
-import type { AgentDTO, CompanyDTO } from "@occa/shared/types";
+import type {
+  AgentDTO,
+  CompanyDTO,
+  MarketplaceAgentDTO,
+} from "@occa/shared/types";
 import { OccaLogo } from "@/components/icons/occa-logo";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -19,6 +25,8 @@ import { Spinner } from "@/components/ui/spinner";
 import { AppWindow } from "@/components/ui/app-window";
 import { Dock, type DockItem } from "@/components/ui/dock";
 import { CreateCompanyCard } from "./create-company-card";
+import { useMarketplaceAgents } from "@/features/home/api/use-marketplace";
+import { MarketplaceAgentModal } from "./marketplace-agent-modal";
 
 // The personal home shown right after login — before any company OS.
 // Follows the OCCA macOS layout (not an admin dashboard): a wallpaper
@@ -27,7 +35,7 @@ import { CreateCompanyCard } from "./create-company-card";
 // user belongs to and the agents they own, and is the launch point into
 // a company's 3D OS.
 
-type HomeSection = "companies" | "agents";
+type HomeSection = "companies" | "agents" | "marketplace" | "inbox";
 
 function truncate(addr: string): string {
   return `${addr.slice(0, 4)}…${addr.slice(-4)}`;
@@ -76,6 +84,15 @@ interface HomeScreenProps {
   onAddAgent: () => void;
   /** Open the create-company flow (fired after the $OCCA gate clears). */
   onCreateCompany: () => void;
+  /** Incoming hire invites panel (features/chain), injected at app level
+   *  so the home feature stays free of chain imports. Rendered in the
+   *  Inbox section. */
+  inboxSlot?: ReactNode;
+  /** Pending-invite count — drives the Inbox dock badge + empty state. */
+  inboxCount?: number;
+  /** Fired after a marketplace invite is sent — lets the app refresh the
+   *  Inbox "Sent" list so the new invite shows immediately. */
+  onInviteSent?: () => void;
   /** Open the full agent detail (rendered at app level). */
   onOpenAgentDetail: (agent: AgentDTO) => void;
   onSignOut: () => void;
@@ -91,6 +108,9 @@ export function HomeScreen({
   onCreateCompany,
   onOpenAgentDetail,
   onSignOut,
+  inboxSlot,
+  inboxCount = 0,
+  onInviteSent,
 }: HomeScreenProps) {
   const [section, setSection] = useState<HomeSection>("agents");
 
@@ -107,6 +127,19 @@ export function HomeScreen({
       label: "My companies",
       active: section === "companies",
       onClick: () => setSection("companies"),
+    },
+    {
+      icon: <Store className={iconCls} />,
+      label: "Marketplace",
+      active: section === "marketplace",
+      onClick: () => setSection("marketplace"),
+    },
+    {
+      icon: <Inbox className={iconCls} />,
+      label: "Inbox",
+      active: section === "inbox",
+      badge: inboxCount,
+      onClick: () => setSection("inbox"),
     },
     {
       icon: <LogOut className={iconCls} />,
@@ -147,11 +180,23 @@ export function HomeScreen({
 
       {/* Content window */}
       <AppWindow
-        title={section === "companies" ? "My companies" : "My agents"}
+        title={
+          section === "companies"
+            ? "My companies"
+            : section === "marketplace"
+              ? "Marketplace"
+              : section === "inbox"
+                ? "Inbox"
+                : "My agents"
+        }
         subtitle={
           section === "companies"
             ? "Companies you own or contribute to"
-            : "Agents you own, and where they're deployed"
+            : section === "marketplace"
+              ? "Available agents you can invite to a company"
+              : section === "inbox"
+                ? "Hire invitations for the agents you own"
+                : "Agents you own, and where they're deployed"
         }
         disableClose
         defaultSize={{ w: 780, h: 540 }}
@@ -177,6 +222,10 @@ export function HomeScreen({
               onEnterCompany={onEnterCompany}
               onCreateCompany={onCreateCompany}
             />
+          ) : section === "marketplace" ? (
+            <MarketplaceSection onSent={onInviteSent} />
+          ) : section === "inbox" ? (
+            inboxSlot
           ) : (
             <AgentsSection
               agents={agents}
@@ -304,3 +353,86 @@ function AgentsSection({
     </div>
   );
 }
+
+// Cross-owner marketplace — browse agents other owners marked available.
+// Invite flow lands in Phase 4b; this is the discovery surface.
+function MarketplaceSection({ onSent }: { onSent?: () => void }) {
+  const { agents, loading, error } = useMarketplaceAgents();
+  const [selected, setSelected] = useState<MarketplaceAgentDTO | null>(null);
+
+  let body: ReactNode;
+  if (loading) {
+    body = (
+      <div className="flex h-48 items-center justify-center">
+        <Spinner className="size-7 text-white/60" />
+      </div>
+    );
+  } else if (error) {
+    body = <p className="text-sm text-red-300">{error}</p>;
+  } else if (agents.length === 0) {
+    body = (
+      <Card
+        padding="lg"
+        className="flex min-h-44 flex-col items-center justify-center gap-2 text-center"
+      >
+        <Store className="size-7 text-white/35" />
+        <p className="text-sm font-medium text-white/70">
+          No agents available yet
+        </p>
+        <p className="max-w-xs text-xs text-white/40">
+          Agents appear here when their owners mark them available for work.
+        </p>
+      </Card>
+    );
+  } else {
+    body = (
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        {agents.map((a) => (
+          <Card
+            key={a.identityId}
+            interactive
+            padding="lg"
+            onClick={() => setSelected(a)}
+            className="flex flex-col gap-3"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex size-10 items-center justify-center rounded-2xl bg-white/8">
+                <Bot className="size-5 text-white/80" />
+              </div>
+              <div className="flex items-center gap-1.5">
+                {a.isOwn && <Badge variant="muted">Yours</Badge>}
+                <Badge variant="success">Available</Badge>
+              </div>
+            </div>
+            <div className="min-w-0">
+              <h3 className="truncate text-base font-semibold text-white">
+                {a.name}
+              </h3>
+              <p className="mt-1 line-clamp-2 text-xs text-white/45">
+                {a.persona ?? "General-purpose"}
+              </p>
+            </div>
+            <div className="mt-auto font-mono text-[11px] text-white/35">
+              {truncate(a.ownerWallet)}
+            </div>
+          </Card>
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {body}
+      <MarketplaceAgentModal
+        agent={selected}
+        onClose={() => setSelected(null)}
+        onSent={() => {
+          setSelected(null);
+          onSent?.();
+        }}
+      />
+    </div>
+  );
+}
+

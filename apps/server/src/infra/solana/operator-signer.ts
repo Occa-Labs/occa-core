@@ -5,7 +5,7 @@ let cached: Keypair | null = null;
 
 /**
  * Operator hot wallet. Fee-payer ONLY for on-chain registry instructions
- * (`create_company`, `register_agent`, `set_operating_wallet`). Never an
+ * (`create_company`, `register_agent`, `set_receiving_address`). Never an
  * authority on any account — every state-changing ix is signed by the
  * user wallet (`owner`) in the browser; the operator just partial-signs
  * the tx server-side so the user doesn't need SOL to onboard.

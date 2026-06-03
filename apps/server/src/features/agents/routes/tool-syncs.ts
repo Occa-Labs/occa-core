@@ -12,7 +12,7 @@ import { z } from "zod";
 import { companyTools } from "@occa/shared/schema";
 import { db } from "../../../infra/database/client";
 import { requireAuth } from "../../../middleware/auth";
-import { findOwnedByUserId } from "../repositories/deployments";
+import { findAccessibleByUserId } from "../repositories/deployments";
 import {
   findByDeploymentId as findRuntimeProfile,
   setEnabledTools,
@@ -33,7 +33,7 @@ router.post(
   "/:id/tools/sync",
   requireAuth,
   async (req: Request, res: Response) => {
-    const existing = await findOwnedByUserId({
+    const existing = await findAccessibleByUserId({
       userId: req.user!.userId,
       deploymentId: req.params.id,
     });

@@ -3,7 +3,8 @@
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/features/auth/hooks/use-auth";
-import { useMe } from "@/hooks/use-me";
+import { useMe, type UseMeResult } from "@/hooks/use-me";
+import { useCompanyAgents } from "@/features/agents/api/use-company-agents";
 import { Spinner } from "@/components/ui/spinner";
 import { useViewMode } from "@/shell/view-mode-toggle";
 import { TopMenuBar } from "@/shell/top-menu-bar";
@@ -12,6 +13,10 @@ import { OnboardingWindow } from "@/features/onboarding/components/onboarding-wi
 import { LoginScreen } from "@/features/auth/components/login-screen";
 import { HomeScreen } from "@/features/home/components/home-screen";
 import { CreateCompanyModal } from "@/features/home/components/create-company-modal";
+import { AgentChainPanel } from "@/features/chain/components/agent-chain-panel";
+import { InboxPanel } from "@/features/chain/components/inbox-panel";
+import { useIncomingInvites } from "@/features/chain/hooks/use-incoming-invites";
+import { useOutgoingInvites } from "@/features/chain/hooks/use-outgoing-invites";
 import { DeployAgentModal } from "@/features/agents/components/deploy-agent-modal";
 import { AgentDetail } from "@/features/agents/components/agents-window";
 import { Modal } from "@/components/ui/modal";
@@ -52,6 +57,13 @@ export default function HomePage() {
   // alone fills the viewport.
   const me = useMe(authenticated);
 
+  // Cross-owner hire invites — both directions. Lifted to page level so the
+  // home Inbox dock badge stays live even when the Inbox section isn't the
+  // active surface. `incoming` = invites for agents this user owns (with
+  // accept/decline); `outgoing` = invites this user sent (read-only outcome).
+  const inbox = useIncomingInvites(me.reload);
+  const outgoing = useOutgoingInvites();
+
   const hasCompany = !!me.company;
   // Onboarding stays open until a fully-provisioned CEO exists. The
   // window itself runs resume detection (re-pair vs. fresh) — page.tsx
@@ -72,6 +84,23 @@ export default function HomePage() {
   // or a company's 3D OS. Entering a company is explicit now — the OS is
   // no longer the post-login landing.
   const [inCompany, setInCompany] = useState(false);
+
+  // Company-scoped agent list — every deployment at this company, including
+  // cross-owner agents hired from the marketplace (which `/api/me` omits
+  // because it's owner-scoped). The company OS reads this; the personal
+  // home keeps `me.agents`.
+  const companyAgents = useCompanyAgents(authenticated && inCompany);
+
+  // The `me` object the OS shell consumes: same company/auth, but agents
+  // swapped to the company-scoped list and `reload` refreshing both caches
+  // so post-mutation refetches keep the office in sync.
+  const osReload = useCallback(async () => {
+    await Promise.all([me.reload(), companyAgents.reload()]);
+  }, [me, companyAgents]);
+  const osMe: UseMeResult = useMemo(
+    () => ({ ...me, agents: companyAgents.agents, reload: osReload }),
+    [me, companyAgents.agents, osReload],
+  );
 
   // Deploy-agent modal, opened from the home screen's My agents section.
   // Lives here (app level) so features/home never imports features/agents
@@ -102,7 +131,7 @@ export default function HomePage() {
   // (pre-deploy, empty company), synthesise a placeholder so the CEO desk
   // doesn't look empty in the 3D office.
   const agentsForScene: SceneAgent[] = useMemo(() => {
-    const real = me.agents
+    const real = companyAgents.agents
       .filter((a) => a.provisioningState !== "failed")
       .map<SceneAgent>((a) => ({
         id: a.id,
@@ -130,7 +159,7 @@ export default function HomePage() {
       });
     }
     return real;
-  }, [me.agents]);
+  }, [companyAgents.agents]);
 
   // Click-to-focus state shared between the 3D office and OsShell. Click
   // an agent in the scene → set focusedAgentId → OsShell auto-opens
@@ -141,8 +170,10 @@ export default function HomePage() {
 
   const focusedAgentRole = useMemo(() => {
     if (!focusedAgentId) return null;
-    return me.agents.find((a) => a.id === focusedAgentId)?.role ?? null;
-  }, [focusedAgentId, me.agents]);
+    return (
+      companyAgents.agents.find((a) => a.id === focusedAgentId)?.role ?? null
+    );
+  }, [focusedAgentId, companyAgents.agents]);
 
   const handleAgentClick = useCallback((agentId: string) => {
     setFocusedAgentId(agentId);
@@ -334,7 +365,7 @@ export default function HomePage() {
               />
             )}
             <OsShell
-              me={me}
+              me={osMe}
               focusedAgentId={focusedAgentId}
               onClearFocus={handleClearFocus}
               focusedWorkstationId={focusedWorkstationId}
@@ -363,6 +394,9 @@ export default function HomePage() {
             onCreateCompany={() => setCreateCompanyOpen(true)}
             onOpenAgentDetail={(a) => setDetailAgentId(a.id)}
             onSignOut={signOut}
+            inboxCount={inbox.pendingCount}
+            inboxSlot={<InboxPanel incoming={inbox} outgoing={outgoing} />}
+            onInviteSent={outgoing.reload}
           />
           <DeployAgentModal
             open={deployOpen}
@@ -410,6 +444,12 @@ export default function HomePage() {
                       : null
                   }
                   hideSeating
+                  chainTabSlot={
+                    <AgentChainPanel
+                      agent={detailAgent}
+                      onReload={me.reload}
+                    />
+                  }
                 />
               </div>
             )}
