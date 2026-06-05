@@ -9,6 +9,19 @@ export async function findUserById(userId: string): Promise<UserRow | undefined>
   return row;
 }
 
+// Set / clear the user's optional display name. Empty string → NULL.
+export async function updateUserName(
+  userId: string,
+  name: string | null,
+): Promise<UserRow | undefined> {
+  const [row] = await db
+    .update(users)
+    .set({ name: name && name.trim() ? name.trim() : null })
+    .where(eq(users.id, userId))
+    .returning();
+  return row;
+}
+
 export async function upsertUserByWallet(walletAddress: string): Promise<UserRow> {
   const [row] = await db
     .insert(users)

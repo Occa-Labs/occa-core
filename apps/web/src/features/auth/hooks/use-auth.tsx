@@ -15,6 +15,7 @@ import type { AuthUser } from "@occa/shared/types";
 import {
   ApiError,
   authApi,
+  meApi,
   getStoredToken,
   setStoredToken,
 } from "@/lib/api";
@@ -55,6 +56,9 @@ export interface UseAuthResult {
    *  and drop back to `idle`. No-op in other states. Lets the user
    *  rescue themselves from a hung modal or stuck "Signing in…". */
   cancel: () => void;
+  /** Set (or clear with null) the user's optional display name. Persists
+   *  server-side and updates the in-memory user. */
+  updateName: (name: string | null) => Promise<void>;
 }
 
 const AuthContext = createContext<UseAuthResult | null>(null);
@@ -332,9 +336,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setStatus("idle");
   }, [privy]);
 
+  const updateName = useCallback(async (name: string | null) => {
+    const res = await meApi.updateName(name);
+    setUser(res.user);
+  }, []);
+
   const value = useMemo<UseAuthResult>(
-    () => ({ status, user, error, signIn, signOut, cancel }),
-    [status, user, error, signIn, signOut, cancel],
+    () => ({ status, user, error, signIn, signOut, cancel, updateName }),
+    [status, user, error, signIn, signOut, cancel, updateName],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

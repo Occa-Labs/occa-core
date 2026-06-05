@@ -14,9 +14,10 @@ export function useRerunTask() {
     },
     onSettled: () => {
       // Status flips to in_progress on the server side after enqueue —
-      // refetch so the list reflects it immediately rather than waiting
+      // refetch so the board reflects it immediately rather than waiting
       // for the next poll.
       void queryClient.invalidateQueries({ queryKey: taskKeys.lists() });
+      void queryClient.invalidateQueries({ queryKey: taskKeys.counts() });
     },
   });
 }

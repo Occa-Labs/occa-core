@@ -1,110 +1,112 @@
 "use client";
 
+import type { ReactNode } from "react";
 import { Archive } from "lucide-react";
-import type { TaskDTO, TaskStatus } from "@occa/shared/types";
+import { Spinner } from "@/components/ui/spinner";
+import type { TaskDTO } from "@occa/shared/types";
+import type { BoardColumnData, BoardData } from "../api/use-board-data";
+import { useInView } from "@/lib/use-in-view";
 import { STATUS_COLUMNS } from "../types";
 import { TaskCard } from "./task-card";
 
-// Read-only kanban board: task creation is gone (CEO chat bubble owns the
-// entry). Cards stay clickable for detail view + drag-to-status updates.
+// Read-only kanban board. Each column is an independently paginated infinite
+// query (see useBoardData) — only the first page loads up front; scrolling a
+// column to the bottom pulls the next page. Headers show the true total from
+// the counts aggregate, not just how many cards are loaded.
 export function BoardView({
-  tasks,
+  columns,
+  archived,
   showArchivedColumn,
+  parentNumberFor,
   onTaskClick,
 }: {
-  tasks: TaskDTO[];
+  columns: BoardData["columns"];
+  archived: BoardColumnData;
   showArchivedColumn?: boolean;
+  parentNumberFor: (task: TaskDTO) => number | null;
   onTaskClick: (task: TaskDTO, triggerRect: DOMRect) => void;
 }) {
-  // Active columns ignore archived rows — that's what makes the
-  // 5th "Archived" column meaningful (no double-counting).
-  const activeTasks = tasks.filter((t) => t.archivedAt === null);
-  const archivedTasks = tasks.filter((t) => t.archivedAt !== null);
-  const columns = STATUS_COLUMNS;
-  const tasksByStatus = (status: TaskStatus) =>
-    activeTasks.filter((t) => t.status === status);
-
-  // id → taskNumber lookup so child cards can render a `↳ #parent` chip
-  // without an extra fetch. Parent might be archived/missing — fallback
-  // to null and the chip just hides.
-  const taskNumberById = new Map(tasks.map((t) => [t.id, t.taskNumber]));
-  const parentNumberFor = (t: TaskDTO): number | null =>
-    t.parentTaskId ? taskNumberById.get(t.parentTaskId) ?? null : null;
-
   return (
     <div className="flex gap-3 h-full overflow-x-auto pb-2 px-1">
-      {columns.map((col) => {
-        const colTasks = tasksByStatus(col.id);
-        return (
-          <div
-            key={col.id}
-            className="shrink-0 w-64 flex flex-col gap-2 rounded-xl p-3"
-            style={{ background: "rgba(255,255,255,0.04)" }}
-          >
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className={`size-2 rounded-full ${col.dot}`} />
-                <span className="text-xs font-medium text-white/70">
-                  {col.label}
-                </span>
-                <span className="text-[10px] text-white/30">
-                  {colTasks.length}
-                </span>
-              </div>
-            </div>
-
-            <div className="flex flex-col gap-2 overflow-y-auto flex-1">
-              {colTasks.map((task) => (
-                <TaskCard
-                  key={task.id}
-                  task={task}
-                  parentTaskNumber={parentNumberFor(task)}
-                  onClick={(rect) => onTaskClick(task, rect)}
-                />
-              ))}
-              {colTasks.length === 0 && (
-                <div className="flex items-center justify-center py-6 text-[10px] text-white/20">
-                  No tasks
-                </div>
-              )}
-            </div>
-          </div>
-        );
-      })}
+      {STATUS_COLUMNS.map((col) => (
+        <BoardColumn
+          key={col.id}
+          label={col.label}
+          dot={<span className={`size-2 rounded-full ${col.dot}`} />}
+          // STATUS_COLUMNS only holds the four board statuses, so this key
+          // always exists on `columns`.
+          data={columns[col.id as keyof BoardData["columns"]]}
+          parentNumberFor={parentNumberFor}
+          onTaskClick={onTaskClick}
+        />
+      ))}
 
       {showArchivedColumn && (
-        <div
-          className="shrink-0 w-64 flex flex-col gap-2 rounded-xl p-3"
-          style={{ background: "rgba(255,255,255,0.04)" }}
-        >
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Archive className="size-3 text-white/40" />
-              <span className="text-xs font-medium text-white/70">
-                Archived
-              </span>
-              <span className="text-[10px] text-white/30">
-                {archivedTasks.length}
-              </span>
-            </div>
-          </div>
-
-          <div className="flex flex-col gap-2 overflow-y-auto flex-1">
-            {archivedTasks.map((task) => (
-              <TaskCard
-                key={task.id}
-                task={task}
-                onClick={(rect) => onTaskClick(task, rect)}
-              />
-            ))}
-            {archivedTasks.length === 0 && (
-              <div className="flex items-center justify-center py-6 text-[10px] text-white/20">
-                No archived tasks
-              </div>
-            )}
-          </div>
-        </div>
+        <BoardColumn
+          label="Archived"
+          dot={<Archive className="size-3 text-white/40" />}
+          data={archived}
+          parentNumberFor={parentNumberFor}
+          onTaskClick={onTaskClick}
+          emptyLabel="No archived tasks"
+        />
       )}
+    </div>
+  );
+}
+
+function BoardColumn({
+  label,
+  dot,
+  data,
+  parentNumberFor,
+  onTaskClick,
+  emptyLabel = "No tasks",
+}: {
+  label: string;
+  dot: ReactNode;
+  data: BoardColumnData;
+  parentNumberFor: (task: TaskDTO) => number | null;
+  onTaskClick: (task: TaskDTO, triggerRect: DOMRect) => void;
+  emptyLabel?: string;
+}) {
+  const sentinelRef = useInView(data.loadMore, data.hasNextPage);
+
+  return (
+    <div
+      className="shrink-0 w-64 flex flex-col gap-2 rounded-xl p-3"
+      style={{ background: "rgba(255,255,255,0.04)" }}
+    >
+      <div className="flex items-center gap-2">
+        {dot}
+        <span className="text-xs font-medium text-white/70">{label}</span>
+        <span className="text-[10px] text-white/30">{data.total}</span>
+      </div>
+
+      <div className="flex flex-col gap-2 overflow-y-auto flex-1">
+        {data.tasks.map((task) => (
+          <TaskCard
+            key={task.id}
+            task={task}
+            parentTaskNumber={parentNumberFor(task)}
+            onClick={(rect) => onTaskClick(task, rect)}
+          />
+        ))}
+
+        {data.tasks.length === 0 && (
+          <div className="flex items-center justify-center py-6 text-[10px] text-white/20">
+            {emptyLabel}
+          </div>
+        )}
+
+        {data.hasNextPage && <div ref={sentinelRef} className="h-px" />}
+
+        {data.isFetchingNextPage && (
+          <div className="flex items-center justify-center py-3">
+            <Spinner variant="block" className="text-base text-white/40" />
+          </div>
+        )}
+      </div>
     </div>
   );
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import type { CreateTaskRequest, TaskDTO } from "@occa/shared/types";
+import type { CreateTaskRequest } from "@occa/shared/types";
 import { tasksApi } from "@/lib/api";
 import { taskKeys } from "./keys";
 
@@ -13,17 +13,12 @@ export function useCreateTask() {
       const { task } = await tasksApi.create(input);
       return task;
     },
-    onSuccess: (task) => {
-      // Splice in immediately so the new task appears on top without
-      // waiting for the next poll. Active-list cache only — archived view
-      // gets reconciled by the prefix invalidate below.
-      queryClient.setQueryData<TaskDTO[]>(
-        taskKeys.list({ includeArchived: false }),
-        (old) => (old ? [task, ...old] : [task]),
-      );
-    },
+    // Per-column infinite queries replaced the flat cache, so invalidate the
+    // columns + counts and let the relevant column refetch its first page —
+    // the new task lands at the top of its status column.
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: taskKeys.lists() });
+      void queryClient.invalidateQueries({ queryKey: taskKeys.counts() });
     },
   });
 }

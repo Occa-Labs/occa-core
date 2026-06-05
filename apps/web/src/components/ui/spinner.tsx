@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 
-// ASCII / Unicode glyph spinners. Each variant is a frame array; the
+// ASCII / Unicode character spinners. Each variant is a frame array; the
 // component cycles through frames at `speed` ms per step. Variants are
 // picked by name so call sites stay terse.
 const FRAMES: Record<string, string[]> = {

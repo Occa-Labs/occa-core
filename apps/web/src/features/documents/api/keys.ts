@@ -2,8 +2,10 @@
 
 export const documentKeys = {
   all: ["documents"] as const,
-  lists: () => [...documentKeys.all, "list"] as const,
-  list: (opts: { tags?: string[]; limit?: number }) =>
-    [...documentKeys.lists(), opts] as const,
+  // Derived folder list for a grouping axis (date | tags).
+  folders: (axis: string) => [...documentKeys.all, "folders", axis] as const,
+  // One paginated page query, keyed by the active folder/search params.
+  page: (params: { folderId: string; axis: string; search: string }) =>
+    [...documentKeys.all, "page", params] as const,
   detail: (id: string) => [...documentKeys.all, "detail", id] as const,
 };

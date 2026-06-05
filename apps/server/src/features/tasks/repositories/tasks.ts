@@ -32,15 +32,63 @@ export async function findTaskInCompany(
 
 export async function listTasksByCompany(
   companyId: string,
-  opts: { includeArchived?: boolean } = {},
+  opts: {
+    /** Include archived rows alongside active ones. */
+    includeArchived?: boolean;
+    /** Return ONLY archived rows (the board's Archived column). */
+    archivedOnly?: boolean;
+    /** Restrict to a single status column. */
+    status?: TaskStatus;
+    /** Page size. Omit for the full unbounded list (legacy callers). */
+    limit?: number;
+    /** Page offset, paired with `limit`. */
+    offset?: number;
+  } = {},
 ): Promise<TaskRow[]> {
   const conditions = [eq(tasks.companyId, companyId)];
-  if (!opts.includeArchived) conditions.push(isNull(tasks.archivedAt));
-  return db
+  if (opts.archivedOnly) {
+    conditions.push(sql`${tasks.archivedAt} IS NOT NULL`);
+  } else if (!opts.includeArchived) {
+    conditions.push(isNull(tasks.archivedAt));
+  }
+  if (opts.status) conditions.push(eq(tasks.status, opts.status));
+
+  let query = db
     .select()
     .from(tasks)
     .where(and(...conditions))
-    .orderBy(desc(tasks.updatedAt));
+    .orderBy(desc(tasks.updatedAt))
+    .$dynamic();
+  if (opts.limit != null) query = query.limit(opts.limit);
+  if (opts.offset != null) query = query.offset(opts.offset);
+  return query;
+}
+
+// Per-status counts for the board column headers. One grouped aggregate over
+// the active partial index, plus a single archived total — cheap regardless of
+// how many tasks exist, so headers stay accurate while cards are paginated.
+export async function taskStatusCounts(
+  companyId: string,
+): Promise<{ byStatus: Record<string, number>; archived: number }> {
+  const activeRows = await db
+    .select({ status: tasks.status, count: sql<number>`count(*)::int` })
+    .from(tasks)
+    .where(and(eq(tasks.companyId, companyId), isNull(tasks.archivedAt)))
+    .groupBy(tasks.status);
+
+  const [archivedRow] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(tasks)
+    .where(
+      and(
+        eq(tasks.companyId, companyId),
+        sql`${tasks.archivedAt} IS NOT NULL`,
+      ),
+    );
+
+  const byStatus: Record<string, number> = {};
+  for (const row of activeRows) byStatus[row.status] = row.count;
+  return { byStatus, archived: archivedRow?.count ?? 0 };
 }
 
 // Most-recently-completed tasks for a company. Used by the chat surface

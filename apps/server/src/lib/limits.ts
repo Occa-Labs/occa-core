@@ -39,6 +39,7 @@ export const LIMITS = {
   DESIRED_SKILLS_MAX: 64, // agent: max desired skill keys
   PAGINATION_DEFAULT: 100,
   PAGINATION_MAX: 200,
+  TASK_PAGE_SIZE: 50, // board column page size — one fetch per column, infinite scroll for more
 
   // ─── Auth crypto bounds ────────────────────────────────────────────────
   NONCE_MIN: 16,

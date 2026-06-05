@@ -32,6 +32,8 @@ import type {
   WorkflowDTO,
   ListTaskEventsResponse,
   ListTasksResponse,
+  TaskCountsResponse,
+  TaskStatus,
   OpenclawAdapterConfig,
   ChannelDTO,
   ChannelType,
@@ -123,6 +125,12 @@ export const authApi = {
 
 export const meApi = {
   get: () => request<MeResponse>("/api/me"),
+  // Set / clear the caller's optional display name. `null` clears it.
+  updateName: (name: string | null) =>
+    request<AuthMeResponse>("/api/me", {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    }),
 };
 
 export const adaptersApi = {
@@ -703,10 +711,23 @@ export const companiesApi = {
 };
 
 export const tasksApi = {
-  list: (opts?: { includeArchived?: boolean }) => {
-    const qs = opts?.includeArchived ? "?include_archived=1" : "";
-    return request<ListTasksResponse>(`/api/tasks${qs}`);
+  list: (opts?: {
+    includeArchived?: boolean;
+    archivedOnly?: boolean;
+    status?: TaskStatus;
+    limit?: number;
+    offset?: number;
+  }) => {
+    const qs = new URLSearchParams();
+    if (opts?.includeArchived) qs.set("include_archived", "1");
+    if (opts?.archivedOnly) qs.set("archived", "1");
+    if (opts?.status) qs.set("status", opts.status);
+    if (opts?.limit != null) qs.set("limit", String(opts.limit));
+    if (opts?.offset != null) qs.set("offset", String(opts.offset));
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return request<ListTasksResponse>(`/api/tasks${suffix}`);
   },
+  counts: () => request<TaskCountsResponse>("/api/tasks/counts"),
   create: (input: CreateTaskRequest) =>
     request<TaskResponse>("/api/tasks", {
       method: "POST",
@@ -799,14 +820,43 @@ export interface DocumentDTO {
   tags: string[];
   createdAt: string;
 }
+export interface DocumentFolderDTO {
+  id: string;
+  label: string;
+  count: number;
+}
+export interface DocumentFoldersResponse {
+  folders: DocumentFolderDTO[];
+  total: number;
+  untagged: number;
+}
 export const documentsApi = {
-  list: (opts?: { tags?: string[]; limit?: number }) => {
+  list: (opts?: {
+    tags?: string[];
+    untagged?: boolean;
+    day?: string;
+    tz?: string;
+    search?: string;
+    limit?: number;
+    offset?: number;
+  }) => {
     const qs = new URLSearchParams();
-    if (opts?.tags && opts.tags.length > 0)
-      qs.set("tags", opts.tags.join(","));
-    if (opts?.limit) qs.set("limit", String(opts.limit));
+    if (opts?.tags && opts.tags.length > 0) qs.set("tags", opts.tags.join(","));
+    if (opts?.untagged) qs.set("untagged", "1");
+    if (opts?.day) qs.set("day", opts.day);
+    if (opts?.tz) qs.set("tz", opts.tz);
+    if (opts?.search) qs.set("search", opts.search);
+    if (opts?.limit != null) qs.set("limit", String(opts.limit));
+    if (opts?.offset != null) qs.set("offset", String(opts.offset));
     const suffix = qs.toString() ? `?${qs.toString()}` : "";
-    return request<{ documents: DocumentDTO[] }>(`/api/documents${suffix}`);
+    return request<{ documents: DocumentDTO[]; hasMore?: boolean }>(
+      `/api/documents${suffix}`,
+    );
+  },
+  folders: (axis: "date" | "tags", tz?: string) => {
+    const qs = new URLSearchParams({ axis });
+    if (tz) qs.set("tz", tz);
+    return request<DocumentFoldersResponse>(`/api/documents/folders?${qs.toString()}`);
   },
   get: (id: string) =>
     request<{ document: DocumentDTO }>(`/api/documents/${id}`),

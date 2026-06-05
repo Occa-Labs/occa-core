@@ -23,6 +23,7 @@ import { Modal } from "@/components/ui/modal";
 import type { SceneAgent } from "@/features/theater/types";
 import { deriveAgentStatus } from "@/features/theater/utils";
 import { CEO_ROLE, getTier } from "@occa/shared/role-catalog";
+import { usePersistentState } from "@/lib/persistent-state";
 
 const OfficeScene = dynamic(
   () =>
@@ -48,7 +49,7 @@ const OsShell = dynamic(
 );
 
 export default function HomePage() {
-  const { status: authStatus, user, signOut } = useAuth();
+  const { status: authStatus, user, signOut, updateName } = useAuth();
   const authenticated = authStatus === "authenticated";
 
   // Direct `useMe` — setup workflow is archived; the page now renders the
@@ -82,8 +83,9 @@ export default function HomePage() {
 
   // Which surface the authed user sees: the personal dashboard (default)
   // or a company's 3D OS. Entering a company is explicit now — the OS is
-  // no longer the post-login landing.
-  const [inCompany, setInCompany] = useState(false);
+  // no longer the post-login landing. Persisted so a refresh keeps the user
+  // inside the OS instead of bouncing back to home.
+  const [inCompany, setInCompany] = usePersistentState("occa_in_company", false);
 
   // Company-scoped agent list — every deployment at this company, including
   // cross-owner agents hired from the marketplace (which `/api/me` omits
@@ -268,28 +270,8 @@ export default function HomePage() {
       status?: "idle" | "working" | "talking" | "meeting" | null;
     }
   >;
-  const DEV_OVERRIDES_KEY = "occa.dev.agent-overrides";
   const [agentDevOverrides, setAgentDevOverrides] =
-    useState<AgentDevOverridesShape>(() => {
-      if (typeof window === "undefined") return {};
-      try {
-        const raw = window.localStorage.getItem(DEV_OVERRIDES_KEY);
-        return raw ? (JSON.parse(raw) as AgentDevOverridesShape) : {};
-      } catch {
-        return {};
-      }
-    });
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    try {
-      window.localStorage.setItem(
-        DEV_OVERRIDES_KEY,
-        JSON.stringify(agentDevOverrides),
-      );
-    } catch {
-      /* quota exceeded / private mode — ignore, dev-only */
-    }
-  }, [agentDevOverrides]);
+    usePersistentState<AgentDevOverridesShape>("occa.dev.agent-overrides", {});
   const updateAgentDevOverride = useCallback(
     (
       role: string,
@@ -389,6 +371,8 @@ export default function HomePage() {
             agents={me.agents}
             loading={me.loading}
             walletAddress={user?.walletAddress ?? null}
+            userName={user?.name ?? null}
+            onUpdateName={updateName}
             onEnterCompany={() => setInCompany(true)}
             onAddAgent={() => setDeployOpen(true)}
             onCreateCompany={() => setCreateCompanyOpen(true)}

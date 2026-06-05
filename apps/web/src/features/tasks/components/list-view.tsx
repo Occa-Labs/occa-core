@@ -1,18 +1,27 @@
 "use client";
 
 import { CornerDownRight } from "lucide-react";
+import { Spinner } from "@/components/ui/spinner";
 import type { TaskDTO } from "@occa/shared/types";
+import { useInView } from "@/lib/use-in-view";
 import { STATUS_COLUMNS } from "../types";
 import { PriorityBadge } from "./form-controls";
 
 export function ListView({
   tasks,
   onTaskClick,
+  hasNextPage = false,
+  isFetchingNextPage = false,
+  onLoadMore,
 }: {
   tasks: TaskDTO[];
   onTaskClick: (task: TaskDTO, triggerRect: DOMRect) => void;
+  hasNextPage?: boolean;
+  isFetchingNextPage?: boolean;
+  onLoadMore?: () => void;
 }) {
   const taskNumberById = new Map(tasks.map((t) => [t.id, t.taskNumber]));
+  const sentinelRef = useInView(() => onLoadMore?.(), hasNextPage);
   return (
     <div className="overflow-y-auto h-full px-1">
       <table className="w-full text-xs border-separate border-spacing-y-1">
@@ -82,12 +91,19 @@ export function ListView({
           {tasks.length === 0 && (
             <tr>
               <td colSpan={5} className="px-3 py-8 text-center text-white/20">
-                No tasks yet. Click + New Task to get started.
+                No tasks yet.
               </td>
             </tr>
           )}
         </tbody>
       </table>
+
+      {hasNextPage && <div ref={sentinelRef} className="h-px" />}
+      {isFetchingNextPage && (
+        <div className="flex items-center justify-center py-3">
+          <Spinner variant="block" className="text-base text-white/40" />
+        </div>
+      )}
     </div>
   );
 }

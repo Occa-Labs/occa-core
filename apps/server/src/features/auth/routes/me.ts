@@ -14,10 +14,13 @@ import { agentIdentities, deployments, users } from "@occa/shared/schema";
 import type { MeResponse } from "@occa/shared/types";
 import { db } from "../../../infra/database/client";
 import { requireAuth } from "../../../middleware/auth";
+import { LIMITS } from "../../../lib/limits";
 import { hydrateDeploymentDTOs } from "../../agents/services/deployment-status";
 import { toCompanyDTO } from "../../companies/domain/dto";
 import { findActiveOwnerCompanyWithProfile } from "../../companies/repositories/companies";
 import { recoverFromChainIfMissing } from "../../chain/services/chain-recovery";
+import { toAuthUser } from "../domain/users";
+import { updateUserName } from "../repositories/users";
 
 const router: Router = Router();
 
@@ -70,16 +73,33 @@ router.get("/", requireAuth, async (req: Request, res: Response) => {
       : [];
 
   const response: MeResponse = {
-    user: {
-      id: userRow.id,
-      walletAddress: userRow.walletAddress,
-      isPlatform: userRow.isPlatform,
-      createdAt: userRow.createdAt.toISOString(),
-    },
+    user: toAuthUser(userRow),
     company: loaded ? toCompanyDTO(loaded.company, loaded.profile) : null,
     agents: await hydrateDeploymentDTOs(deploymentRows),
   };
   res.json(response);
+});
+
+// PATCH /api/me — update the caller's own optional display name. Send
+// `{ name: string }` to set, `{ name: null }` or empty to clear.
+router.patch("/", requireAuth, async (req: Request, res: Response) => {
+  const raw = (req.body as { name?: unknown } | undefined)?.name;
+  if (raw !== null && raw !== undefined && typeof raw !== "string") {
+    res.status(StatusCodes.BAD_REQUEST).json({ error: ERROR_CODES.INVALID_BODY });
+    return;
+  }
+  if (typeof raw === "string" && raw.length > LIMITS.NAME) {
+    res.status(StatusCodes.BAD_REQUEST).json({ error: ERROR_CODES.INVALID_BODY });
+    return;
+  }
+  const updated = await updateUserName(req.user!.userId, raw ?? null);
+  if (!updated) {
+    res
+      .status(StatusCodes.UNAUTHORIZED)
+      .json({ error: ERROR_CODES.USER_NOT_FOUND });
+    return;
+  }
+  res.json({ user: toAuthUser(updated) });
 });
 
 export default router;

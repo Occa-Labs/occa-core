@@ -43,7 +43,7 @@ import { SettingsWindow } from "@/components/settings-window";
 import { ChangelogsWindow } from "@/components/changelogs-window";
 import { DevWindow } from "@/features/dev-tools/components/dev-window";
 import { BrainWindow } from "@/features/company-brain/components/brain-window";
-import { DocumentsWindow } from "@/features/documents/components/documents-window";
+import { FinderWindow } from "@/features/documents/components/finder/finder-window";
 import { ChatsWindow } from "@/features/chats/components/chats-window";
 import { SkillLibrary } from "@/features/skills/components/skill-library";
 import { ToolsWindow } from "@/features/tools/components/tools-window";
@@ -452,7 +452,7 @@ export function OsShell({
         />
       )}
       {activeWindow === "company-brain" && <BrainWindow onClose={close} />}
-      {activeWindow === "documents" && <DocumentsWindow onClose={close} />}
+      {activeWindow === "documents" && <FinderWindow onClose={close} />}
       {activeWindow === "skills" && FEATURES.skills && (
         <SkillLibrary
           onClose={close}

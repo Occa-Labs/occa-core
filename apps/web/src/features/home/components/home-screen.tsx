@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import {
   Building2,
   Bot,
@@ -11,6 +11,7 @@ import {
   Inbox,
   Copy,
   Check,
+  ChevronDown,
 } from "lucide-react";
 import type {
   AgentDTO,
@@ -24,6 +25,7 @@ import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
 import { AppWindow } from "@/components/ui/app-window";
 import { Dock, type DockItem } from "@/components/ui/dock";
+import { FloatingPanel } from "@/components/ui/floating-panel";
 import { CreateCompanyCard } from "./create-company-card";
 import { useMarketplaceAgents } from "@/features/home/api/use-marketplace";
 import { MarketplaceAgentModal } from "./marketplace-agent-modal";
@@ -41,11 +43,34 @@ function truncate(addr: string): string {
   return `${addr.slice(0, 4)}…${addr.slice(-4)}`;
 }
 
-// Click-to-copy wallet pill for the home top bar. Mirrors the company
-// shell's wallet behavior (copy the full address) without importing the
-// auth feature — feature boundaries forbid that, so this stays local.
-function WalletPill({ address }: { address: string }) {
+interface WalletMenuProps {
+  address: string;
+  name: string | null;
+  onUpdateName: (name: string | null) => Promise<void>;
+  onDisconnect: () => void;
+}
+
+// Wallet pill in the home top bar. Clicking opens a floating panel with
+// the user's optional display name (editable), the full address (copyable),
+// and a disconnect action. Kept local to the home feature — boundaries
+// forbid importing the auth feature, so name/disconnect arrive via props.
+function WalletMenu({ address, name, onUpdateName, onDisconnect }: WalletMenuProps) {
+  const [open, setOpen] = useState(false);
+  const [rect, setRect] = useState<DOMRect | null>(null);
   const [copied, setCopied] = useState(false);
+  const [draft, setDraft] = useState(name ?? "");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+
+  const dirty = draft.trim() !== (name ?? "");
+
+  const openPanel = () => {
+    setDraft(name ?? "");
+    setRect(triggerRef.current?.getBoundingClientRect() ?? null);
+    setOpen(true);
+  };
+
   const onCopy = async () => {
     try {
       await navigator.clipboard.writeText(address);
@@ -55,21 +80,123 @@ function WalletPill({ address }: { address: string }) {
       /* clipboard denied — silent */
     }
   };
+
+  // Persist only when the trimmed name actually changed (null when empty).
+  const saveName = async () => {
+    const next = draft.trim();
+    if (next === (name ?? "")) return;
+    setSaving(true);
+    setErr(null);
+    try {
+      await onUpdateName(next ? next : null);
+    } catch {
+      setErr("Couldn't save. Try again.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Save any pending edit on the way out so clicking outside the panel
+  // doesn't silently drop the name. Only closes once the save settles.
+  const closeAndSave = async () => {
+    if (dirty) await saveName();
+    setOpen(false);
+  };
+
   return (
-    <button
-      type="button"
-      onClick={onCopy}
-      title={copied ? "Copied" : "Copy address"}
-      aria-label={copied ? "Address copied" : "Copy address"}
-      className="flex h-8 cursor-pointer items-center gap-2 rounded-full bg-white/10 px-3 font-mono text-xs text-white/85 transition-colors hover:bg-white/15"
-    >
-      {truncate(address)}
-      {copied ? (
-        <Check className="size-3 text-emerald-400" />
-      ) : (
-        <Copy className="size-3 text-white/55" />
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        onClick={openPanel}
+        aria-label="Account menu"
+        className="flex h-8 max-w-[180px] cursor-pointer items-center gap-2 rounded-full bg-white/10 px-3 text-xs text-white/85 transition-colors hover:bg-white/15"
+      >
+        <span className={`truncate ${name ? "font-medium" : "font-mono"}`}>
+          {name || truncate(address)}
+        </span>
+        <ChevronDown className="size-3 shrink-0 text-white/45" />
+      </button>
+
+      {open && (
+        <FloatingPanel
+          title="Account"
+          subtitle="Solana"
+          width={300}
+          triggerRect={rect}
+          onClose={() => void closeAndSave()}
+          backdrop="transparent"
+        >
+          <div className="space-y-3 p-3">
+            <div className="rounded-xl bg-white/5 px-3 py-2.5">
+              <label className="text-[10px] font-medium tracking-wider text-white/35 uppercase">
+                Name
+              </label>
+              <div className="mt-1 flex items-center gap-2">
+                <input
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") void saveName();
+                  }}
+                  disabled={saving}
+                  maxLength={64}
+                  placeholder="Add a name (optional)"
+                  className="min-w-0 flex-1 bg-transparent text-sm text-white/90 outline-none placeholder:text-white/30"
+                />
+                {dirty && (
+                  <button
+                    type="button"
+                    onClick={() => void saveName()}
+                    disabled={saving}
+                    className="shrink-0 cursor-pointer rounded-md bg-white/10 px-2.5 py-1 text-[11px] font-medium text-white/85 transition-colors hover:bg-white/15 disabled:opacity-50"
+                  >
+                    {saving ? "Saving…" : "Save"}
+                  </button>
+                )}
+              </div>
+              {err && <p className="mt-1 text-[11px] text-red-300">{err}</p>}
+            </div>
+
+            <div className="rounded-xl bg-white/5 px-3 py-2.5">
+              <p className="text-[10px] font-medium tracking-wider text-white/35 uppercase">
+                Address
+              </p>
+              <div className="mt-1 flex items-center gap-2">
+                <code className="min-w-0 flex-1 font-mono text-[11px] leading-relaxed break-all text-white/85">
+                  {address}
+                </code>
+                <button
+                  type="button"
+                  onClick={onCopy}
+                  aria-label="Copy address"
+                  title={copied ? "Copied" : "Copy address"}
+                  className="flex size-7 shrink-0 items-center justify-center rounded-md text-white/50 transition-colors hover:bg-white/10 hover:text-white"
+                >
+                  {copied ? (
+                    <Check className="size-3.5 text-emerald-400" />
+                  ) : (
+                    <Copy className="size-3.5" />
+                  )}
+                </button>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false);
+                onDisconnect();
+              }}
+              className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-red-300/90 transition-colors hover:bg-red-500/10 hover:text-red-300"
+            >
+              <LogOut className="size-4" />
+              Disconnect wallet
+            </button>
+          </div>
+        </FloatingPanel>
       )}
-    </button>
+    </>
   );
 }
 
@@ -78,6 +205,10 @@ interface HomeScreenProps {
   agents: AgentDTO[];
   loading: boolean;
   walletAddress: string | null;
+  /** The user's optional display name (null = unset). */
+  userName?: string | null;
+  /** Persist a new display name (null clears it). */
+  onUpdateName?: (name: string | null) => Promise<void>;
   /** Open the selected company's 3D OS. */
   onEnterCompany: () => void;
   /** Open the deploy-agent flow. */
@@ -111,6 +242,8 @@ export function HomeScreen({
   inboxSlot,
   inboxCount = 0,
   onInviteSent,
+  userName = null,
+  onUpdateName,
 }: HomeScreenProps) {
   const [section, setSection] = useState<HomeSection>("agents");
 
@@ -175,7 +308,14 @@ export function HomeScreen({
             OCCA
           </span>
         </div>
-        {walletAddress && <WalletPill address={walletAddress} />}
+        {walletAddress && (
+          <WalletMenu
+            address={walletAddress}
+            name={userName}
+            onUpdateName={onUpdateName ?? (async () => {})}
+            onDisconnect={onSignOut}
+          />
+        )}
       </div>
 
       {/* Content window */}

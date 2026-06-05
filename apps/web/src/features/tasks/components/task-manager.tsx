@@ -1,10 +1,12 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { LayoutGrid, LayoutList } from "lucide-react";
 import { AppWindow } from "@/components/ui/app-window";
+import { useBoardData } from "@/features/tasks/api/use-board-data";
 import { useDeleteTask } from "@/features/tasks/api/use-delete-task";
-import { useTasksList } from "@/features/tasks/api/use-tasks-list";
+import { useTaskColumn } from "@/features/tasks/api/use-task-column";
+import { useTaskCounts } from "@/features/tasks/api/use-task-counts";
 import { useUpdateTask } from "@/features/tasks/api/use-update-task";
 import { ApiError } from "@/lib/api";
 import type { TaskDTO, UpdateTaskRequest } from "@occa/shared/types";
@@ -37,30 +39,71 @@ interface TaskManagerProps {
 // the detail panel. Read + edit only — task creation moved to the CEO
 // chat bubble in `shell/ceo-chat-bubble.tsx` per the hierarchical agent
 // system entry-lock (design doc §2: user only talks to CEO).
+//
+// Data is paginated per column (board) or as one flat infinite list (list
+// view), so the window never loads the full task table at once. Column
+// totals come from the cheap counts aggregate, independent of how many
+// cards have been paged in.
 export function TaskManager({
   companyId,
   agentList,
   onClose,
 }: TaskManagerProps) {
   const [showArchived, setShowArchived] = useState(false);
-  const tasksQuery = useTasksList(Boolean(companyId), {
+  const [view, setView] = useState<"board" | "list">("board");
+
+  const hasCompany = Boolean(companyId);
+  const board = useBoardData(hasCompany && view === "board", showArchived);
+  const listQuery = useTaskColumn("all", hasCompany && view === "list", {
     includeArchived: showArchived,
   });
+  const counts = useTaskCounts(hasCompany);
+
   const updateTask = useUpdateTask();
   const deleteTask = useDeleteTask();
 
-  const tasks = tasksQuery.data ?? [];
-  const archivedCount = tasks.filter((t) => t.archivedAt !== null).length;
-  const activeCount = tasks.length - archivedCount;
-  const loading = tasksQuery.isPending && Boolean(companyId);
-  const queryError = tasksQuery.isError ? extractApiError(tasksQuery.error) : null;
+  // Cards in the active view — the superset the detail panel resolves
+  // parent/child/selection against. Whatever isn't paged in yet simply
+  // isn't found (parent/child chips hide gracefully).
+  const listTasks = useMemo(
+    () => listQuery.data?.pages.flatMap((p) => p.tasks) ?? [],
+    [listQuery.data],
+  );
+  const loadedTasks = view === "board" ? board.allLoaded : listTasks;
+
+  const taskNumberById = useMemo(
+    () => new Map(loadedTasks.map((t) => [t.id, t.taskNumber])),
+    [loadedTasks],
+  );
+  const parentNumberFor = useCallback(
+    (task: TaskDTO): number | null =>
+      task.parentTaskId ? taskNumberById.get(task.parentTaskId) ?? null : null,
+    [taskNumberById],
+  );
+
+  // Totals for the subtitle — view-independent, straight from the aggregate.
+  const activeCount = Object.values(counts.data?.counts ?? {}).reduce(
+    (sum, n) => sum + n,
+    0,
+  );
+  const archivedCount = counts.data?.archived ?? 0;
+
+  const loading =
+    hasCompany && (view === "board" ? board.isPending : listQuery.isPending);
+  const queryError =
+    view === "board"
+      ? board.isError
+        ? extractApiError(board.error)
+        : null
+      : listQuery.isError
+        ? extractApiError(listQuery.error)
+        : null;
   const mutationError =
     [updateTask, deleteTask]
       .map((m) => (m.isError ? extractApiError(m.error) : null))
       .find((e) => e !== null) ?? null;
   const error = queryError ?? mutationError;
 
-  const [view, setView] = useState<"board" | "list">("board");
   // Track selection by id so the detail panel auto-reflects polled
   // updates via a derived lookup, without a manual "sync selected on
   // tasks change".
@@ -69,14 +112,14 @@ export function TaskManager({
     useState<DOMRect | null>(null);
 
   const selectedTask = selectedTaskId
-    ? tasks.find((t) => t.id === selectedTaskId) ?? null
+    ? loadedTasks.find((t) => t.id === selectedTaskId) ?? null
     : null;
 
   const selectedParentTask = selectedTask?.parentTaskId
-    ? tasks.find((t) => t.id === selectedTask.parentTaskId) ?? null
+    ? loadedTasks.find((t) => t.id === selectedTask.parentTaskId) ?? null
     : null;
   const selectedChildTasks = selectedTask
-    ? tasks.filter((t) => t.parentTaskId === selectedTask.id)
+    ? loadedTasks.filter((t) => t.parentTaskId === selectedTask.id)
     : [];
 
   const openTaskDetail = useCallback(
@@ -172,13 +215,25 @@ export function TaskManager({
           )}
           {!loading && !error && view === "board" && (
             <BoardView
-              tasks={tasks}
+              columns={board.columns}
+              archived={board.archived}
               showArchivedColumn={showArchived}
+              parentNumberFor={parentNumberFor}
               onTaskClick={openTaskDetail}
             />
           )}
           {!loading && !error && view === "list" && (
-            <ListView tasks={tasks} onTaskClick={openTaskDetail} />
+            <ListView
+              tasks={listTasks}
+              onTaskClick={openTaskDetail}
+              hasNextPage={listQuery.hasNextPage}
+              isFetchingNextPage={listQuery.isFetchingNextPage}
+              onLoadMore={() => {
+                if (listQuery.hasNextPage && !listQuery.isFetchingNextPage) {
+                  void listQuery.fetchNextPage();
+                }
+              }}
+            />
           )}
         </div>
       </AppWindow>

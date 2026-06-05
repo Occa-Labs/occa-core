@@ -1,0 +1,1 @@
+CREATE INDEX "idx_tasks_company_status_updated" ON "tasks" USING btree ("company_id","status","updated_at") WHERE archived_at IS NULL;

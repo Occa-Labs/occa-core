@@ -19,6 +19,9 @@ import {
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
   walletAddress: text("wallet_address").notNull().unique(),
+  // Optional display name the user sets for themselves (shown in the
+  // wallet panel). NULL = unset; the UI falls back to the address.
+  name: text("name"),
   isPlatform: boolean("is_platform").notNull().default(false),
   // Device keypair persisted across probe + provision so the user only
   // approves OpenClaw pairing once. Cleared after successful provision —
@@ -645,6 +648,12 @@ export const tasks = pgTable(
     // index covers that path without bloating size on archived rows.
     index("idx_tasks_company_active")
       .on(t.companyId, t.status)
+      .where(sql`archived_at IS NULL`),
+    // Per-column paginated board reads: filter (company, status), sort by
+    // updatedAt. Trailing updatedAt lets PG satisfy the `ORDER BY ... DESC`
+    // via a backward index scan instead of a sort. Partial on active rows.
+    index("idx_tasks_company_status_updated")
+      .on(t.companyId, t.status, t.updatedAt)
       .where(sql`archived_at IS NULL`),
   ],
 );

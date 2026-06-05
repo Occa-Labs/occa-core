@@ -9,6 +9,7 @@ export function toAuthUser(row: typeof users.$inferSelect): AuthUser {
   return {
     id: row.id,
     walletAddress: row.walletAddress,
+    name: row.name,
     isPlatform: row.isPlatform,
     createdAt: row.createdAt.toISOString(),
   };

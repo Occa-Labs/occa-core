@@ -4,7 +4,9 @@ import { Router, type Request, type Response } from "express";
 import { ERROR_CODES } from "@occa/shared/error-codes";
 import { StatusCodes } from "http-status-codes";
 import type { TaskDTO, TaskStatus } from "@occa/shared/types";
+import { TASK_STATUSES } from "@occa/shared/types";
 import { childLogger } from "../../../lib/logger";
+import { LIMITS } from "../../../lib/limits";
 import { requireAuth } from "../../../middleware/auth";
 import { enqueueTaskDispatch } from "../../../infra/queue/task-worker";
 import { createTaskRecord } from "../../../infra/database/task-creation";
@@ -13,6 +15,7 @@ import {
   deleteTaskInCompany,
   findTaskInCompany,
   listTasksByCompany,
+  taskStatusCounts,
   updateTask,
 } from "../repositories/tasks";
 import { findCeoForCompany } from "../../agents/repositories/deployments";
@@ -32,12 +35,50 @@ router.get("/", requireAuth, async (req: Request, res: Response) => {
     res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.NO_COMPANY });
     return;
   }
-  // `include_archived=1` opts the response into archived rows. Default is
-  // active-only so the kanban board doesn't have to filter client-side.
+
+  // `include_archived=1` mixes archived rows in; `archived=1` returns ONLY
+  // archived (the board's Archived column). Default is active-only.
   const includeArchived = req.query.include_archived === "1";
-  const rows = await listTasksByCompany(companyId, { includeArchived });
+  const archivedOnly = req.query.archived === "1";
+
+  // Optional single-status column filter (validated against the enum).
+  const statusParam =
+    typeof req.query.status === "string" ? req.query.status : undefined;
+  if (statusParam && !TASK_STATUSES.includes(statusParam as TaskStatus)) {
+    res
+      .status(StatusCodes.BAD_REQUEST)
+      .json({ error: ERROR_CODES.INVALID_BODY, detail: "unknown status" });
+    return;
+  }
+  const status = statusParam as TaskStatus | undefined;
+
+  // Pagination is opt-in: presence of `limit` switches to a single page.
+  // Absent → legacy full list (keeps the pre-pagination client working).
+  const paginated = typeof req.query.limit === "string";
+  let limit: number | undefined;
+  let offset = 0;
+  if (paginated) {
+    const parsedLimit = Number.parseInt(req.query.limit as string, 10);
+    limit = Number.isFinite(parsedLimit)
+      ? Math.min(Math.max(parsedLimit, 1), LIMITS.TASK_PAGE_SIZE)
+      : LIMITS.TASK_PAGE_SIZE;
+    const parsedOffset = Number.parseInt(String(req.query.offset ?? ""), 10);
+    offset = Number.isFinite(parsedOffset) && parsedOffset > 0 ? parsedOffset : 0;
+  }
+
+  // Fetch one extra row to detect a next page without a second count query.
+  const rows = await listTasksByCompany(companyId, {
+    includeArchived,
+    archivedOnly,
+    status,
+    ...(paginated ? { limit: limit! + 1, offset } : {}),
+  });
+
+  const hasMore = paginated && rows.length > limit!;
+  const pageRows = paginated && hasMore ? rows.slice(0, limit!) : rows;
+
   const names = await agentNameMap(companyId);
-  const tasksDto: TaskDTO[] = rows.map((r) =>
+  const tasksDto: TaskDTO[] = pageRows.map((r) =>
     toTaskDTO(
       r,
       r.assignedDeploymentId
@@ -45,7 +86,20 @@ router.get("/", requireAuth, async (req: Request, res: Response) => {
         : null,
     ),
   );
-  res.json({ tasks: tasksDto });
+  res.json(paginated ? { tasks: tasksDto, hasMore } : { tasks: tasksDto });
+});
+
+// Per-status counts for the board column headers. Cheap aggregate — stays
+// accurate no matter how many tasks exist, so headers don't depend on how
+// many cards the client has paged in.
+router.get("/counts", requireAuth, async (req: Request, res: Response) => {
+  const companyId = await userCompanyId(req.user!.userId);
+  if (!companyId) {
+    res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.NO_COMPANY });
+    return;
+  }
+  const { byStatus, archived } = await taskStatusCounts(companyId);
+  res.json({ counts: byStatus, archived });
 });
 
 router.post("/", requireAuth, async (req: Request, res: Response) => {

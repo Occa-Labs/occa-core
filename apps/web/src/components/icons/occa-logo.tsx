@@ -1,6 +1,6 @@
 import type { SVGProps } from "react";
 
-// OCCA wordmark glyph — the cracked-O monogram with the satellite dot.
+// OCCA wordmark — the cracked-O monogram with the satellite dot.
 // Single-color via `currentColor` so it inherits whatever text color
 // the parent sets (white/70 in the top menu bar, brand white in
 // onboarding, etc.). Default rendered size mirrors a small chip-icon

@@ -167,6 +167,9 @@ export interface AuthTokenPayload {
 export interface AuthUser {
   id: string;
   walletAddress: string;
+  // Optional self-set display name. NULL/empty = unset (UI falls back to
+  // the wallet address).
+  name: string | null;
   isPlatform: boolean;
   createdAt: string;
 }
@@ -846,6 +849,14 @@ export type UpdateTaskRequest = Partial<CreateTaskRequest>;
 
 export interface ListTasksResponse {
   tasks: TaskDTO[];
+  /** Present only on paginated requests — whether a further page exists. */
+  hasMore?: boolean;
+}
+
+/** Per-status board counts. `counts` covers active rows; `archived` is the total shelved. */
+export interface TaskCountsResponse {
+  counts: Partial<Record<TaskStatus, number>>;
+  archived: number;
 }
 
 export interface TaskResponse {
