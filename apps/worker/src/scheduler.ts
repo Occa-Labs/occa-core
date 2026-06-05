@@ -13,6 +13,13 @@ import { wakeup } from "./wakeup";
 
 const TICK_INTERVAL_MS = 30_000;
 
+// A routine fire mints a wrapper task (status in_progress) so DELEGATE
+// children inherit parent_task_id for cascade wake-back. Nothing in the
+// mandate or engine ever closes that wrapper, so skipped/abandoned cycles
+// pile up forever. Reap any routine wrapper still open past this window — a
+// cycle completes in minutes; one open this long is dead, not in-flight.
+const STALE_WRAPPER_MS = 2 * 60 * 60_000;
+
 function nextRunAt(
   cronExpression: string,
   timezone: string | null,
@@ -219,6 +226,36 @@ async function fireTrigger(trigger: DueTrigger): Promise<void> {
 
 let running = false;
 
+// Deterministic cleanup for routine wrapper tasks that never reached a
+// terminal state. Archive (not done) so it carries no disbursement and stays
+// reversible. Scoped to the `routine` tag so article children and human tasks
+// are never touched.
+async function reapStaleRoutineWrappers(): Promise<void> {
+  const now = new Date();
+  const cutoff = new Date(now.getTime() - STALE_WRAPPER_MS);
+  const reaped = await db
+    .update(tasks)
+    .set({
+      archivedAt: now,
+      archiveReason: "routine_wrapper_stale",
+      updatedAt: now,
+    })
+    .where(
+      and(
+        sql`${tasks.tags} @> ARRAY['routine']::text[]`,
+        inArray(tasks.status, ["in_progress", "review"]),
+        sql`${tasks.archivedAt} IS NULL`,
+        sql`${tasks.updatedAt} < ${cutoff}`,
+      ),
+    )
+    .returning({ id: tasks.id });
+  if (reaped.length > 0) {
+    console.log(
+      `[worker:scheduler] reaped ${reaped.length} stale routine wrapper task(s)`,
+    );
+  }
+}
+
 async function tick() {
   if (running) return;
   running = true;
@@ -234,6 +271,7 @@ async function tick() {
         );
       }
     }
+    await reapStaleRoutineWrappers();
   } finally {
     running = false;
   }
