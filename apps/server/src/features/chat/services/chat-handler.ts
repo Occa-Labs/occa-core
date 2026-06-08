@@ -34,7 +34,10 @@ import { AGENT_WAIT_TIMEOUT_MS } from "../../../lib/timing";
 import { threadSessionKey } from "../../../lib/session-keys";
 import { createTaskRecord } from "../../../infra/database/task-creation";
 import { enqueueTaskDispatch } from "../../../infra/queue/task-worker";
-import { findCeoForCompany } from "../../agents/repositories/deployments";
+import {
+  findByIdInCompany,
+  findCeoForCompany,
+} from "../../agents/repositories/deployments";
 import { findByDeploymentId as findRuntimeProfile } from "../../agents/repositories/agent-runtime-profile";
 import {
   earliestMessageId,
@@ -43,6 +46,7 @@ import {
 } from "../repositories/chat-messages";
 import {
   resolveUserCeoThreadId,
+  resolveUserAgentThreadId,
   openAgentDmThread,
 } from "../repositories/chat-threads";
 import {
@@ -78,6 +82,13 @@ export interface SendUserTurnArgs {
   companyId: string;
   userId: string;
   content: string;
+  // When set, the turn targets this specific deployment (per-agent direct
+  // chat) instead of the company CEO. Marker-driven actions (DELEGATE /
+  // CREATE_TASK / OS mutations) are CEO-only — a direct chat with a
+  // specialist is conversation, not an OS control surface — so they are
+  // skipped for per-agent chats. The route must verify the caller OWNS
+  // this deployment before calling.
+  targetDeploymentId?: string;
 }
 
 // CREATE_TASK body shape (free-form JSON inside the marker block):
@@ -164,7 +175,16 @@ function readDelegateBody(
 export async function sendUserTurn(
   args: SendUserTurnArgs,
 ): Promise<ChatHandlerResult> {
-  const ceo = await findCeoForCompany(args.companyId);
+  // `ceo` holds the resolved chat target — the company CEO on the default
+  // surface, or a specific owned agent for per-agent direct chat. The name
+  // is kept for continuity with the CEO-only origin of this handler.
+  const isCeoChat = !args.targetDeploymentId;
+  const ceo = isCeoChat
+    ? await findCeoForCompany(args.companyId)
+    : await findByIdInCompany({
+        deploymentId: args.targetDeploymentId!,
+        companyId: args.companyId,
+      });
   if (!ceo) return { kind: "no_ceo" };
 
   const profile = await findRuntimeProfile(ceo.id);
@@ -193,10 +213,15 @@ export async function sendUserTurn(
       deploymentId: ceo.id,
     })) === null;
 
-  const { id: threadId, resetGeneration } = await resolveUserCeoThreadId({
-    companyId: args.companyId,
-    ceoDeploymentId: ceo.id,
-  });
+  const { id: threadId, resetGeneration } = isCeoChat
+    ? await resolveUserCeoThreadId({
+        companyId: args.companyId,
+        ceoDeploymentId: ceo.id,
+      })
+    : await resolveUserAgentThreadId({
+        companyId: args.companyId,
+        deploymentId: ceo.id,
+      });
 
   // Persist the user turn first so the FE has something to render even if
   // the adapter call hangs. The trace + assistant turn follow once we
@@ -297,7 +322,11 @@ export async function sendUserTurn(
       companyId: args.companyId,
       deploymentId: ceo.id,
       role: "system",
-      content: adapterErrorMessage({ code: result.error, subject: "Your CEO" }),
+      content: adapterErrorMessage({
+        code: result.error,
+        subject: isCeoChat ? "Your CEO" : "The agent",
+        reason: result.reason,
+      }),
       createdTaskId: null,
       traceId,
     });
@@ -308,7 +337,12 @@ export async function sendUserTurn(
   // DELEGATE preferred when present (CEO has a subordinate that fits)
   // and CREATE_TASK as the fallback (CEO self-executes). BLOCK / REVIEW
   // / REPORT are task-scoped only and intentionally ignored here.
-  const blocks = extractActionBlocks(result.reply);
+  //
+  // Marker-driven actions (DELEGATE / CREATE_TASK / OS mutations) are
+  // CEO-only — a direct per-agent chat is plain conversation, not an OS
+  // control surface. For per-agent chat `blocks` is empty, so every
+  // task-creation and OS-mutation path below short-circuits to a no-op.
+  const blocks = isCeoChat ? extractActionBlocks(result.reply) : [];
   const delegateBlock = blocks.find(
     (b) => b.token === "DELEGATE" && b.parsed,
   );
@@ -546,7 +580,12 @@ export async function sendUserTurn(
   const INLINE_DELIVERABLE_THRESHOLD = 2_500;
   const didCreateTask = createdTask !== null;
   const didMutateOs = osMutationReceipts.length > 0;
+  // Suppression is a CEO-routing nudge (chat is for clarify/propose, the
+  // deliverable belongs in a task). A direct per-agent chat has no task to
+  // route to — the agent IS meant to answer in the thread — so it never
+  // suppresses.
   const suppressInlineDeliverable =
+    isCeoChat &&
     !didCreateTask &&
     !didMutateOs &&
     cleanReply.length > INLINE_DELIVERABLE_THRESHOLD;

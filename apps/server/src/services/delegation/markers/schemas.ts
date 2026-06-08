@@ -339,6 +339,14 @@ export const setTaskStatusBlockPayload = z.object({
   status: z.enum(TASK_STATUSES),
 });
 
+// SET_RESULT_URL — the assignee reports the published URL of its own
+// deliverable (after posting via a tool). No taskId: it always targets the
+// task the agent is currently working on. The URL is anchored on-chain as
+// the trace's result_uri when the task completes.
+export const setResultUrlBlockPayload = z.object({
+  resultUri: z.string().trim().url().max(LIMITS.URL),
+});
+
 // REPORT marker is intentionally schema-less: its body is plain
 // markdown (not JSON) so the LLM can ship long-form summaries without
 // fighting JSON escape rules. The handler reads the raw text between
@@ -568,6 +576,9 @@ export type TaskDeleteProposeRejectReason =
 
 export type ActionBlockOutcome =
   | { kind: "ignored"; reason: string }
+  // SET_RESULT_URL success: the assignee's deliverable URL was recorded on
+  // its current task. Anchored on-chain as result_uri at completion.
+  | { kind: "result_url_set"; taskId: string; resultUri: string }
   // DELEGATE auto-approved: child task already created + dispatched.
   // Pre-Phase-A this was `approval_created` (inserted a pending row
   // requiring a human click). With the hierarchical algorithm now

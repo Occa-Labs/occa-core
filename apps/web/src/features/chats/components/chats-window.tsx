@@ -7,7 +7,7 @@
 //
 // Phase 3 ships Cols 1+2; Col 3 is a placeholder until Phase 4.
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { AgentDTO } from "@occa/shared/types";
 import { AppWindow } from "@/components/ui/app-window";
 import { AgentsColumn } from "./agents-column";
@@ -18,11 +18,22 @@ import { type InboxParty } from "../types";
 interface ChatsWindowProps {
   agents: AgentDTO[];
   onClose?: () => void;
+  /** Live direct-chat surface for an owned agent, injected by the shell so
+   *  this feature stays free of a features/chat import. Omit for a
+   *  read-only inbox. */
+  renderAgentChat?: (args: {
+    deploymentId: string;
+    agentName: string;
+  }) => ReactNode;
 }
 
 const INITIAL_VIEWER: InboxParty = { kind: "user" };
 
-export function ChatsWindow({ agents, onClose }: ChatsWindowProps) {
+export function ChatsWindow({
+  agents,
+  onClose,
+  renderAgentChat,
+}: ChatsWindowProps) {
   const [viewer, setViewer] = useState<InboxParty>(INITIAL_VIEWER);
   const [partner, setPartner] = useState<InboxParty | null>(null);
 
@@ -71,6 +82,7 @@ export function ChatsWindow({ agents, onClose }: ChatsWindowProps) {
           partner={partner}
           partnerLabel={partnerLabel}
           agents={agents}
+          renderAgentChat={renderAgentChat}
         />
       </div>
     </AppWindow>

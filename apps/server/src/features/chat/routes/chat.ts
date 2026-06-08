@@ -18,7 +18,10 @@ import { requireAuth } from "../../../middleware/auth";
 import { getAdapter } from "../../../lib/adapter-registry";
 import { threadSessionKey } from "../../../lib/session-keys";
 import { userCompanyId } from "../../tasks/routes/helpers";
-import { findCeoForCompany } from "../../agents/repositories/deployments";
+import {
+  findCeoForCompany,
+  findOwnedByUserId,
+} from "../../agents/repositories/deployments";
 import { findByDeploymentId as findRuntimeProfile } from "../../agents/repositories/agent-runtime-profile";
 import {
   clearThread,
@@ -30,6 +33,7 @@ import {
 import {
   bumpThreadResetGeneration,
   resolveUserCeoThreadId,
+  resolveUserAgentThreadId,
 } from "../repositories/chat-threads";
 import { sendChatMessageBody } from "../domain/schemas";
 import { sendUserTurn } from "../services/chat-handler";
@@ -244,5 +248,175 @@ router.post("/ceo", requireAuth, async (req: Request, res: Response) => {
     }
   }
 });
+
+// ── Per-agent direct chat (user ↔ owned agent) ──────────────────────────
+//
+// Mirror of the /ceo trio, but the target is an arbitrary agent the
+// caller OWNS (agent identity ownerUserId === user). Ownership is the gate
+// the multi-user model needs: a company operator can NOT chat agents owned
+// by another user (marketplace hires), only their own. Marker-driven OS
+// actions are disabled server-side for this surface (see chat-handler).
+
+// Resolve the target deployment for a per-agent chat route, enforcing both
+// company scope and identity ownership. Writes the 404/NO_COMPANY response
+// and returns null when the caller may not chat this agent.
+async function resolveOwnedChatTarget(
+  req: Request,
+  res: Response,
+): Promise<{ companyId: string; deploymentId: string } | null> {
+  const companyId = await userCompanyId(req.user!.userId);
+  if (!companyId) {
+    res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.NO_COMPANY });
+    return null;
+  }
+  const owned = await findOwnedByUserId({
+    userId: req.user!.userId,
+    deploymentId: req.params.deploymentId,
+  });
+  // Must be owned AND deployed to the caller's company — keeps thread /
+  // message scoping (companyId, deploymentId) consistent and blocks
+  // chatting an owned agent that's working at a different company.
+  if (!owned || owned.companyId !== companyId) {
+    res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.NOT_FOUND });
+    return null;
+  }
+  return { companyId, deploymentId: owned.id };
+}
+
+router.get(
+  "/agent/:deploymentId",
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const target = await resolveOwnedChatTarget(req, res);
+    if (!target) return;
+    const rows = await listMessages({
+      companyId: target.companyId,
+      deploymentId: target.deploymentId,
+    });
+    const out: ListChatMessagesResponse = {
+      messages: await serializeMessages(rows),
+    };
+    res.json(out);
+  },
+);
+
+router.delete(
+  "/agent/:deploymentId",
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const target = await resolveOwnedChatTarget(req, res);
+    if (!target) return;
+
+    // Same two-step reset as /ceo: drop the gateway session (best-effort)
+    // then bump reset_generation so the next turn derives a fresh key.
+    const profile = await findRuntimeProfile(target.deploymentId);
+    if (profile?.externalAgentId) {
+      try {
+        const { id: threadId, resetGeneration } =
+          await resolveUserAgentThreadId({
+            companyId: target.companyId,
+            deploymentId: target.deploymentId,
+          });
+        const adapter = getAdapter(profile.adapterType);
+        if (adapter) {
+          const result = await adapter.resetSession({
+            adapterConfig: (profile.adapterConfig ?? {}) as Record<
+              string,
+              unknown
+            >,
+            sessionKey: threadSessionKey(
+              profile.externalAgentId,
+              threadId,
+              resetGeneration,
+            ),
+          });
+          if (!result.ok) {
+            req.log.warn(
+              { deploymentId: target.deploymentId, error: result.error },
+              "resetSession failed on agent thread clear (non-fatal)",
+            );
+          }
+        }
+        await bumpThreadResetGeneration(threadId);
+      } catch (err) {
+        req.log.warn(
+          { err, deploymentId: target.deploymentId },
+          "agent thread reset cleanup failed (non-fatal)",
+        );
+      }
+    }
+
+    await clearThread({
+      companyId: target.companyId,
+      deploymentId: target.deploymentId,
+    });
+    res.status(StatusCodes.NO_CONTENT).end();
+  },
+);
+
+router.post(
+  "/agent/:deploymentId",
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const parsed = sendChatMessageBody.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(StatusCodes.BAD_REQUEST).json({
+        error: ERROR_CODES.INVALID_BODY,
+        detail: parsed.error.flatten(),
+      });
+      return;
+    }
+    const target = await resolveOwnedChatTarget(req, res);
+    if (!target) return;
+
+    const result = await sendUserTurn({
+      companyId: target.companyId,
+      userId: req.user!.userId,
+      content: parsed.data.content,
+      targetDeploymentId: target.deploymentId,
+    });
+
+    switch (result.kind) {
+      case "no_ceo":
+        // Target vanished between ownership check and dispatch.
+        res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.NOT_FOUND });
+        return;
+      case "agent_not_configured":
+        res
+          .status(StatusCodes.BAD_REQUEST)
+          .json({ error: ERROR_CODES.AGENT_NOT_CONFIGURED });
+        return;
+      case "agent_not_provisioned":
+        res
+          .status(StatusCodes.BAD_REQUEST)
+          .json({ error: ERROR_CODES.AGENT_NOT_PROVISIONED });
+        return;
+      case "adapter_failed": {
+        const [user, assistant] = await serializeMessages([
+          result.user,
+          result.assistant,
+        ]);
+        res.status(StatusCodes.CREATED).json({
+          user,
+          assistant,
+          createdTask: null,
+        } satisfies SendChatMessageResponse);
+        return;
+      }
+      case "ok": {
+        const [user, assistant] = await serializeMessages([
+          result.user,
+          result.assistant,
+        ]);
+        res.status(StatusCodes.CREATED).json({
+          user,
+          assistant,
+          createdTask: result.createdTask,
+        } satisfies SendChatMessageResponse);
+        return;
+      }
+    }
+  },
+);
 
 export default router;

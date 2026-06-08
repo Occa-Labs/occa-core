@@ -148,6 +148,24 @@ export const rotateBearerBody = z.object({
   apiKey: z.string().min(1).max(LIMITS.API_KEY),
 });
 
+// POST /api/agents/:id/adapter/switch
+//
+// Move an already-deployed agent to a different runtime (e.g. openclaw →
+// hermes). Discriminated by the TARGET `adapterType` so the config shape
+// is validated for the destination runtime, identical to `createAgentBody`.
+// The agent's identity, deployment, hierarchy, seat, and task history are
+// untouched — only the runtime backing the deployment changes.
+export const switchAdapterBody = z.discriminatedUnion("adapterType", [
+  z.object({
+    adapterType: z.literal("openclaw"),
+    adapterConfig: openclawAdapterConfigSchema,
+  }),
+  z.object({
+    adapterType: z.literal("hermes"),
+    adapterConfig: hermesAdapterConfigSchema,
+  }),
+]);
+
 // ── Queries ──────────────────────────────────────────────────────────────
 
 export const listAgentTracesQuery = z.object({

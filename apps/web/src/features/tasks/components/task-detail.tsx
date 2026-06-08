@@ -29,7 +29,7 @@ import { useRerunTask } from "../api/use-rerun-task";
 import { useTaskEvents } from "../api/use-task-events";
 import { useUnarchiveTask } from "../api/use-unarchive-task";
 import { STATUS_COLUMNS } from "../types";
-import { isSystemTask } from "../utils";
+import { formatCreatedFull, isSystemTask } from "../utils";
 import { ArchiveConfirmModal } from "./archive-confirm-modal";
 import {
   EffortSelect,
@@ -38,6 +38,7 @@ import {
   TaskTypeSelect,
 } from "./form-controls";
 import { BlockEditor } from "./block-editor";
+import { DeliverableJourney } from "./deliverable-journey";
 import { DetailField } from "./detail-field";
 import { ReadOnlyBlocks } from "./readonly-blocks";
 import { LiveTraceFeed } from "./live-trace-feed";
@@ -90,6 +91,7 @@ export function TaskDetail({
     !systemTask && !isArchived && task.status === "review" && !reviewBannerDismissed;
   const [archiveModalOpen, setArchiveModalOpen] = useState(false);
   const [title, setTitle] = useState(task.title);
+  const [resultUri, setResultUri] = useState(task.resultUri ?? "");
   const [blocks, setBlocks] = useState<ContentBlock[]>(
     task.blocks?.length ? task.blocks : [{ type: "paragraph", text: "" }],
   );
@@ -154,6 +156,7 @@ export function TaskDetail({
 
   useEffect(() => {
     setTitle(task.title);
+    setResultUri(task.resultUri ?? "");
     setBlocks(
       task.blocks?.length ? task.blocks : [{ type: "paragraph", text: "" }],
     );
@@ -400,6 +403,14 @@ export function TaskDetail({
             </DetailField>
           )}
 
+          <DetailField label="Created">
+            <ReadOnlyValue>{formatCreatedFull(task.createdAt)}</ReadOnlyValue>
+          </DetailField>
+
+          <DetailField label="Updated">
+            <ReadOnlyValue>{formatCreatedFull(task.updatedAt)}</ReadOnlyValue>
+          </DetailField>
+
           {parentTask && (
             <div className="col-span-2">
               <DetailField label="Parent">
@@ -413,6 +424,25 @@ export function TaskDetail({
                   </span>
                   <span className="truncate">{parentTask.title}</span>
                 </button>
+              </DetailField>
+            </div>
+          )}
+
+          {!systemTask && (
+            <div className="col-span-2">
+              <DetailField label="Result URL" align="start">
+                <input
+                  type="url"
+                  value={resultUri}
+                  placeholder="https://… (published deliverable)"
+                  onChange={(e) => setResultUri(e.target.value)}
+                  onBlur={() => {
+                    const next = resultUri.trim();
+                    if (next === (task.resultUri ?? "")) return;
+                    onUpdate({ resultUri: next || null });
+                  }}
+                  className="w-full glass-light rounded-lg px-2 py-1 text-xs text-white/70 placeholder:text-white/25 focus:outline-none focus:ring-1 focus:ring-white/20"
+                />
               </DetailField>
             </div>
           )}
@@ -495,6 +525,8 @@ export function TaskDetail({
             }}
           />
         )}
+
+        <DeliverableJourney task={task} events={taskEvents.data ?? []} />
 
         <hr className="border-white/8" />
 

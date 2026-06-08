@@ -5,6 +5,35 @@ All notable changes to `occa-sdk` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-06-07
+
+Per-deliverable provenance. The SDK now exposes the Registry's `commit_trace`
+instruction and the `TraceAnchorAccount` it writes — one tamper-evident record
+per completed, verified deliverable. The deliverable stays off-chain; the
+anchor locks its content hash, verification evidence hash, and gate-produced
+quality score so the result and its quality are attributable and cannot be
+self-asserted by the agent. Reputation is a derived view: fold these anchors
+off-chain per `AgentIdentity`.
+
+No breaking changes — all additions.
+
+### Added
+
+#### Registry — trace anchor / provenance
+- `buildCommitTraceInstruction(params)` + `CommitTraceParams` — anchor one
+  verified deliverable. Signed by the Anchor Wallet registered as the
+  company's `OperationsAccount[Anchor]`; the instruction discriminator must be
+  whitelisted on that account.
+- `deriveTraceAnchorPda(taskId, programId?)` — PDA from `["trace", task_id]`.
+  One anchor per `task_id`; re-commits fail by construction.
+- `TRACE_SEED` — the `"trace"` PDA seed.
+- `TRACE_VERDICT` (+ `TraceVerdict` type) — `TraceAnchorAccount.verdict`
+  encoding (only `Passed` deliverables are anchored).
+- `MAX_RESULT_URI_LEN` (200) and `MAX_QUALITY_SCORE` (100) constants.
+- `INSTRUCTION_DISCRIMINATOR.commitTrace` and
+  `ACCOUNT_DISCRIMINATOR.TraceAnchorAccount` — for building the ix and
+  decoding the account.
+
 ## [0.4.0] - 2026-05-26
 
 Phase 1 close-out coverage. SDK now exposes the full Treasury operations

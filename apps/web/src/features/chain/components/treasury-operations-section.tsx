@@ -50,6 +50,9 @@ const DISBURSEMENT_WHITELIST = [
 ];
 const ANCHOR_WHITELIST = [
   INSTRUCTION_DISCRIMINATOR.commitDailyAnchor.toString("hex"),
+  // Per-deliverable provenance. The Anchor Wallet signs both the daily
+  // Merkle rollup and per-task commit_trace anchors.
+  INSTRUCTION_DISCRIMINATOR.commitTrace.toString("hex"),
 ];
 
 function defaultWhitelistFor(kind: 0 | 1): string[] {
@@ -291,6 +294,17 @@ function OperationsRow({
   const label = kindLabel(ops.kind);
   const description = kindDescription(ops.kind);
 
+  // Detect when this account's on-chain instruction whitelist is missing
+  // a capability OCCA has since added (e.g. commit_trace for per-article
+  // provenance). The account still works for what it was set up to do, but
+  // the newer action is silently blocked until the owner re-syncs.
+  const desiredWhitelist = defaultWhitelistFor(ops.kind);
+  const whitelistDrift =
+    ops.exists &&
+    !ops.revoked &&
+    (desiredWhitelist.length !== ops.actionWhitelist.length ||
+      desiredWhitelist.some((d) => !ops.actionWhitelist.includes(d)));
+
   return (
     <div className="px-3 py-2.5 rounded-lg bg-white/3">
       <div className="flex items-center justify-between">
@@ -342,6 +356,34 @@ function OperationsRow({
             kind={ops.kind}
             onDone={onChanged}
           />
+        </div>
+      )}
+
+      {whitelistDrift && (
+        <div className="mt-2.5 rounded-lg border border-amber-400/30 bg-amber-400/10 px-3 py-2.5">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="size-3.5 shrink-0 text-amber-300 mt-0.5" />
+            <div className="flex-1 min-w-0">
+              <p className="text-[11.5px] font-medium text-amber-200 leading-snug">
+                Action needed — new capability not enabled yet
+              </p>
+              <p className="mt-0.5 text-[11px] text-amber-100/70 leading-relaxed">
+                OCCA added a newer on-chain action (per-article provenance)
+                that this wallet isn&apos;t permitted to sign yet. Sync
+                permissions to turn it on — one owner signature, no other
+                changes.
+              </p>
+              <div className="mt-2">
+                <ManageOperationsButton
+                  companyId={companyId}
+                  ops={ops}
+                  onDone={onChanged}
+                  label="Sync permissions"
+                  variant="primary"
+                />
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
@@ -537,16 +579,20 @@ function ManageOperationsButton({
   companyId,
   ops,
   onDone,
+  label = "Adjust",
+  variant = "secondary",
 }: {
   companyId: string;
   ops: OperationsAccountState;
   onDone: () => void;
+  label?: string;
+  variant?: "secondary" | "primary";
 }) {
   const [open, setOpen] = useState(false);
   return (
     <>
-      <Button size="sm" variant="secondary" onClick={() => setOpen(true)}>
-        Adjust
+      <Button size="sm" variant={variant} onClick={() => setOpen(true)}>
+        {label}
       </Button>
       <ManageOperationsModal
         open={open}
@@ -607,6 +653,7 @@ function ManageOperationsModal({
       kind: OperationsKindString;
       rateLimitPerPeriod?: number;
       expiryUnix?: number;
+      actionWhitelist?: string[];
     } = { kind: kindString(ops.kind) };
     if (rateLimit !== ops.rateLimitPerPeriod) {
       body.rateLimitPerPeriod = rateLimit;
@@ -617,7 +664,22 @@ function ManageOperationsModal({
     if (String(newExpiryUnix) !== ops.expiryUnix) {
       body.expiryUnix = newExpiryUnix;
     }
-    if (body.rateLimitPerPeriod === undefined && body.expiryUnix === undefined) {
+    // Heal whitelist drift: if OCCA has added anchor-class instructions
+    // since this account was registered (e.g. commit_trace alongside
+    // commit_daily_anchor), re-apply the current default so the signer can
+    // execute them. Only sent when the on-chain set differs.
+    const desiredWhitelist = defaultWhitelistFor(ops.kind);
+    const whitelistDrift =
+      desiredWhitelist.length !== ops.actionWhitelist.length ||
+      desiredWhitelist.some((d) => !ops.actionWhitelist.includes(d));
+    if (whitelistDrift) {
+      body.actionWhitelist = desiredWhitelist;
+    }
+    if (
+      body.rateLimitPerPeriod === undefined &&
+      body.expiryUnix === undefined &&
+      body.actionWhitelist === undefined
+    ) {
       setStage({ kind: "error", message: "Nothing changed" });
       return;
     }
@@ -681,9 +743,9 @@ function ManageOperationsModal({
       open={open}
       onClose={busy ? () => {} : onClose}
       title={`Adjust ${kindShortAction(ops.kind)}`}
-      subtitle="Update rate limit or expiry. Whitelist edits aren't exposed yet."
+      subtitle="Update limits. Saving re-syncs on-chain permissions."
       footer={
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-3 px-4 py-3">
           {stage.kind === "error" ? (
             <span className="inline-flex items-center gap-1 text-[11px] text-red-300">
               <AlertTriangle className="size-3" />
@@ -724,7 +786,7 @@ function ManageOperationsModal({
         </div>
       }
     >
-      <div className="space-y-4">
+      <div className="space-y-4 px-4 py-4">
         <div>
           <label className="block text-[11px] uppercase tracking-wider text-white/40 mb-1.5">
             Max sign-offs per month

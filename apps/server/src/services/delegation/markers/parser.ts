@@ -18,6 +18,7 @@ import {
   handleInstallSkillBlock,
   handleProposeDeploymentBlock,
   handleReportBlock,
+  handleSetResultUrlBlock,
   handleToggleChannelBlock,
   handleToggleRoutineBlock,
   handleToggleWorkflowBlock,
@@ -112,6 +113,8 @@ async function routeBlock(
       return handleBlockBlock(args);
     case "REPORT":
       return handleReportBlock(args);
+    case "SET_RESULT_URL":
+      return handleSetResultUrlBlock(args);
     case "INSTALL_SKILL":
       return handleInstallSkillBlock(args);
     case "UNINSTALL_SKILL":

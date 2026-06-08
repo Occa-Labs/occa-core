@@ -8,6 +8,7 @@ import {
   POLICY_SEED,
   PROTOCOL_FEES_SEED,
   REGISTRY_PROGRAM_ID,
+  TRACE_SEED,
   TREASURY_PROGRAM_ID,
   TREASURY_SEED,
   type OperationsKind,
@@ -193,6 +194,30 @@ export function deriveDailyAnchorPda(
 ): { pda: PublicKey; bump: number } {
   const [pda, bump] = PublicKey.findProgramAddressSync(
     [DAILY_ANCHOR_SEED, deploymentPda.toBuffer(), i64LeBytes(dayUnix)],
+    programId,
+  );
+  return { pda, bump };
+}
+
+/**
+ * TraceAnchorAccount PDA — owned by Registry program. One per completed,
+ * verified deliverable (article, PR, etc).
+ *
+ *   seeds = ["trace", task_id_32bytes]
+ *
+ * `taskId` is a 32-byte hash of the task creation params. Collision on the
+ * same `taskId` means the task is already anchored — a re-commit fails
+ * naturally (Anchor `init` rejects).
+ */
+export function deriveTraceAnchorPda(
+  taskId: Uint8Array,
+  programId: PublicKey = REGISTRY_PROGRAM_ID,
+): { pda: PublicKey; bump: number } {
+  if (taskId.length !== 32) {
+    throw new RangeError(`taskId must be 32 bytes, got ${taskId.length}`);
+  }
+  const [pda, bump] = PublicKey.findProgramAddressSync(
+    [TRACE_SEED, Buffer.from(taskId)],
     programId,
   );
   return { pda, bump };

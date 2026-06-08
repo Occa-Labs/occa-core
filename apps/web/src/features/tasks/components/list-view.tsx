@@ -5,6 +5,7 @@ import { Spinner } from "@/components/ui/spinner";
 import type { TaskDTO } from "@occa/shared/types";
 import { useInView } from "@/lib/use-in-view";
 import { STATUS_COLUMNS } from "../types";
+import { formatCreated } from "../utils";
 import { PriorityBadge } from "./form-controls";
 
 export function ListView({
@@ -31,6 +32,7 @@ export function ListView({
             <th className="px-3 pb-2 font-medium">Status</th>
             <th className="px-3 pb-2 font-medium">Priority</th>
             <th className="px-3 pb-2 font-medium">Assignee</th>
+            <th className="px-3 pb-2 font-medium">Created</th>
             <th className="px-3 pb-2 font-medium">Due</th>
           </tr>
         </thead>
@@ -77,6 +79,12 @@ export function ListView({
               <td className="px-3 py-2.5 text-white/40">
                 {task.assignedAgentName ?? "—"}
               </td>
+              <td
+                className="px-3 py-2.5 text-white/40 whitespace-nowrap"
+                title={new Date(task.createdAt).toLocaleString()}
+              >
+                {formatCreated(task.createdAt)}
+              </td>
               <td className="px-3 py-2.5 rounded-r-xl text-white/40">
                 {task.dueDate
                   ? new Date(task.dueDate).toLocaleDateString("en-US", {
@@ -90,7 +98,7 @@ export function ListView({
           })}
           {tasks.length === 0 && (
             <tr>
-              <td colSpan={5} className="px-3 py-8 text-center text-white/20">
+              <td colSpan={6} className="px-3 py-8 text-center text-white/20">
                 No tasks yet.
               </td>
             </tr>

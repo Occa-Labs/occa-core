@@ -1,6 +1,11 @@
 "use client";
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type QueryKey,
+} from "@tanstack/react-query";
 import type {
   ChatMessageDTO,
   ListChatMessagesResponse,
@@ -15,11 +20,36 @@ import { chatKeys } from "./keys";
 // chat panel is modal-ish; tab swap shouldn't drop a turn.
 const REFETCH_INTERVAL_MS = 3_000;
 
-export function useCeoChatMessages(enabled: boolean) {
+// A chat target is either the company CEO (deploymentId omitted) or a
+// specific owned agent. Both share identical wire shapes — only the
+// endpoint + cache key differ — so every hook below is written once
+// against this resolver and the CEO-named exports are thin wrappers.
+interface ChatTarget {
+  key: QueryKey;
+  list: () => Promise<ListChatMessagesResponse>;
+  send: (input: { content: string }) => Promise<SendChatMessageResponse>;
+  clear: () => Promise<void>;
+}
+
+function resolveTarget(deploymentId?: string): ChatTarget {
+  if (deploymentId) {
+    const api = chatApi.agent(deploymentId);
+    return { key: chatKeys.agent(deploymentId), ...api };
+  }
+  return { key: chatKeys.ceo(), ...chatApi.ceo };
+}
+
+// ── Generic hooks (CEO surface when deploymentId is omitted) ──────────────
+
+export function useChatMessages(
+  deploymentId: string | undefined,
+  enabled: boolean,
+) {
+  const target = resolveTarget(deploymentId);
   return useQuery({
-    queryKey: chatKeys.ceo(),
+    queryKey: target.key,
     queryFn: async () => {
-      const { messages } = await chatApi.ceo.list();
+      const { messages } = await target.list();
       return messages;
     },
     enabled,
@@ -31,17 +61,17 @@ export function useCeoChatMessages(enabled: boolean) {
 // Send a turn. Optimistic-appends the user message into the cache so the
 // FE renders the user bubble immediately while waiting for the server
 // reply. On success, replaces the optimistic row with the server-issued
-// row and appends the assistant reply. Also invalidates the task list
-// when the reply spawned a task so the kanban reflects it.
-export function useSendCeoMessage() {
+// row and appends the assistant reply.
+export function useSendChatMessage(deploymentId?: string) {
   const queryClient = useQueryClient();
+  const target = resolveTarget(deploymentId);
 
   return useMutation({
-    mutationFn: async (content: string) => chatApi.ceo.send({ content }),
+    mutationFn: async (content: string) => target.send({ content }),
     onMutate: async (content) => {
-      await queryClient.cancelQueries({ queryKey: chatKeys.ceo() });
+      await queryClient.cancelQueries({ queryKey: target.key });
       const previous =
-        queryClient.getQueryData<ChatMessageDTO[]>(chatKeys.ceo()) ?? [];
+        queryClient.getQueryData<ChatMessageDTO[]>(target.key) ?? [];
       const optimistic: ChatMessageDTO = {
         id: `optimistic-${Date.now()}`,
         role: "user",
@@ -50,7 +80,7 @@ export function useSendCeoMessage() {
         linkedApproval: null,
         createdAt: new Date().toISOString(),
       };
-      queryClient.setQueryData<ChatMessageDTO[]>(chatKeys.ceo(), [
+      queryClient.setQueryData<ChatMessageDTO[]>(target.key, [
         ...previous,
         optimistic,
       ]);
@@ -58,7 +88,7 @@ export function useSendCeoMessage() {
     },
     onError: (_err, _vars, ctx) => {
       if (ctx) {
-        queryClient.setQueryData<ChatMessageDTO[]>(chatKeys.ceo(), ctx.previous);
+        queryClient.setQueryData<ChatMessageDTO[]>(target.key, ctx.previous);
       }
     },
     onSuccess: (data: SendChatMessageResponse, _vars, ctx) => {
@@ -68,7 +98,7 @@ export function useSendCeoMessage() {
       // onSuccess runs. A naive append would then duplicate them. Build
       // a fresh list, drop the optimistic row, and append only the ids
       // that weren't already present.
-      queryClient.setQueryData<ChatMessageDTO[]>(chatKeys.ceo(), (old) => {
+      queryClient.setQueryData<ChatMessageDTO[]>(target.key, (old) => {
         const seen = new Set<string>();
         const merged: ChatMessageDTO[] = [];
         for (const m of old ?? []) {
@@ -87,37 +117,28 @@ export function useSendCeoMessage() {
         }
         return merged;
       });
-      // Cross-feature side-effect (refreshing the kanban when CEO spawns
-      // a task) is the consumer's concern — features/chat doesn't reach
-      // into features/tasks. The shell wires this via mutation.onSuccess.
     },
     onSettled: () => {
       // A polling tick may overlap with the mutation; ensure the cache
       // converges to the server-of-record list once the dust settles.
-      void queryClient.invalidateQueries({ queryKey: chatKeys.ceo() });
+      void queryClient.invalidateQueries({ queryKey: target.key });
     },
   });
 }
 
-// Fallback shape for places that just want the raw query result and
-// don't care about the mutation.
-export function emptyMessages(): ListChatMessagesResponse {
-  return { messages: [] };
-}
-
 // Wipe the chat thread server-side. After success the cache is reset to
 // an empty array immediately so the UI clears without a polling-tick
-// delay. Settled-invalidate forces the next list query to confirm with
-// the server (in case another tab raced).
-export function useClearCeoChat() {
+// delay. Settled-invalidate forces the next list query to confirm.
+export function useClearChat(deploymentId?: string) {
   const queryClient = useQueryClient();
+  const target = resolveTarget(deploymentId);
   return useMutation({
-    mutationFn: async () => chatApi.ceo.clear(),
+    mutationFn: async () => target.clear(),
     onSuccess: () => {
-      queryClient.setQueryData<ChatMessageDTO[]>(chatKeys.ceo(), []);
+      queryClient.setQueryData<ChatMessageDTO[]>(target.key, []);
     },
     onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: chatKeys.ceo() });
+      void queryClient.invalidateQueries({ queryKey: target.key });
     },
   });
 }
@@ -126,9 +147,10 @@ export function useClearCeoChat() {
 // on the message that queued it). Calls the shared approvals endpoint via
 // lib — NOT the approvals feature — so the no-cross-feature-import rule
 // holds. Refetches the thread on success so the card reflects the new
-// status. The Approvals window remains the canonical record (it polls).
-export function useDecideCeoApproval() {
+// status.
+export function useDecideChatApproval(deploymentId?: string) {
   const queryClient = useQueryClient();
+  const target = resolveTarget(deploymentId);
   return useMutation({
     mutationFn: async (input: {
       id: string;
@@ -136,7 +158,28 @@ export function useDecideCeoApproval() {
       rejectionReason?: string;
     }) => approvalsApi.decide(input.id, input.decision, input.rejectionReason),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: chatKeys.ceo() });
+      void queryClient.invalidateQueries({ queryKey: target.key });
     },
   });
+}
+
+// ── CEO-named wrappers (back-compat for the shell's CEO chat bubble) ───────
+
+export function useCeoChatMessages(enabled: boolean) {
+  return useChatMessages(undefined, enabled);
+}
+export function useSendCeoMessage() {
+  return useSendChatMessage(undefined);
+}
+export function useClearCeoChat() {
+  return useClearChat(undefined);
+}
+export function useDecideCeoApproval() {
+  return useDecideChatApproval(undefined);
+}
+
+// Fallback shape for places that just want the raw query result and
+// don't care about the mutation.
+export function emptyMessages(): ListChatMessagesResponse {
+  return { messages: [] };
 }

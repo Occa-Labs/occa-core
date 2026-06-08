@@ -18,6 +18,9 @@
 //   [[OCCA:REVIEW]]                            — flag review needed
 //   [[OCCA:DELEGATE]] {...} [[/OCCA:DELEGATE]] — request to delegate to existing agent
 //   [[OCCA:BLOCK]]    {...} [[/OCCA:BLOCK]]    — park task on other blockers
+//   [[OCCA:SET_RESULT_URL]] {...} [[/OCCA:SET_RESULT_URL]] — assignee reports the
+//                                                published URL of its own deliverable
+//                                                (anchored on-chain as result_uri)
 //   [[OCCA:REPORT]]   {...} [[/OCCA:REPORT]]   — CEO ships synthesized result back
 //                                                to the user via chat (root tasks only)
 //   [[OCCA:REVIEW_VERDICT]] {...} [[/OCCA:REVIEW_VERDICT]] — a Head's editorial

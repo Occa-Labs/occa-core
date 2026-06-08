@@ -141,6 +141,162 @@
       ]
     },
     {
+      "name": "commit_trace",
+      "docs": [
+        "Anchor a single completed, verified deliverable on-chain — per-task",
+        "provenance. Where `commit_daily_anchor` commits one Merkle root over",
+        "a day's task stream, this records ONE deliverable: a link to the",
+        "result, the content hash that locks it, and the verification verdict",
+        "+ quality score.",
+        "",
+        "Only deliverables that PASSED the off-chain verification gate are",
+        "anchored (policy: keep unverified / spam output off the chain).",
+        "`verdict` is therefore always written `TRACE_VERDICT_PASSED`; failed",
+        "work is simply never committed through this ix.",
+        "",
+        "Per Whitepaper §2 trace architecture: the deliverable itself stays",
+        "off-chain. `content_hash` makes the result tamper-evident and",
+        "`evidence_hash` locks the off-chain verification report. Anyone can",
+        "re-hash the artifact + report and verify against these. The on-chain",
+        "`quality_score` + `rubric_version` make the quality signal itself",
+        "tamper-evident — the agent cannot self-assert it.",
+        "",
+        "Seeds: `[\"trace\", task_id]`. PDA collision = at most one anchor per",
+        "task. Re-attempts on the same `task_id` fail naturally (Anchor `init`",
+        "rejects).",
+        "",
+        "Authorization: identical model to `commit_daily_anchor` — signed by",
+        "the Anchor Wallet registered as `OperationsAccount[Anchor]`; this",
+        "ix's discriminator must be whitelisted on that account. Resolved via",
+        "cross-program PDA lookup (`seeds::program = treasury::ID`).",
+        "",
+        "Phase 1 rate limit: NOT enforced (same constraint as",
+        "`commit_daily_anchor` — registry cannot mutate the treasury-owned",
+        "ops counter without an extra CPI). PDA-per-task dedup + rent burn",
+        "cap griefing."
+      ],
+      "discriminator": [
+        58,
+        140,
+        230,
+        51,
+        170,
+        109,
+        228,
+        125
+      ],
+      "accounts": [
+        {
+          "name": "deployment",
+          "docs": [
+            "Deployment that produced this deliverable."
+          ]
+        },
+        {
+          "name": "company",
+          "docs": [
+            "CompanyAccount referenced by deployment. Verified via",
+            "`deployment.company == company.key()` in the handler so we can also",
+            "resolve the OperationsAccount[Anchor] PDA from it."
+          ]
+        },
+        {
+          "name": "anchor_signer",
+          "docs": [
+            "Anchor Wallet — pubkey verified against `operations.signer`."
+          ],
+          "signer": true
+        },
+        {
+          "name": "operations",
+          "docs": [
+            "`OperationsAccount[Anchor]` from treasury program. Resolved via",
+            "cross-program PDA derivation; Anchor `Account<T>` auto-verifies",
+            "owner = treasury::ID."
+          ]
+        },
+        {
+          "name": "trace_anchor",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  97,
+                  99,
+                  101
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "task_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "payer",
+          "docs": [
+            "Pays rent for the TraceAnchorAccount PDA."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "task_id",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "result_uri",
+          "type": "string"
+        },
+        {
+          "name": "content_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "quality_score",
+          "type": "u8"
+        },
+        {
+          "name": "rubric_version",
+          "type": "u8"
+        },
+        {
+          "name": "evidence_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "completed_at",
+          "type": "i64"
+        }
+      ]
+    },
+    {
       "name": "create_company",
       "docs": [
         "Create a new CompanyAccount PDA + atomically initialize its",
@@ -866,6 +1022,19 @@
         64,
         178
       ]
+    },
+    {
+      "name": "TraceAnchorAccount",
+      "discriminator": [
+        159,
+        101,
+        186,
+        98,
+        211,
+        217,
+        119,
+        232
+      ]
     }
   ],
   "errors": [
@@ -968,6 +1137,21 @@
       "code": 6019,
       "name": "InvalidDiscriminator",
       "msg": "could not parse instruction discriminator"
+    },
+    {
+      "code": 6020,
+      "name": "ResultUriTooLong",
+      "msg": "result_uri exceeds MAX_RESULT_URI_LEN"
+    },
+    {
+      "code": 6021,
+      "name": "InvalidQualityScore",
+      "msg": "quality_score exceeds MAX_QUALITY_SCORE (0-100)"
+    },
+    {
+      "code": 6022,
+      "name": "InvalidCompletedAt",
+      "msg": "completed_at must be > 0 and not in the future"
     }
   ],
   "types": [
@@ -1463,6 +1647,150 @@
           },
           {
             "name": "Anchor"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TraceAnchorAccount",
+      "docs": [
+        "Per-deliverable provenance record. One per completed, verified task.",
+        "The deliverable content lives off-chain; this account locks its",
+        "identity, content hash, and verified quality so it is tamper-evident",
+        "and attributable. Reputation views are derived off-chain by folding",
+        "over these accounts per `agent`."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "version",
+            "docs": [
+              "Schema version."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "task_id",
+            "docs": [
+              "Hash of task creation params — globally unique task id, also baked",
+              "into the PDA seed."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "company",
+            "docs": [
+              "CompanyAccount the work was produced in (denormalized for indexing)."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "agent",
+            "docs": [
+              "AgentIdentity PDA that produced the deliverable. Reputation",
+              "aggregates against this (stable across redeployments), NOT the",
+              "per-company deployment."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "deployment",
+            "docs": [
+              "Deployment PDA active when the work was produced (company context)."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "result_uri",
+            "docs": [
+              "Link to the deliverable (article URL, PR, etc). Off-chain pointer."
+            ],
+            "type": "string"
+          },
+          {
+            "name": "content_hash",
+            "docs": [
+              "SHA-256 of the deliverable content at completion — tamper-evidence",
+              "for the result behind `result_uri`."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "verdict",
+            "docs": [
+              "Verification verdict. Always `TRACE_VERDICT_PASSED` — only passed",
+              "deliverables are anchored."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "quality_score",
+            "docs": [
+              "Rubric quality score 0-100 (see `MAX_QUALITY_SCORE`). Tamper-evident",
+              "quality signal, produced by the deterministic gate, not the agent."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "rubric_version",
+            "docs": [
+              "Version of the scoring rubric that produced `quality_score`. Scores",
+              "are only comparable within the same rubric version."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "evidence_hash",
+            "docs": [
+              "SHA-256 of the off-chain verification report (claims checked +",
+              "sources). Lets anyone audit WHY the verdict/score was assigned."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "completed_at",
+            "docs": [
+              "Unix timestamp the deliverable was completed off-chain."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "committed_at",
+            "docs": [
+              "Unix timestamp this commit landed on-chain."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "committed_by",
+            "docs": [
+              "Anchor Wallet pubkey that signed the commit. Mirror of",
+              "`OperationsAccount[Anchor].signer` at commit time."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "bump",
+            "docs": [
+              "Bump for PDA verification."
+            ],
+            "type": "u8"
           }
         ]
       }

@@ -24,6 +24,13 @@ export interface DeliveryResult {
   ok: boolean;
   /** HTTP status string, or "error" when the request itself failed. */
   status: string;
+  /**
+   * Canonical URL of the published resource, when the receiver returns one
+   * in its 2xx JSON body as `{ "url": "..." }` (e.g. crypoch returns the
+   * live article URL). Null otherwise. Used to populate the on-chain
+   * `result_uri` so provenance links back to the published artifact.
+   */
+  resultUri: string | null;
 }
 
 export async function deliverWebhook(
@@ -65,7 +72,23 @@ export async function deliverWebhook(
         status,
         error: detail || `HTTP ${status}`,
       });
-      return { ok: false, status };
+      return { ok: false, status, resultUri: null };
+    }
+
+    // Capture the receiver's canonical URL when it returns one in the 2xx
+    // JSON body (e.g. crypoch returns `{ url, slug }`). Best-effort: a
+    // non-JSON or url-less body just yields null.
+    let resultUri: string | null = null;
+    const rawBody = await response.text().catch(() => "");
+    if (rawBody) {
+      try {
+        const parsed = JSON.parse(rawBody) as { url?: unknown };
+        if (typeof parsed.url === "string" && parsed.url.length > 0) {
+          resultUri = parsed.url;
+        }
+      } catch {
+        /* receiver didn't return JSON — fine, no URL to capture */
+      }
     }
 
     log.info(
@@ -77,7 +100,7 @@ export async function deliverWebhook(
       status,
       error: null,
     });
-    return { ok: true, status };
+    return { ok: true, status, resultUri };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     log.error(
@@ -89,6 +112,6 @@ export async function deliverWebhook(
       status: "error",
       error: message,
     });
-    return { ok: false, status: "error" };
+    return { ok: false, status: "error", resultUri: null };
   }
 }

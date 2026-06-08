@@ -25,6 +25,10 @@ import { db } from "../../../infra/database/client";
 import { getConnection } from "../../../infra/solana/connection";
 import { childLogger } from "../../../lib/logger";
 import { listCompanyTransactions } from "../services/transactions-aggregator";
+import {
+  computeReputation,
+  getAgentReputation,
+} from "../services/reputation-lookup";
 
 const log = childLogger("routes:public");
 
@@ -153,6 +157,43 @@ router.get("/agents/:pda", async (req: Request, res: Response) => {
   } catch (err) {
     log.error({ err, pda: req.params.pda }, "get agent failed");
     res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ error: "internal" });
+  }
+});
+
+// ── GET /api/public/agents/:pda/reputation ───────────────────────────
+// Reputation derived from the agent's on-chain TraceAnchors. `:pda` is a
+// deployment PDA (matching GET /agents/:pda); reputation aggregates the
+// underlying AgentIdentity's full track record across all deployments.
+router.get("/agents/:pda/reputation", async (req: Request, res: Response) => {
+  try {
+    const [row] = await db
+      .select({ identityPda: agentIdentities.identityPda })
+      .from(deployments)
+      .innerJoin(
+        agentIdentities,
+        eq(deployments.agentIdentityId, agentIdentities.id),
+      )
+      .where(eq(deployments.deploymentPda, req.params.pda))
+      .limit(1);
+    if (!row) {
+      res.status(StatusCodes.NOT_FOUND).json({ error: "not_found" });
+      return;
+    }
+    // Un-anchored identities carry a synthetic placeholder, not a real
+    // PDA — they have no on-chain traces, so return an empty reputation
+    // rather than erroring.
+    let identityPda: PublicKey;
+    try {
+      identityPda = new PublicKey(row.identityPda);
+    } catch {
+      res.status(StatusCodes.OK).json(computeReputation(row.identityPda, []));
+      return;
+    }
+    const reputation = await getAgentReputation(identityPda);
+    res.status(StatusCodes.OK).json(reputation);
+  } catch (err) {
+    log.error({ err, pda: req.params.pda }, "get agent reputation failed");
+    res.status(StatusCodes.BAD_GATEWAY).json({ error: "chain_unreachable" });
   }
 });
 

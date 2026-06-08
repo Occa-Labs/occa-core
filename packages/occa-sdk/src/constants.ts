@@ -33,6 +33,9 @@ export const OPERATIONS_SEED = Buffer.from("operations");
 // DailyAnchor PDA seed (owned by registry program). Seeds:
 // ["daily_anchor", deployment_pda, day_unix_le_i64_8bytes].
 export const DAILY_ANCHOR_SEED = Buffer.from("daily_anchor");
+// TraceAnchor PDA seed (owned by registry program). Seeds:
+// ["trace", task_id_32bytes]. One per completed, verified deliverable.
+export const TRACE_SEED = Buffer.from("trace");
 
 // OperationsKind discriminator byte — must match the Rust enum order in
 // `treasury/src/lib.rs`. Used as the 3rd seed byte of an OperationsAccount
@@ -40,7 +43,10 @@ export const DAILY_ANCHOR_SEED = Buffer.from("daily_anchor");
 export const OPERATIONS_KIND = {
   /** Disbursement Wallet — operator-held only, signs `disburse_routine`. */
   Disbursement: 0,
-  /** Anchor Wallet — operator+OCCA shared, signs `commit_daily_anchor`. */
+  /**
+   * Anchor Wallet — operator+OCCA shared, signs `commit_daily_anchor`
+   * and `commit_trace`.
+   */
   Anchor: 1,
 } as const;
 export type OperationsKind =
@@ -57,6 +63,15 @@ export const MAX_LOCALE_LEN = 8;
 export const MAX_ROLE_LEN = 32;
 export const MAX_METADATA_URI_LEN = 200;
 export const MAX_REPUTATION_URI_LEN = 200;
+export const MAX_RESULT_URI_LEN = 200;
+export const MAX_QUALITY_SCORE = 100;
+
+// TraceAnchorAccount.verdict encoding — only Passed deliverables are
+// anchored (failed/unverified work never reaches the chain).
+export const TRACE_VERDICT = {
+  Passed: 1,
+} as const;
+export type TraceVerdict = (typeof TRACE_VERDICT)[keyof typeof TRACE_VERDICT];
 
 // Status encodings — must match the on-chain constants.
 export const COMPANY_STATUS = {
@@ -81,6 +96,7 @@ export const ACCOUNT_DISCRIMINATOR = {
   CompanyAccount: Buffer.from([37, 215, 171, 200, 8, 141, 69, 96]),
   Deployment: Buffer.from([66, 90, 104, 89, 183, 130, 64, 178]),
   DailyAnchorAccount: Buffer.from([218, 106, 107, 94, 194, 48, 111, 254]),
+  TraceAnchorAccount: Buffer.from([159, 101, 186, 98, 211, 217, 119, 232]),
 } as const;
 
 // Treasury program account discriminators — from

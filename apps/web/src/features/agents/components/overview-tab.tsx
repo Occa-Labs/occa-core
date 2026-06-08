@@ -20,6 +20,7 @@ import { MODEL_POOL } from "@/features/theater/constants";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { SwitchAdapterModal } from "./switch-adapter-modal";
 import { formatWhen } from "./_shared";
 
 export function OverviewTab({
@@ -41,6 +42,7 @@ export function OverviewTab({
   hideSeating?: boolean;
 }) {
   const [seatModalOpen, setSeatModalOpen] = useState(false);
+  const [switchModalOpen, setSwitchModalOpen] = useState(false);
 
   // Resolve parent name from the flat agents list. CEO has no parent
   // by design (top of the chart); other agents fall back to "—" when
@@ -77,7 +79,6 @@ export function OverviewTab({
         ]
       : []),
     { label: "Reports to", value: reportsToValue },
-    { label: "Adapter", value: agent.adapterType },
     { label: "External ID", value: agent.externalAgentId ?? "—" },
     { label: "Created", value: formatWhen(agent.createdAt) },
     { label: "Assigned skills", value: String(agent.desiredSkills.length) },
@@ -115,6 +116,16 @@ export function OverviewTab({
           </div>
         </div>
       ))}
+      <AdapterRow
+        agent={agent}
+        onChangeClick={() => setSwitchModalOpen(true)}
+      />
+      <SwitchAdapterModal
+        open={switchModalOpen}
+        agent={agent}
+        onClose={() => setSwitchModalOpen(false)}
+        onReloadMe={onReloadMe}
+      />
       {!hideSeating && (
         <>
           <SeatRow agent={agent} onChangeClick={() => setSeatModalOpen(true)} />
@@ -152,6 +163,39 @@ export function OverviewTab({
 // another agent in the company are shown but disabled (the partial unique
 // index on `(company_id, workstation_id)` would reject the PATCH anyway;
 // disabling avoids a round-trip).
+
+// ── Adapter row ──────────────────────────────────────────────────────────
+//
+// Shows the runtime backing this agent (openclaw / hermes) and a Change
+// button that opens the SwitchAdapterModal. Always shown (unlike seating)
+// — the runtime matters in every context.
+
+function AdapterRow({
+  agent,
+  onChangeClick,
+}: {
+  agent: AgentDTO;
+  onChangeClick: () => void;
+}) {
+  return (
+    <div className="grid grid-cols-[140px_1fr] gap-3 py-2 border-b border-white/6">
+      <div className="text-xs text-white/40">Adapter</div>
+      <div className="flex items-center gap-2 min-w-0">
+        <span className="text-xs text-white/80 font-mono truncate">
+          {agent.adapterType}
+        </span>
+        <button
+          type="button"
+          onClick={onChangeClick}
+          className="ml-auto shrink-0 inline-flex items-center gap-1 rounded-md border border-white/15 px-2 py-0.5 text-[11px] text-white/75 transition hover:bg-white/10 hover:text-white"
+        >
+          <Pencil className="size-3" />
+          Change
+        </button>
+      </div>
+    </div>
+  );
+}
 
 function SeatRow({
   agent,

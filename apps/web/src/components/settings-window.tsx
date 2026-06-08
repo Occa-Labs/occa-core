@@ -17,10 +17,13 @@ import { Alert } from "@/components/ui/alert";
 import { Card, CardDivider } from "@/components/ui/card";
 import { SectionLabel } from "@/components/ui/section-label";
 import { useAuth } from "@/features/auth/hooks/use-auth";
+import { WebhooksSection } from "@/features/webhooks/components/webhooks-section";
 import { ApiError, devApi } from "@/lib/api";
 import { IS_DEV_MODE } from "@/lib/env-flags";
 
 interface SettingsWindowProps {
+  /** Active company — webhooks are scoped to it. */
+  companyId?: string;
   onClose?: () => void;
   /** Triggers the "Room Tour" cinematic — Jia walks the recorded path
    *  and returns to her spawn. Disabled when there are no waypoints. */
@@ -37,6 +40,7 @@ type SeedApprovalState =
   | { kind: "error"; message: string };
 
 export function SettingsWindow({
+  companyId,
   onClose,
   onStartTour,
   tourActive = false,
@@ -146,6 +150,9 @@ export function SettingsWindow({
             connected — sign in again to continue.
           </p>
         </section>
+
+        {/* ── Webhooks (per-company outbound connections) ───────────────────── */}
+        {companyId && <WebhooksSection companyId={companyId} />}
 
         {/* ── Office cinematics (dev only) ──────────────────────────────────── */}
         {isDev && (

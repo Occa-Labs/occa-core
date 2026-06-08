@@ -10,35 +10,40 @@ import type {
   SendChatMessageResponse,
 } from "@occa/shared/types";
 import {
-  useCeoChatMessages,
-  useDecideCeoApproval,
-  useSendCeoMessage,
+  useChatMessages,
+  useDecideChatApproval,
+  useSendChatMessage,
 } from "../api/use-ceo-chat";
 
 interface CeoChatWindowProps {
   /** When false, the underlying query is disabled — saves a round-trip
    *  while the panel is closed. */
   active: boolean;
-  /** Resolved CEO display name, or null when the user hasn't deployed
+  /** Resolved agent display name, or null when the user hasn't deployed
    *  one yet. The window renders a friendly nudge in that case. */
   ceoName: string | null;
+  /** Target a specific owned agent's direct-chat thread. Omit for the
+   *  company CEO surface (the shell's floating chat bubble). */
+  deploymentId?: string;
   /** Fired after a successful send whose reply spawned a task. The
    *  shell uses it to refresh the kanban (cross-feature side-effect
    *  belongs to the composition layer per CLAUDE.md). */
   onTaskCreated?: (task: NonNullable<SendChatMessageResponse["createdTask"]>) => void;
 }
 
-// Conversational chat surface for the user ↔ CEO thread (Phase 2.5).
+// Conversational chat surface for the user ↔ agent thread (Phase 2.5).
+// CEO when `deploymentId` is omitted, otherwise a specific owned agent.
 // Renders a scrolling message list + composer pinned to the bottom. The
-// FloatingPanel that wraps this owns the title bar + glass shell.
+// wrapper (FloatingPanel / Chats pane) owns the title bar + glass shell.
 export function CeoChatWindow({
   active,
   ceoName,
+  deploymentId,
   onTaskCreated,
 }: CeoChatWindowProps) {
   const [draft, setDraft] = useState("");
-  const messagesQuery = useCeoChatMessages(active);
-  const sendMutation = useSendCeoMessage();
+  const messagesQuery = useChatMessages(deploymentId, active);
+  const sendMutation = useSendChatMessage(deploymentId);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -106,7 +111,7 @@ export function CeoChatWindow({
         ref={scrollRef}
         className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-2"
       >
-        {!ceoName && (
+        {!ceoName && !deploymentId && (
           <Alert variant="warning">
             No CEO deployed yet. Deploy one in the Agents window — every
             request routes through your CEO.
@@ -119,12 +124,13 @@ export function CeoChatWindow({
         )}
         {showEmpty && (
           <div className="text-xs text-white/30 text-center py-6 leading-relaxed">
-            Start the conversation. The CEO will ask clarifying questions
-            before kicking off any work.
+            {deploymentId
+              ? `Start a direct conversation with ${ceoName}.`
+              : "Start the conversation. The CEO will ask clarifying questions before kicking off any work."}
           </div>
         )}
         {messages.map((m) => (
-          <ChatBubble key={m.id} message={m} />
+          <ChatBubble key={m.id} message={m} deploymentId={deploymentId} />
         ))}
         {showThinking && (
           <ChatBubble
@@ -185,13 +191,15 @@ export function CeoChatWindow({
 function ChatBubble({
   message,
   muted = false,
+  deploymentId,
 }: {
   message: ChatMessageDTO;
   muted?: boolean;
+  deploymentId?: string;
 }) {
   if (message.role === "system") {
     return (
-      <div className="self-center text-[11px] text-white/40 italic px-2 py-1">
+      <div className="self-center max-w-[90%] whitespace-pre-line wrap-break-word text-[11px] text-white/45 italic px-2 py-1 text-center">
         {message.content}
       </div>
     );
@@ -213,7 +221,10 @@ function ChatBubble({
           </div>
         )}
         {message.linkedApproval && !isUser && (
-          <InlineApprovalCard approval={message.linkedApproval} />
+          <InlineApprovalCard
+            approval={message.linkedApproval}
+            deploymentId={deploymentId}
+          />
         )}
       </div>
     </div>
@@ -223,8 +234,14 @@ function ChatBubble({
 // Inline Approve/Reject card for a with-approval proposal the CEO queued in
 // this reply. Lets the operator commit without a trip to the Approvals
 // window; that window stays the canonical record (pending + history).
-function InlineApprovalCard({ approval }: { approval: ChatLinkedApproval }) {
-  const decide = useDecideCeoApproval();
+function InlineApprovalCard({
+  approval,
+  deploymentId,
+}: {
+  approval: ChatLinkedApproval;
+  deploymentId?: string;
+}) {
+  const decide = useDecideChatApproval(deploymentId);
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
   const submitting = decide.isPending;

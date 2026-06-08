@@ -52,6 +52,7 @@ import {
   proposeToolEditBlockPayload,
   proposeWorkflowDeleteBlockPayload,
   setTaskStatusBlockPayload,
+  setResultUrlBlockPayload,
   commentTaskBlockPayload,
   editTaskBlockPayload,
   toggleChannelBlockPayload,
@@ -324,6 +325,60 @@ export async function handleBlockBlock(
   }
 
   return { kind: "blocked", blockerIds: validIds, reason };
+}
+
+// SET_RESULT_URL: the assignee records the published URL of its own
+// deliverable on the task it's currently working on. Targets currentTaskId
+// (no taskId in the payload) and is gated on assignment — an agent can only
+// set the URL for its own task. The URL is anchored on-chain as the trace's
+// result_uri when the task completes, so it must be set before `done`.
+export async function handleSetResultUrlBlock(
+  args: ActionBlockHandlerArgs,
+): Promise<ActionBlockOutcome> {
+  const parsed = setResultUrlBlockPayload.safeParse(args.block.body);
+  if (!parsed.success) {
+    log.warn(
+      { detail: parsed.error.flatten() },
+      "SET_RESULT_URL block rejected: invalid payload",
+    );
+    return { kind: "ignored", reason: "invalid_payload" };
+  }
+  const { resultUri } = parsed.data;
+
+  const [task] = await db
+    .select({
+      id: tasks.id,
+      companyId: tasks.companyId,
+      assignedDeploymentId: tasks.assignedDeploymentId,
+      archivedAt: tasks.archivedAt,
+    })
+    .from(tasks)
+    .where(eq(tasks.id, args.currentTaskId))
+    .limit(1);
+  if (!task || task.companyId !== args.companyId) {
+    return { kind: "ignored", reason: "task_not_found" };
+  }
+  if (task.assignedDeploymentId !== args.agentId) {
+    return { kind: "ignored", reason: "emitter_not_assignee" };
+  }
+  if (task.archivedAt) {
+    return { kind: "ignored", reason: "task_archived" };
+  }
+
+  const updated = await updateTask(task.id, { resultUri });
+  if (!updated) return { kind: "ignored", reason: "task_not_found" };
+
+  void appendTaskEventBestEffort({
+    companyId: args.companyId,
+    taskId: task.id,
+    eventType: "agent_action_emitted",
+    actorType: "agent",
+    actorId: args.agentId,
+    traceId: args.traceId,
+    payload: { actionType: "SetResultUrl", channel: "marker", resultUri },
+  });
+
+  return { kind: "result_url_set", taskId: task.id, resultUri };
 }
 
 // INSTALL_SKILL: append a skill key to a target deployment's

@@ -16,6 +16,8 @@ export const LIMITS = {
   HOST: 253, // hostname / FQDN (RFC 1035 max length)
   REASON: 500, // rejection / cancel / pause reason
   API_KEY: 512, // adapter API keys
+  URL: 2_048, // outbound target URLs (webhook endpoints)
+  WEBHOOK_SECRET: 256, // HMAC signing secret for a company webhook
   FILE_PATH: 4_096, // absolute filesystem paths (Linux PATH_MAX)
   AUDIENCE: 1_000, // target audience text
   DESCRIPTION_SHORT: 2_000, // brand voice, audience descriptions, acceptance criteria

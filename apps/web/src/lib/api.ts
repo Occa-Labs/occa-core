@@ -512,6 +512,11 @@ export const chainApi = {
     request<{ anchors: DailyAnchorRecord[] }>(
       `/api/chain/companies/${companyId}/anchors`,
     ),
+  // ── Trace anchors / per-deliverable provenance (read-only) ────────────
+  getCompanyTraceAnchors: (companyId: string) =>
+    request<{ traces: TraceAnchorRecord[] }>(
+      `/api/chain/companies/${companyId}/trace-anchors`,
+    ),
   // ── Company-wide tx list (read-only) ──────────────────────────────────
   getCompanyTransactions: (
     companyId: string,
@@ -549,6 +554,25 @@ export interface DailyAnchorRecord {
   dayUnix: number;
   merkleRoot: string;
   taskCount: number;
+  committedAt: number;
+  committedBy: string;
+}
+
+export interface TraceAnchorRecord {
+  pda: string;
+  taskId: string;
+  company: string;
+  agent: string;
+  deployment: string;
+  agentName: string | null;
+  agentRole: string | null;
+  resultUri: string;
+  contentHash: string;
+  verdict: number;
+  qualityScore: number;
+  rubricVersion: number;
+  evidenceHash: string;
+  completedAt: number;
   committedAt: number;
   committedBy: string;
 }
@@ -773,6 +797,22 @@ export const chatApi = {
         method: "DELETE",
       }),
   },
+  // Per-agent direct chat (user ↔ an owned agent). Same wire shapes as the
+  // CEO surface, scoped to a deployment id. The server gates this on
+  // identity ownership.
+  agent: (deploymentId: string) => ({
+    list: () =>
+      request<ListChatMessagesResponse>(`/api/chat/agent/${deploymentId}`),
+    send: (input: SendChatMessageRequest) =>
+      request<SendChatMessageResponse>(`/api/chat/agent/${deploymentId}`, {
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
+    clear: () =>
+      request<void>(`/api/chat/agent/${deploymentId}`, {
+        method: "DELETE",
+      }),
+  }),
 };
 
 export interface BrainFileDTO {
@@ -918,6 +958,17 @@ export const agentsApi = {
       `/api/agents/${id}/adapter/rotate-bearer`,
       { method: "POST", body: JSON.stringify({ apiKey }) },
     ),
+  switchAdapter: (
+    id: string,
+    input: {
+      adapterType: "openclaw" | "hermes";
+      adapterConfig: { gatewayUrl: string; apiKey: string };
+    },
+  ) =>
+    request<AgentResponse>(`/api/agents/${id}/adapter/switch`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
   syncSkills: (id: string, input: SyncAgentSkillsRequest) =>
     request<AgentResponse>(`/api/agents/${id}/skills/sync`, {
       method: "POST",
@@ -1405,4 +1456,37 @@ export const toolsApi = {
       `/api/companies/${companyId}/tools/${toolId}/logs${suffix}`,
     );
   },
+};
+
+export const webhooksApi = {
+  list: (companyId: string) =>
+    request<import("@occa/shared/types").ListWebhooksResponse>(
+      `/api/companies/${companyId}/webhooks`,
+    ),
+  create: (
+    companyId: string,
+    input: import("@occa/shared/types").CreateWebhookRequest,
+  ) =>
+    request<import("@occa/shared/types").WebhookResponse>(
+      `/api/companies/${companyId}/webhooks`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
+  update: (
+    companyId: string,
+    webhookId: string,
+    input: import("@occa/shared/types").UpdateWebhookRequest,
+  ) =>
+    request<import("@occa/shared/types").WebhookResponse>(
+      `/api/companies/${companyId}/webhooks/${webhookId}`,
+      { method: "PATCH", body: JSON.stringify(input) },
+    ),
+  remove: (companyId: string, webhookId: string) =>
+    request<void>(`/api/companies/${companyId}/webhooks/${webhookId}`, {
+      method: "DELETE",
+    }),
+  test: (companyId: string, webhookId: string) =>
+    request<import("@occa/shared/types").WebhookTestResponse>(
+      `/api/companies/${companyId}/webhooks/${webhookId}/test`,
+      { method: "POST" },
+    ),
 };

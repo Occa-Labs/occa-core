@@ -811,6 +811,10 @@ export interface TaskDTO {
   tags: string[];
   dueDate: string | null;
   linkedTraceId: string | null;
+  // Published URL of the deliverable, anchored on-chain as the trace's
+  // result_uri. Set by the agent (after posting via a tool) or manually.
+  // Null = private work (anchored without a public link).
+  resultUri: string | null;
   // Parent in the task graph (set when an agent created this task via an
   // approved DELEGATE — the parent task is the one the requesting agent
   // was working on at the time).
@@ -843,6 +847,7 @@ export interface CreateTaskRequest {
   tags?: string[];
   dueDate?: string | null;
   assignedAgentId?: string | null;
+  resultUri?: string | null;
 }
 
 export type UpdateTaskRequest = Partial<CreateTaskRequest>;
@@ -1576,3 +1581,49 @@ export interface InvokeToolErrorResponse {
   errorMessage: string;
   rateLimited?: boolean;
 }
+
+// ── Company webhooks ──────────────────────────────────────────────────
+//
+// A webhook is a per-company outbound connection: a named endpoint + a
+// signing secret. It carries last-delivery diagnostics so the operator can
+// see health at a glance. The secret is write-only — the API never returns
+// it; `hasSecret` only signals whether one is configured.
+export interface WebhookDTO {
+  id: string;
+  companyId: string;
+  name: string;
+  targetUrl: string;
+  event: string;
+  enabled: boolean;
+  hasSecret: boolean;
+  lastDeliveredAt: string | null;
+  lastStatus: string | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ListWebhooksResponse {
+  webhooks: WebhookDTO[];
+}
+
+export interface WebhookResponse {
+  webhook: WebhookDTO;
+}
+
+// Result of a manual test delivery. `status` is the HTTP status string, or
+// "error" when the request itself failed (DNS, timeout, refused).
+export interface WebhookTestResponse {
+  ok: boolean;
+  status: string;
+}
+
+export interface CreateWebhookRequest {
+  name: string;
+  targetUrl: string;
+  secret: string;
+  enabled?: boolean;
+}
+
+// Partial update. `secret` present = rotate it; absent = leave unchanged.
+export type UpdateWebhookRequest = Partial<CreateWebhookRequest>;

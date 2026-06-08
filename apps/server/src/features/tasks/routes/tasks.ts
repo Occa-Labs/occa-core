@@ -288,6 +288,10 @@ router.patch("/:id", requireAuth, async (req: Request, res: Response) => {
   if (parsed.data.assignedAgentId !== undefined) {
     fields.assignedDeploymentId = parsed.data.assignedAgentId;
   }
+  if (parsed.data.resultUri !== undefined) {
+    // Normalize empty string to null — a cleared field means "no public URL".
+    fields.resultUri = parsed.data.resultUri ? parsed.data.resultUri : null;
+  }
 
   const row = await updateTask(existing.id, fields);
   if (!row) {

@@ -9,6 +9,7 @@ import {
   Coins,
   Copy,
   ExternalLink,
+  FileCheck,
   List,
   Loader2,
   RefreshCw,
@@ -34,16 +35,19 @@ import { TreasuryPane } from "./treasury-pane";
 import { WalletTab } from "./wallet-tab";
 import { AnchorSetupModal } from "./anchor-setup-modal";
 import { useCompanyAnchors } from "../api/use-company-anchors";
+import { useCompanyTraceAnchors } from "../api/use-company-trace-anchors";
 import { useCompanyTransactions } from "../api/use-company-transactions";
 import type {
   CompanyTransactionRecord,
   DailyAnchorRecord,
+  TraceAnchorRecord,
 } from "@/lib/api";
 
 type SectionId =
   | "registry"
   | "treasury"
   | "anchors"
+  | "provenance"
   | "transactions"
   | "agents";
 
@@ -71,6 +75,12 @@ const SECTIONS: Array<{
     label: "Anchors",
     icon: Stamp,
     hint: "Daily Merkle commits",
+  },
+  {
+    id: "provenance",
+    label: "Provenance",
+    icon: FileCheck,
+    hint: "Per-deliverable proof + scores",
   },
   {
     id: "transactions",
@@ -170,6 +180,9 @@ export function ChainWindow({
               )}
               {active === "anchors" && (
                 <AnchorsSection companyId={company.id} />
+              )}
+              {active === "provenance" && (
+                <ProvenanceSection companyId={company.id} />
               )}
               {active === "transactions" && (
                 <TransactionsSection companyId={company.id} />
@@ -525,6 +538,144 @@ function formatRelative(unixSec: number): string {
     month: "short",
     day: "numeric",
   });
+}
+
+function ProvenanceSection({ companyId }: { companyId: string }) {
+  const traces = useCompanyTraceAnchors(companyId);
+
+  return (
+    <div className="flex flex-col gap-3.5">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h2 className="text-sm font-semibold text-white/90">Provenance</h2>
+          <p className="mt-0.5 text-[11px] text-white/45">
+            One on-chain record per verified deliverable — content hash,
+            verification verdict, and quality score. This is what agent
+            reputation is derived from.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => void traces.refetch()}
+          disabled={traces.isFetching}
+          className="shrink-0 p-1.5 rounded-lg text-white/45 hover:bg-white/8 hover:text-white/80 transition-colors disabled:opacity-40 cursor-pointer"
+          title="Refresh"
+        >
+          {traces.isFetching ? (
+            <Loader2 className="size-3.5 animate-spin" />
+          ) : (
+            <RefreshCw className="size-3.5" />
+          )}
+        </button>
+      </div>
+
+      {traces.isLoading && !traces.data && (
+        <Card variant="recessed" padding="md">
+          <div className="flex items-center gap-2 text-[12px] text-white/45">
+            <Loader2 className="size-3.5 animate-spin" />
+            Reading provenance from chain…
+          </div>
+        </Card>
+      )}
+
+      {traces.error && (
+        <Alert variant="error">
+          Couldn&apos;t read provenance from chain. Try refreshing.
+        </Alert>
+      )}
+
+      {traces.data && traces.data.traces.length === 0 && (
+        <Card variant="recessed" padding="md">
+          <p className="text-[12px] text-white/55 leading-relaxed">
+            No provenance records yet. Each time an agent&apos;s deliverable
+            passes verification, it&apos;s anchored here automatically — the
+            content hash, verdict, and score land on-chain.
+          </p>
+        </Card>
+      )}
+
+      {traces.data && traces.data.traces.length > 0 && (
+        <div className="flex flex-col gap-1.5">
+          {traces.data.traces.map((t) => (
+            <TraceRow key={t.pda} trace={t} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TraceRow({ trace }: { trace: TraceAnchorRecord }) {
+  const committedRel = formatRelative(trace.committedAt);
+
+  return (
+    <Card variant="recessed" padding="sm">
+      <div className="flex items-center gap-3">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-baseline gap-2">
+            <span className="text-[12px] font-medium text-white/90 truncate">
+              {trace.agentName ?? "(unknown agent)"}
+            </span>
+            {trace.agentRole && (
+              <span className="text-[10px] text-white/35 shrink-0">
+                {formatRoleLabel(trace.agentRole)}
+              </span>
+            )}
+            <span className="text-[10px] text-white/30 shrink-0">
+              {committedRel}
+            </span>
+          </div>
+          <div className="mt-0.5 text-[11px] text-white/55 truncate">
+            {trace.resultUri ? (
+              <a
+                href={trace.resultUri}
+                target="_blank"
+                rel="noreferrer noopener"
+                className="inline-flex items-center gap-1 text-white/65 hover:text-white/90 transition-colors"
+              >
+                View deliverable
+                <ExternalLink className="size-2.5" />
+              </a>
+            ) : (
+              <span className="text-white/35">Private — hash only</span>
+            )}
+          </div>
+        </div>
+
+        <div className="shrink-0 text-right">
+          <div className="inline-flex items-center gap-1.5">
+            <span
+              className="inline-flex items-center rounded-md bg-emerald-400/12 px-1.5 py-0.5 text-[11px] font-semibold text-emerald-300 tabular-nums"
+              title="Quality score"
+            >
+              {trace.qualityScore}
+            </span>
+            <span className="text-[9.5px] text-white/30">
+              rubric v{trace.rubricVersion}
+            </span>
+          </div>
+          <div className="mt-0.5 inline-flex items-center gap-1">
+            <code
+              className="text-[10px] font-mono text-white/45"
+              title={`Content hash ${trace.contentHash}`}
+            >
+              {trace.contentHash.slice(0, 8)}…{trace.contentHash.slice(-6)}
+            </code>
+            <MerkleCopy hex={trace.contentHash} />
+            <a
+              href={solscanAddressUrl(trace.pda)}
+              target="_blank"
+              rel="noreferrer noopener"
+              className="text-white/35 hover:text-white/70 transition-colors"
+              title="Open trace account in Solscan"
+            >
+              <ExternalLink className="size-3" />
+            </a>
+          </div>
+        </div>
+      </div>
+    </Card>
+  );
 }
 
 function TransactionsSection({ companyId }: { companyId: string }) {

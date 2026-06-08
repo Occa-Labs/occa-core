@@ -625,6 +625,11 @@ export const tasks = pgTable(
       .default(sql`ARRAY[]::text[]`),
     dueDate: timestamp("due_date", { withTimezone: true }),
     linkedTraceId: uuid("linked_trace_id"),
+    // Canonical URL of the published deliverable. Set by the agent after it
+    // posts its work (via a tool) or manually by the operator. Becomes the
+    // on-chain trace's result_uri at anchor time. Null/empty = private work
+    // (anchored without a public link).
+    resultUri: text("result_uri"),
     // Nullable now: tasks created by agents (via approved DELEGATE) have
     // `createdByAgentId` set instead. Either one or the other is non-null.
     createdByUserId: uuid("created_by_user_id").references(() => users.id),
@@ -1399,7 +1404,7 @@ export const chatThreads = pgTable(
     companyId: uuid("company_id")
       .notNull()
       .references(() => companies.id, { onDelete: "cascade" }),
-    // 'user_ceo' | 'agent_dm'
+    // 'user_ceo' | 'user_agent' | 'agent_dm'
     kind: text("kind").notNull(),
     // user_ceo: the human owner. agent_dm: null.
     userId: uuid("user_id").references(() => users.id, {
@@ -1435,6 +1440,12 @@ export const chatThreads = pgTable(
     uniqueIndex("uq_chat_threads_user_ceo")
       .on(t.companyId, t.deploymentId)
       .where(sql`kind = 'user_ceo'`),
+    // One direct user↔agent thread per (company, agent). Parallel to the
+    // user_ceo index so per-agent chat threads don't collide with the
+    // single CEO thread or with each other.
+    uniqueIndex("uq_chat_threads_user_agent")
+      .on(t.companyId, t.deploymentId)
+      .where(sql`kind = 'user_agent'`),
     index("idx_chat_threads_parent").on(t.parentThreadId),
   ],
 );

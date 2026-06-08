@@ -31,6 +31,40 @@ export async function resolveUserCeoThreadId(args: {
   companyId: string;
   ceoDeploymentId: string;
 }): Promise<UserCeoThreadHandle> {
+  return resolveUserThread({
+    companyId: args.companyId,
+    deploymentId: args.ceoDeploymentId,
+    kind: "user_ceo",
+  });
+}
+
+// Per-agent direct chat thread. Same shape as user_ceo (a 1:1 user↔agent
+// conversation owned by the company owner) but tagged `user_agent` so it
+// doesn't collide with the single CEO thread. The partial unique index
+// `uq_chat_threads_user_agent` guarantees one thread per (company,
+// deployment).
+export async function resolveUserAgentThreadId(args: {
+  companyId: string;
+  deploymentId: string;
+}): Promise<UserCeoThreadHandle> {
+  return resolveUserThread({
+    companyId: args.companyId,
+    deploymentId: args.deploymentId,
+    kind: "user_agent",
+  });
+}
+
+// Shared resolver for the two 1:1 user↔agent thread kinds (user_ceo,
+// user_agent). Both lazily create on first call, populate userId from the
+// company owner, and rely on a per-kind partial unique index on
+// (companyId, deploymentId) to serialize concurrent creates.
+type UserThreadKind = "user_ceo" | "user_agent";
+
+async function resolveUserThread(args: {
+  companyId: string;
+  deploymentId: string;
+  kind: UserThreadKind;
+}): Promise<UserCeoThreadHandle> {
   const existing = await db
     .select({
       id: chatThreads.id,
@@ -40,8 +74,8 @@ export async function resolveUserCeoThreadId(args: {
     .where(
       and(
         eq(chatThreads.companyId, args.companyId),
-        eq(chatThreads.deploymentId, args.ceoDeploymentId),
-        eq(chatThreads.kind, "user_ceo"),
+        eq(chatThreads.deploymentId, args.deploymentId),
+        eq(chatThreads.kind, args.kind),
       ),
     )
     .limit(1);
@@ -53,22 +87,20 @@ export async function resolveUserCeoThreadId(args: {
     .where(eq(companies.id, args.companyId))
     .limit(1);
   if (!company) {
-    throw new Error(
-      `resolveUserCeoThreadId: company ${args.companyId} not found`,
-    );
+    throw new Error(`resolveUserThread: company ${args.companyId} not found`);
   }
 
   const [inserted] = await db
     .insert(chatThreads)
     .values({
       companyId: args.companyId,
-      kind: "user_ceo",
+      kind: args.kind,
       userId: company.ownerUserId,
-      deploymentId: args.ceoDeploymentId,
+      deploymentId: args.deploymentId,
     })
     .onConflictDoNothing({
       target: [chatThreads.companyId, chatThreads.deploymentId],
-      where: sql`kind = 'user_ceo'`,
+      where: sql`kind = ${args.kind}`,
     })
     .returning({
       id: chatThreads.id,
@@ -86,14 +118,14 @@ export async function resolveUserCeoThreadId(args: {
     .where(
       and(
         eq(chatThreads.companyId, args.companyId),
-        eq(chatThreads.deploymentId, args.ceoDeploymentId),
-        eq(chatThreads.kind, "user_ceo"),
+        eq(chatThreads.deploymentId, args.deploymentId),
+        eq(chatThreads.kind, args.kind),
       ),
     )
     .limit(1);
   if (!winner) {
     throw new Error(
-      `resolveUserCeoThreadId: insert returned nothing and lookup found no row`,
+      `resolveUserThread: insert returned nothing and lookup found no row`,
     );
   }
   return winner;

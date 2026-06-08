@@ -20,7 +20,21 @@ export function adapterErrorMessage(args: {
   code: string;
   /** Subject of the failure as the user would name it ("CEO", a Head's name). */
   subject: string;
+  /** Raw adapter detail (e.g. the gateway provider error). When present it's
+   *  appended as a "Details:" line so the operator can debug without digging
+   *  through server logs — the friendly sentence stays the lead. */
+  reason?: string | null;
 }): string {
+  const friendly = friendlyLine(args);
+  const detail = args.reason?.trim();
+  // Don't repeat the code as detail when the adapter gave no richer reason.
+  if (detail && detail !== args.code) {
+    return `${friendly}\n\nDetails: ${detail}`;
+  }
+  return friendly;
+}
+
+function friendlyLine(args: { code: string; subject: string }): string {
   const tail = "Try again in a moment.";
   switch (args.code) {
     case "gateway_unreachable":

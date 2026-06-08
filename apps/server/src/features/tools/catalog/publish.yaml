@@ -1,0 +1,38 @@
+# Publish
+#
+# OCCA-provided tool for shipping a finished deliverable to a destination
+# (a site, CMS, or any OCCA-compatible receiver) and getting back its public
+# URL. Available to every agent. On success it records the returned URL as the
+# current task's result_uri, so the on-chain trace links to the live work.
+#
+# Embedded today. When a standalone `mcp-occa-publish` server lands, flip
+# `implementation` to { kind: mcp, ... } without touching other code.
+
+type: publish
+displayName: "Publish"
+description: "Publish a finished deliverable and get back its public URL. The URL is recorded as the task's on-chain proof-of-work link. Available to every agent."
+
+implementation:
+  kind: embedded
+  handler: publish
+
+credentialFields:
+  - name: endpointUrl
+    type: string
+    required: true
+    secret: false
+    description: "The receiver endpoint the deliverable is POSTed to. Must return { url } on success."
+  - name: secret
+    type: string
+    required: true
+    secret: true
+    description: "Shared secret used to HMAC-sign the request so the receiver can verify it."
+
+metadataFields: []
+
+actions:
+  - name: post
+    description: "Publish a deliverable (title + content) and return its public URL."
+
+hasDynamicActions: false
+hasTestConnection: true

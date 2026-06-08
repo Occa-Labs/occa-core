@@ -64,6 +64,7 @@ import {
   companyToolsRouter,
   invokeRouter as toolInvokeRouter,
 } from "./features/tools/routes";
+import companyWebhooksRouter from "./features/webhooks/routes";
 import devRouter from "./routes/dev";
 import { mcpRouter } from "./features/mcp-server/routes/mcp-http";
 
@@ -107,6 +108,7 @@ app.use("/api/company-brain", companyBrainRouter);
 app.use("/api/documents", documentsRouter);
 app.use("/api/tool-catalog", toolCatalogRouter);
 app.use("/api/companies/:companyId/tools", companyToolsRouter);
+app.use("/api/companies/:companyId/webhooks", companyWebhooksRouter);
 app.use("/api/tools", toolInvokeRouter);
 app.use("/api/dev", devRouter);
 

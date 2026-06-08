@@ -49,6 +49,7 @@ export function toTaskDTO(row: TaskRow, agentName: string | null): TaskDTO {
     tags: row.tags ?? [],
     dueDate: row.dueDate ? row.dueDate.toISOString() : null,
     linkedTraceId: row.linkedTraceId ?? null,
+    resultUri: row.resultUri ?? null,
     parentTaskId: row.parentTaskId ?? null,
     blockedByTaskIds: row.blockedByTaskIds ?? [],
     createdByUserId: row.createdByUserId ?? null,

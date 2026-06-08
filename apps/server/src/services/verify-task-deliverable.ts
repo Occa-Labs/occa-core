@@ -10,6 +10,7 @@
 // feature-to-feature imports, so the bridge sits outside both, mirroring
 // `auto-save-document.ts`.
 
+import { createHash } from "node:crypto";
 import { childLogger } from "../lib/logger";
 import {
   appendTaskEventBestEffort,
@@ -50,6 +51,36 @@ export interface GateVerdict {
   action: GateAction;
   // Human-readable failure detail for the bounce comment. Null on pass.
   failureSummary: string | null;
+}
+
+// On-chain provenance rubric version. v1 = binary factual-verification
+// pass → score 100; the gate is pass/fail, not a graded quality rubric.
+// A richer rubric (graded quality) becomes rubric_version 2 and populates
+// real gradients without invalidating v1 anchors (the version is stamped
+// on each TraceAnchor). See commit-trace-engine + occa-programs.
+const PROVENANCE_RUBRIC_VERSION = 1;
+const PROVENANCE_PASS_SCORE = 100;
+
+// SHA-256 of the canonical (sorted-key) verification report. Anchored
+// on-chain as `evidence_hash` so anyone can audit WHY a deliverable's
+// verdict was assigned, given the off-chain report. Must be deterministic.
+function canonicalReportHashHex(report: VerificationReport): string {
+  const obj = {
+    asOf: report.asOf ?? null,
+    claimsBlockPresent: report.claimsBlockPresent,
+    dateError: report.dateError ?? null,
+    pass: report.pass,
+    results: report.results
+      .map((r) => ({
+        claimed: r.claimed ?? null,
+        id: r.id,
+        label: r.label,
+        observed: r.observed ?? null,
+        status: r.status,
+      }))
+      .sort((a, b) => a.id.localeCompare(b.id)),
+  };
+  return createHash("sha256").update(JSON.stringify(obj), "utf8").digest("hex");
 }
 
 async function countPriorVerificationFailures(
@@ -146,6 +177,31 @@ export async function verifyTaskDeliverable(
       },
       "deliverable passed verification gate",
     );
+    // Record a VerificationPassed event carrying the on-chain provenance
+    // inputs (evidence hash + score + rubric version). finalizeTaskDone
+    // reads this to anchor the deliverable via commit_trace. Awaited so
+    // the row is durably persisted before the dispatcher proceeds to the
+    // done-path (which fires the anchor). Only GENUINE passes record this
+    // — the fail-open path (verifier crash) returns above without it, so
+    // un-verified deliverables are never anchored.
+    await appendTaskEventBestEffort({
+      companyId: input.companyId,
+      taskId: input.taskId,
+      eventType: "agent_action_emitted",
+      actorType: "system",
+      actorId: "system",
+      payload: {
+        actionType: "VerificationPassed",
+        channel: "http",
+        asOf: report.asOf,
+        claimsCount: report.results.length,
+        claimsBlockPresent: report.claimsBlockPresent,
+        evidenceHash: canonicalReportHashHex(report),
+        qualityScore: PROVENANCE_PASS_SCORE,
+        rubricVersion: PROVENANCE_RUBRIC_VERSION,
+      },
+      traceId: input.traceId,
+    });
     return { pass: true, action: "accept", failureSummary: null };
   }
 

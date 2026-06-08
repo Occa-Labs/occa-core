@@ -78,8 +78,10 @@ import {
   patchAgentBody,
   reprovisionAgentBody,
   rotateBearerBody,
+  switchAdapterBody,
   updateAgentFileBody,
 } from "../domain/schemas";
+import { switchAdapter } from "../services/switch-adapter";
 import {
   findByName as findWorkspaceFile,
   updateContent as updateWorkspaceFileContent,
@@ -1038,6 +1040,89 @@ router.post(
       .where(eq(agentRuntimeProfile.deploymentId, existing.id));
 
     res.json({ ok: true, latencyMs: probe.latencyMs });
+  },
+);
+
+// POST /api/agents/:id/adapter/switch — move an already-deployed agent to
+// a different runtime (openclaw ↔ hermes). Identity, deployment,
+// hierarchy, seat, and task history stay; only the runtime profile is
+// re-pointed. Company-or-owner accessible (a company operator can move
+// the agents deployed to their company). Body is discriminated on the
+// TARGET adapterType. Returns the re-hydrated agent on success.
+router.post(
+  "/:id/adapter/switch",
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const parsed = switchAdapterBody.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(StatusCodes.BAD_REQUEST).json({
+        error: ERROR_CODES.INVALID_BODY,
+        detail: parsed.error.flatten(),
+      });
+      return;
+    }
+
+    const deployment = await findAccessibleByUserId({
+      userId: req.user!.userId,
+      deploymentId: req.params.id,
+    });
+    if (!deployment) {
+      res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.NOT_FOUND });
+      return;
+    }
+    const identity = await findIdentityById(deployment.agentIdentityId);
+    if (!identity) {
+      res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.NOT_FOUND });
+      return;
+    }
+    const profile = await findRuntimeProfile(deployment.id);
+    if (!profile || !profile.companyId) {
+      res
+        .status(StatusCodes.BAD_REQUEST)
+        .json({ error: ERROR_CODES.AGENT_NOT_CONFIGURED });
+      return;
+    }
+
+    const result = await switchAdapter({
+      deploymentId: deployment.id,
+      companyId: profile.companyId,
+      role: deployment.role,
+      name: identity.name,
+      persona: identity.persona ?? null,
+      desiredSkills: profile.desiredSkills ?? [],
+      oldAdapterType: profile.adapterType,
+      oldAdapterConfig: (profile.adapterConfig ?? {}) as Record<
+        string,
+        unknown
+      >,
+      oldExternalAgentId: profile.externalAgentId ?? null,
+      targetAdapterType: parsed.data.adapterType,
+      targetAdapterConfig: parsed.data.adapterConfig,
+    });
+
+    if (!result.ok) {
+      const status =
+        result.code === "probe_failed"
+          ? StatusCodes.BAD_GATEWAY
+          : result.code === "validate_failed"
+            ? StatusCodes.BAD_REQUEST
+            : StatusCodes.BAD_GATEWAY;
+      res.status(status).json({
+        error:
+          result.code === "probe_failed"
+            ? ERROR_CODES.GATEWAY_UNREACHABLE
+            : ERROR_CODES.INVALID_BODY,
+        code: result.code,
+        reason: result.message,
+      });
+      return;
+    }
+
+    const refreshed = await findAccessibleByUserId({
+      userId: req.user!.userId,
+      deploymentId: req.params.id,
+    });
+    res.json({ agent: await hydrateDeploymentDTO(refreshed!) });
   },
 );
 

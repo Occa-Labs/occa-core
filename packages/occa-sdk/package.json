@@ -1,6 +1,6 @@
 {
   "name": "@occa/sdk",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "OCCA on-chain protocol SDK — PDA helpers, instruction builders, and types for the OCCA Registry + Treasury programs on Solana.",
   "license": "MIT",
   "author": "OCCA",

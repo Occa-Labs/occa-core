@@ -31,3 +31,32 @@ export function formatResultTimestamp(iso: string): string {
     minute: "2-digit",
   });
 }
+
+// Compact created-at label for task rows/cards: today shows the clock time
+// (items minted minutes apart stay distinguishable), older shows the short
+// date. Mirrors formatCommentTime's same-day rule.
+export function formatCreated(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const now = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  return sameDay
+    ? d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })
+    : d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+// Full created-at label for the detail panel: date + 24-hour time with
+// seconds (no AM/PM). e.g. "05 Jun 2026, 15:00:18".
+export function formatCreatedFull(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString("en-GB", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+}

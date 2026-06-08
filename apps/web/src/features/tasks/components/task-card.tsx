@@ -1,15 +1,15 @@
 "use client";
 
-import { CornerDownRight } from "lucide-react";
+import { Clock, CornerDownRight } from "lucide-react";
 import type { TaskDTO } from "@occa/shared/types";
 import { EFFORT_LABELS, TASK_TYPE_LABELS } from "../types";
-import { isSystemTask } from "../utils";
+import { formatCreated, isSystemTask } from "../utils";
 import { MetaChip, PriorityDot } from "./form-controls";
 
 // Kanban card. Layout is intentionally condensed (Linear-style):
 //   header: #N · ↳ #parent · type · effort              priority dot
 //   title  (line-clamp-2)
-//   meta   assignee · due
+//   meta   assignee · ⏱ created · due
 //   tags   (lowercase, capped at 3)
 //
 // Status pill is omitted because the column header already encodes
@@ -31,6 +31,7 @@ export function TaskCard({
         day: "numeric",
       })
     : null;
+  const createdLabel = formatCreated(task.createdAt);
 
   const visibleTags = task.tags.slice(0, 3);
   const overflowTagCount = task.tags.length - visibleTags.length;
@@ -73,15 +74,27 @@ export function TaskCard({
         {task.title}
       </p>
 
-      {(task.assignedAgentName || dueLabel) && (
-        <div className="flex items-center gap-1.5 text-[11px] text-white/40">
-          {task.assignedAgentName && <span>{task.assignedAgentName}</span>}
-          {task.assignedAgentName && dueLabel && (
+      <div className="flex items-center gap-1.5 text-[11px] text-white/40">
+        {task.assignedAgentName && (
+          <>
+            <span>{task.assignedAgentName}</span>
             <span className="text-white/20">·</span>
-          )}
-          {dueLabel && <span>{dueLabel}</span>}
-        </div>
-      )}
+          </>
+        )}
+        <span
+          className="inline-flex items-center gap-1"
+          title={`Created ${new Date(task.createdAt).toLocaleString()}`}
+        >
+          <Clock className="size-2.5 text-white/30" />
+          {createdLabel}
+        </span>
+        {dueLabel && (
+          <>
+            <span className="text-white/20">·</span>
+            <span className="text-white/50">due {dueLabel}</span>
+          </>
+        )}
+      </div>
 
       {visibleTags.length > 0 && (
         <div className="flex flex-wrap gap-1">

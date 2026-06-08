@@ -20,8 +20,13 @@ import { autoSaveTaskAsDocument } from "../../../services/auto-save-document";
 import { deliverTaskWebhooks } from "../../../services/deliver-task-webhooks";
 import { recordEpisode } from "../../../services/record-episode";
 import { ensureInvoiceForCompletedTask } from "../../billing/services/invoice-on-task-complete";
+// Cross-feature reach into the chain feature — mirrors the pre-existing
+// billing exception above. The on-chain anchor is a done-path side-effect
+// like the others; the engine self-gates (company not opted into
+// anchoring → no-op), so this stays best-effort.
+import { commitTraceForTask } from "../../chain/services/commit-trace-engine";
 import { cascadeOnTaskDone } from "./cascade";
-import { appendTaskEventBestEffort } from "./events";
+import { appendTaskEventBestEffort, listTaskEvents } from "./events";
 
 const log = childLogger("services:tasks:finalize");
 
@@ -138,31 +143,105 @@ export async function finalizeTaskDone(
     );
   });
 
-  // Forward the deliverable to any company webhook whose filters match
-  // (e.g. a research studio publishing to its own site). No-ops when the
-  // company has registered none. Best-effort.
-  void deliverTaskWebhooks({
-    companyId: task.companyId,
-    task: {
-      id: task.id,
-      title: task.title,
-      tags: task.tags,
-      taskType: task.taskType,
-    },
-    agent: { name: agent.name, role: agent.role },
-    editor,
-    document: {
-      content: input.deliverable,
-      format: "markdown",
-      tags: task.tags,
-    },
-    traceId: input.traceId,
-  }).catch((err) => {
-    log.error(
-      { err, taskId: task.id },
-      "deliverTaskWebhooks failed (non-fatal)",
-    );
-  });
+  // Publish + on-chain provenance, as one detached flow. First forward the
+  // deliverable to any matching company webhook (e.g. a studio publishing
+  // to its own site); then anchor the verified deliverable via
+  // commit_trace. Detached + best-effort so task completion never blocks on
+  // the webhook round-trip or RPC.
+  //
+  // The anchor's result_uri is the URL the publish receiver returns (e.g.
+  // crypoch's live article URL), so the on-chain record links straight to
+  // the published artifact. Empty when nothing was published (private work).
+  //
+  // Anchoring is gated on a VerificationPassed event — only genuinely
+  // verified work is anchored; tasks without the gate (non-news roles) or a
+  // fail-open verifier crash carry no such event and are skipped. The
+  // engine additionally no-ops when the company hasn't opted into anchoring
+  // (no healthy Anchor OperationsAccount).
+  void (async () => {
+    // The on-chain result_uri comes from the task's own `resultUri` field —
+    // set by the agent after it publishes (via a tool) or manually by the
+    // operator. The legacy webhook delivery is kept only as a fallback for
+    // companies still on that path; it no longer drives anchoring.
+    let resultUri = task.resultUri ?? "";
+    if (!resultUri) {
+      try {
+        const delivery = await deliverTaskWebhooks({
+          companyId: task.companyId,
+          task: {
+            id: task.id,
+            title: task.title,
+            tags: task.tags,
+            taskType: task.taskType,
+          },
+          agent: { name: agent.name, role: agent.role },
+          editor,
+          document: {
+            content: input.deliverable,
+            format: "markdown",
+            tags: task.tags,
+          },
+          traceId: input.traceId,
+        });
+        resultUri = delivery.resultUri ?? "";
+      } catch (err) {
+        log.error(
+          { err, taskId: task.id },
+          "deliverTaskWebhooks failed (non-fatal)",
+        );
+      }
+    }
+
+    try {
+      const events = await listTaskEvents(task.id);
+      const passed = events
+        .filter(
+          (e) =>
+            (e.payload as Record<string, unknown> | null)?.actionType ===
+            "VerificationPassed",
+        )
+        .pop();
+      if (!passed) return;
+      const p = passed.payload as Record<string, unknown>;
+      const evidenceHashHex =
+        typeof p.evidenceHash === "string" ? p.evidenceHash : null;
+      if (!evidenceHashHex) return;
+      const result = await commitTraceForTask({
+        companyId: task.companyId,
+        taskId: task.id,
+        deploymentId: agent.id,
+        deliverable: input.deliverable,
+        resultUri,
+        evidenceHashHex,
+        qualityScore:
+          typeof p.qualityScore === "number" ? p.qualityScore : 100,
+        rubricVersion:
+          typeof p.rubricVersion === "number" ? p.rubricVersion : 1,
+        completedAt: Math.floor(occurredAt.getTime() / 1000),
+      });
+      if (result.status === "failed") {
+        log.error(
+          { taskId: task.id, error: result.error },
+          "commit_trace anchor failed",
+        );
+      } else {
+        log.info(
+          {
+            taskId: task.id,
+            status: result.status,
+            traceAnchorPda: result.traceAnchorPda,
+            resultUri: resultUri || null,
+          },
+          "commit_trace anchor outcome",
+        );
+      }
+    } catch (err) {
+      log.error(
+        { err, taskId: task.id },
+        "anchor verified deliverable failed (non-fatal)",
+      );
+    }
+  })();
 
   // Record an episode of the company's coverage — what stops a Head
   // repeating a topic. Scoped to the news writer: a settled news task is

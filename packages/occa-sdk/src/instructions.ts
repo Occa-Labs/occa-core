@@ -4,6 +4,8 @@ import {
   TransactionInstruction,
 } from "@solana/web3.js";
 import {
+  MAX_QUALITY_SCORE,
+  MAX_RESULT_URI_LEN,
   OPERATIONS_KIND,
   REGISTRY_PROGRAM_ID,
   SOL_PSEUDO_MINT,
@@ -18,6 +20,7 @@ import {
   deriveOperationsPda,
   derivePolicyPda,
   deriveProtocolFeePda,
+  deriveTraceAnchorPda,
   deriveTreasuryPda,
   u32LeBytes,
 } from "./pda";
@@ -44,6 +47,7 @@ export const INSTRUCTION_DISCRIMINATOR = {
   setReceivingAddress: Buffer.from([70, 63, 44, 87, 16, 6, 156, 200]),
   setAgentReceivingAddress: Buffer.from([197, 126, 122, 18, 38, 62, 179, 218]),
   commitDailyAnchor: Buffer.from([18, 7, 3, 65, 58, 148, 164, 0]),
+  commitTrace: Buffer.from([58, 140, 230, 51, 170, 109, 228, 125]),
 } as const;
 
 // ── Borsh primitives ────────────────────────────────────────────────────────
@@ -1203,4 +1207,114 @@ export function buildCommitDailyAnchorInstruction(
     data,
   });
   return { instruction };
+}
+
+export interface CommitTraceParams {
+  deploymentPda: PublicKey;
+  companyPda: PublicKey;
+  /** Anchor Wallet — must equal `operations.signer` (kind=Anchor). */
+  anchorSigner: PublicKey;
+  /** Anchor-kind OperationsAccount for this company (in TREASURY program,
+   *  read-only here). Caller derives via `deriveOperationsPda(company,
+   *  OPERATIONS_KIND.Anchor)`. */
+  operationsPda: PublicKey;
+  /** 32-byte hash of the task creation params — globally unique, becomes
+   *  part of the TraceAnchor PDA seed. */
+  taskId: Uint8Array | Buffer;
+  /** Link to the deliverable (article URL, PR, etc). Max
+   *  `MAX_RESULT_URI_LEN` bytes. */
+  resultUri: string;
+  /** SHA-256 of the deliverable content at completion (32 bytes). */
+  contentHash: Uint8Array | Buffer;
+  /** Rubric quality score, 0..=`MAX_QUALITY_SCORE`. */
+  qualityScore: number;
+  /** Version of the scoring rubric that produced `qualityScore`. */
+  rubricVersion: number;
+  /** SHA-256 of the off-chain verification report (32 bytes). */
+  evidenceHash: Uint8Array | Buffer;
+  /** Unix seconds the deliverable was completed off-chain. Must be > 0 and
+   *  not in the future. */
+  completedAt: bigint;
+  /** Rent payer (typically the operator hot wallet). */
+  payer: PublicKey;
+  programId?: PublicKey;
+}
+
+/**
+ * Build a `commit_trace` instruction — Anchor-class single-tx commit of one
+ * completed, VERIFIED deliverable. Signed by the Anchor Wallet bound to the
+ * company's Anchor-kind OperationsAccount (same authority as
+ * `commit_daily_anchor`).
+ *
+ * Only deliverables that passed the off-chain verification gate should be
+ * committed — the on-chain `verdict` is always Passed. Caller is
+ * responsible for:
+ *   1. Computing `contentHash` (SHA-256 of the deliverable)
+ *   2. Running the verification gate + scoring rubric off-chain
+ *   3. Computing `evidenceHash` (SHA-256 of the verification report)
+ *
+ * The verdict byte is fixed on-chain; it is not a caller arg.
+ */
+export function buildCommitTraceInstruction(params: CommitTraceParams): {
+  instruction: TransactionInstruction;
+  traceAnchorPda: PublicKey;
+} {
+  const programId = params.programId ?? REGISTRY_PROGRAM_ID;
+  if (params.taskId.length !== 32) {
+    throw new RangeError(`taskId must be 32 bytes, got ${params.taskId.length}`);
+  }
+  if (params.contentHash.length !== 32) {
+    throw new RangeError(
+      `contentHash must be 32 bytes, got ${params.contentHash.length}`,
+    );
+  }
+  if (params.evidenceHash.length !== 32) {
+    throw new RangeError(
+      `evidenceHash must be 32 bytes, got ${params.evidenceHash.length}`,
+    );
+  }
+  if (Buffer.from(params.resultUri, "utf8").length > MAX_RESULT_URI_LEN) {
+    throw new RangeError(
+      `resultUri exceeds MAX_RESULT_URI_LEN (${MAX_RESULT_URI_LEN} bytes)`,
+    );
+  }
+  if (params.qualityScore < 0 || params.qualityScore > MAX_QUALITY_SCORE) {
+    throw new RangeError(
+      `qualityScore out of range 0..=${MAX_QUALITY_SCORE}: ${params.qualityScore}`,
+    );
+  }
+
+  const taskId = Buffer.from(params.taskId);
+  const { pda: traceAnchorPda } = deriveTraceAnchorPda(taskId, programId);
+
+  // Wire arg order must match the Rust handler: task_id, result_uri,
+  // content_hash, quality_score, rubric_version, evidence_hash,
+  // completed_at. verdict is NOT a wire arg (fixed Passed on-chain).
+  const data = Buffer.concat([
+    INSTRUCTION_DISCRIMINATOR.commitTrace,
+    taskId,
+    encodeString(params.resultUri),
+    Buffer.from(params.contentHash),
+    encodeU8(params.qualityScore),
+    encodeU8(params.rubricVersion),
+    Buffer.from(params.evidenceHash),
+    encodeI64(params.completedAt),
+  ]);
+
+  const instruction = new TransactionInstruction({
+    programId,
+    // Order: deployment, company, anchor_signer, operations, trace_anchor,
+    // payer, system_program.
+    keys: [
+      { pubkey: params.deploymentPda, isSigner: false, isWritable: false },
+      { pubkey: params.companyPda, isSigner: false, isWritable: false },
+      { pubkey: params.anchorSigner, isSigner: true, isWritable: false },
+      { pubkey: params.operationsPda, isSigner: false, isWritable: false },
+      { pubkey: traceAnchorPda, isSigner: false, isWritable: true },
+      { pubkey: params.payer, isSigner: true, isWritable: true },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    ],
+    data,
+  });
+  return { instruction, traceAnchorPda };
 }

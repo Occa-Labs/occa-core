@@ -10,7 +10,9 @@
 // an agent happens elsewhere (CEO chat, delegation marker, etc.).
 
 import type { AgentDTO, InboxPartySummaryDTO } from "@occa/shared/types";
+import { CEO_ROLE } from "@occa/shared/role-catalog";
 import { Star } from "lucide-react";
+import { StatusDot } from "@/components/ui/agent-status";
 import { useInboxPartners } from "../api/use-inbox-partners";
 import {
   type InboxParty,
@@ -34,6 +36,16 @@ export function PartnersColumn({
 }: PartnersColumnProps) {
   const { partners, loading, error } = useInboxPartners(viewer);
 
+  // When the owner is the viewer, every owned non-CEO agent is directly
+  // chattable — surface them as partner rows even if no thread exists yet
+  // so the user can START a conversation. The CEO is excluded (its chat
+  // lives in the dedicated CEO surface). Real inbox partners win on
+  // dedupe; agents with no thread render as a "start a chat" stub.
+  const displayPartners: InboxPartySummaryDTO[] =
+    viewer.kind === "user"
+      ? mergeChattableAgents(partners, agents)
+      : partners;
+
   return (
     <div className="flex h-full w-64 shrink-0 flex-col border-r border-white/8 bg-black/10">
       <div className="border-b border-white/8 px-3 py-2.5">
@@ -48,7 +60,7 @@ export function PartnersColumn({
             Loading…
           </li>
         )}
-        {!loading && !error && partners.length === 0 && (
+        {!loading && !error && displayPartners.length === 0 && (
           <li className="px-3 py-6 text-center text-[11px] text-white/35">
             No conversations yet
           </li>
@@ -58,17 +70,22 @@ export function PartnersColumn({
             {error}
           </li>
         )}
-        {partners.map((p) => {
+        {displayPartners.map((p) => {
           const party = partyFromSummary(p);
           const active = selectedPartner
             ? partiesEqual(party, selectedPartner)
             : false;
           const label = resolvePartyLabel(party, agents);
+          const agent =
+            p.kind === "deployment"
+              ? (agents.find((a) => a.id === p.id) ?? null)
+              : null;
           return (
             <li key={`${p.kind}:${p.id}`}>
               <PartnerRow
                 summary={p}
                 label={label}
+                agent={agent}
                 active={active}
                 onClick={() => onSelectPartner(party)}
               />
@@ -78,6 +95,29 @@ export function PartnersColumn({
       </ul>
     </div>
   );
+}
+
+// Append a "start a chat" stub row for every owned non-CEO agent that
+// doesn't already have an inbox thread. Real partner rows (with history)
+// keep their position; stubs sort to the bottom (empty lastMessageAt).
+function mergeChattableAgents(
+  partners: InboxPartySummaryDTO[],
+  agents: AgentDTO[],
+): InboxPartySummaryDTO[] {
+  const present = new Set(
+    partners.filter((p) => p.kind === "deployment").map((p) => p.id),
+  );
+  const stubs: InboxPartySummaryDTO[] = agents
+    .filter((a) => a.role !== CEO_ROLE && !present.has(a.id))
+    .map((a) => ({
+      kind: "deployment",
+      id: a.id,
+      lastMessageAt: "",
+      lastMessagePreview: "Start a direct chat",
+      lastMessageRole: "user",
+      threadCount: 0,
+    }));
+  return [...partners, ...stubs];
 }
 
 function partyFromSummary(s: InboxPartySummaryDTO): InboxParty {
@@ -93,11 +133,13 @@ function resolvePartyLabel(p: InboxParty, agents: AgentDTO[]): string {
 function PartnerRow({
   summary,
   label,
+  agent,
   active,
   onClick,
 }: {
   summary: InboxPartySummaryDTO;
   label: string;
+  agent: AgentDTO | null;
   active: boolean;
   onClick: () => void;
 }) {
@@ -126,8 +168,11 @@ function PartnerRow({
       </span>
       <span className="min-w-0 flex-1">
         <span className="flex items-baseline justify-between gap-2">
-          <span className="truncate text-xs font-medium text-white">
-            {label}
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span className="truncate text-xs font-medium text-white">
+              {label}
+            </span>
+            {agent && <StatusDot agent={agent} size={7} />}
           </span>
           <span className="shrink-0 text-[10px] text-white/40">{ago}</span>
         </span>

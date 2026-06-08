@@ -52,6 +52,17 @@ export const createTaskBody = z.object({
     .optional(),
   dueDate: z.string().datetime().nullable().optional(),
   assignedAgentId: z.string().uuid().nullable().optional(),
+  // Published URL of the deliverable — anchored on-chain as the trace's
+  // result_uri. Empty string is accepted and normalized to null (private).
+  resultUri: z
+    .string()
+    .trim()
+    .max(LIMITS.URL)
+    .refine((v) => v === "" || /^https?:\/\//i.test(v), {
+      message: "must be an http(s) URL",
+    })
+    .nullable()
+    .optional(),
 });
 
 export const updateTaskBody = createTaskBody.partial();

@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "uq_chat_threads_user_agent" ON "chat_threads" USING btree ("company_id","deployment_id") WHERE kind = 'user_agent';

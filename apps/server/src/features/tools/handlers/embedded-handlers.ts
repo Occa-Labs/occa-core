@@ -16,11 +16,13 @@
 // When an external MCP equivalent matures, flip the catalog entry's
 // `implementation` and drop the embedded handler.
 
+import { publishHandler } from "./publish";
 import { xHandler } from "./x";
 import type { ToolHandler } from "../domain/types";
 
 export const EMBEDDED_HANDLERS: Map<string, ToolHandler> = new Map([
   ["x", xHandler],
+  ["publish", publishHandler],
 ]);
 
 export function findEmbeddedHandler(name: string): ToolHandler | null {

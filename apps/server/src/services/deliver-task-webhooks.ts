@@ -35,14 +35,21 @@ export interface DeliverTaskWebhooksInput {
   traceId: string;
 }
 
+export interface DeliverTaskWebhooksResult {
+  /** Canonical URL returned by the first webhook receiver that provided
+   *  one (e.g. crypoch's live article URL). Null when nothing published or
+   *  no receiver returned a URL. Used to populate on-chain result_uri. */
+  resultUri: string | null;
+}
+
 export async function deliverTaskWebhooks(
   input: DeliverTaskWebhooksInput,
-): Promise<void> {
+): Promise<DeliverTaskWebhooksResult> {
   const webhooks = await listEnabledWebhooks({
     companyId: input.companyId,
     event: WEBHOOK_EVENT_TASK_COMPLETED,
   });
-  if (webhooks.length === 0) return;
+  if (webhooks.length === 0) return { resultUri: null };
 
   const matching = webhooks.filter((w) =>
     webhookMatchesTask(
@@ -58,7 +65,7 @@ export async function deliverTaskWebhooks(
       },
     ),
   );
-  if (matching.length === 0) return;
+  if (matching.length === 0) return { resultUri: null };
 
   const [companyRow] = await db
     .select({ name: companies.name })
@@ -87,8 +94,12 @@ export async function deliverTaskWebhooks(
     trace: { id: input.traceId },
   };
 
+  let resultUri: string | null = null;
   for (const webhook of matching) {
     const result = await deliverWebhook(webhook, payload);
+    // First receiver-returned URL wins (one publish target per company in
+    // practice). Used to link the on-chain trace to the published artifact.
+    if (!resultUri && result.resultUri) resultUri = result.resultUri;
     // Record on the task timeline for traceability — which webhook
     // received this deliverable, and whether the receiver accepted it.
     await appendTaskEventBestEffort({
@@ -104,6 +115,7 @@ export async function deliverTaskWebhooks(
         webhookName: webhook.name,
         outcome: result.ok ? "ok" : "failed",
         status: result.status,
+        url: result.resultUri,
       },
       traceId: input.traceId,
     });
@@ -117,4 +129,6 @@ export async function deliverTaskWebhooks(
     },
     "task webhooks dispatched",
   );
+
+  return { resultUri };
 }

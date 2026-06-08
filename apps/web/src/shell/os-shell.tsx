@@ -48,6 +48,7 @@ import { ChatsWindow } from "@/features/chats/components/chats-window";
 import { SkillLibrary } from "@/features/skills/components/skill-library";
 import { ToolsWindow } from "@/features/tools/components/tools-window";
 import { CeoChatBubble } from "./ceo-chat-bubble";
+import { CeoChatWindow } from "@/features/chat/components/ceo-chat-window";
 
 interface OsShellProps {
   /** Lifted from the parent so OsShell shares a single useMe instance with
@@ -472,7 +473,18 @@ export function OsShell({
         />
       )}
       {activeWindow === "chats" && (
-        <ChatsWindow agents={me.agents} onClose={close} />
+        <ChatsWindow
+          agents={me.agents}
+          onClose={close}
+          renderAgentChat={({ deploymentId, agentName }) => (
+            <CeoChatWindow
+              key={deploymentId}
+              active
+              deploymentId={deploymentId}
+              ceoName={agentName}
+            />
+          )}
+        />
       )}
       {activeWindow === "org-chart" && (
         <OrgChartWindow
@@ -491,6 +503,7 @@ export function OsShell({
       {activeWindow === "changelogs" && <ChangelogsWindow onClose={close} />}
       {activeWindow === "settings" && (
         <SettingsWindow
+          companyId={me.company.id}
           onClose={close}
           onStartTour={onStartTour}
           tourActive={tourActive}

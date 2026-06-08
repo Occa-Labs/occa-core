@@ -13,8 +13,10 @@
 
 import { useEffect, useRef, type ReactElement, type ReactNode } from "react";
 import type { AgentDTO, InboxMessageDTO } from "@occa/shared/types";
+import { CEO_ROLE } from "@occa/shared/role-catalog";
 import { Star } from "lucide-react";
 import { BubbleMarkdown } from "@/components/ui/bubble-markdown";
+import { StatusPill } from "@/components/ui/agent-status";
 import { useInboxMessages } from "../api/use-inbox-messages";
 import { type InboxParty } from "../types";
 
@@ -24,6 +26,13 @@ interface MessagesColumnProps {
   partner: InboxParty | null;
   partnerLabel: string | null;
   agents: AgentDTO[];
+  /** Render a LIVE chat surface (composer + send) for a direct user↔agent
+   *  conversation. Supplied by the shell so features/chats stays free of a
+   *  features/chat import. When omitted the column is read-only. */
+  renderAgentChat?: (args: {
+    deploymentId: string;
+    agentName: string;
+  }) => ReactNode;
 }
 
 export function MessagesColumn({
@@ -32,6 +41,7 @@ export function MessagesColumn({
   partner,
   partnerLabel,
   agents,
+  renderAgentChat,
 }: MessagesColumnProps) {
   const { messages, loading, error } = useInboxMessages({
     self: viewer,
@@ -44,6 +54,31 @@ export function MessagesColumn({
         <p className="text-xs text-white/35">Select a conversation</p>
       </EmptyPane>
     );
+  }
+
+  // Owner chatting one of their own non-CEO agents → live composer thread
+  // (the user_agent surface). Everything else (agent-as-viewer, agent_dm,
+  // the CEO row) stays read-only observability.
+  if (renderAgentChat && viewer.kind === "user" && partner.kind === "deployment") {
+    const agent = agents.find((a) => a.id === partner.deploymentId);
+    if (agent && agent.role !== CEO_ROLE) {
+      return (
+        <div className="flex h-full flex-1 flex-col bg-black/5">
+          <div className="flex items-center gap-2 border-b border-white/8 px-4 py-2.5">
+            <h3 className="truncate text-xs font-semibold text-white/85">
+              {viewerLabel} &amp; {agent.name}
+            </h3>
+            <StatusPill agent={agent} />
+          </div>
+          <div className="min-h-0 flex-1">
+            {renderAgentChat({
+              deploymentId: agent.id,
+              agentName: agent.name,
+            })}
+          </div>
+        </div>
+      );
+    }
   }
 
   return (
