@@ -177,4 +177,43 @@ router.post("/hermes/probe", requireAuth, async (req: Request, res: Response) =>
   res.status(StatusCodes.OK).json(payload);
 });
 
+// POST /api/adapters/claude-code/probe
+//
+// Runs `claude -p "ok"` on the host to confirm the binary is present and
+// the subscription auth resolves (CLAUDE_CODE_OAUTH_TOKEN / interactive
+// login). No gateway or per-agent bearer — the only input is the model.
+const claudeCodeProbeBody = z.object({
+  model: z.string().trim().min(1).max(LIMITS.LABEL).optional(),
+});
+
+router.post(
+  "/claude-code/probe",
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const parsed = claudeCodeProbeBody.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(StatusCodes.BAD_REQUEST).json({
+        error: ERROR_CODES.INVALID_BODY,
+        detail: parsed.error.flatten(),
+      });
+      return;
+    }
+    const adapter = getAdapter("claude-code");
+    if (!adapter) {
+      res
+        .status(StatusCodes.INTERNAL_SERVER_ERROR)
+        .json({ error: ERROR_CODES.INTERNAL_ERROR });
+      return;
+    }
+    const result = await adapter.probeConnection(parsed.data);
+    const payload: ProbeResponse = {
+      ok: result.ok,
+      latencyMs: result.latencyMs,
+      error: result.error as ProbeResponse["error"],
+      info: result.info as ProbeResponse["info"],
+    };
+    res.status(StatusCodes.OK).json(payload);
+  },
+);
+
 export default router;

@@ -35,6 +35,9 @@ importers:
       '@noble/ed25519':
         specifier: ^3.1.0
         version: 3.1.0
+      '@occa/adapter-claude-code':
+        specifier: workspace:*
+        version: link:../../packages/adapter-claude-code
       '@occa/adapter-hermes':
         specifier: workspace:*
         version: link:../../packages/adapter-hermes
@@ -244,6 +247,9 @@ importers:
 
   apps/worker:
     dependencies:
+      '@occa/adapter-claude-code':
+        specifier: workspace:*
+        version: link:../../packages/adapter-claude-code
       '@occa/adapter-hermes':
         specifier: workspace:*
         version: link:../../packages/adapter-hermes
@@ -281,6 +287,12 @@ importers:
       typescript:
         specifier: ^5
         version: 5.9.3
+
+  packages/adapter-claude-code:
+    dependencies:
+      '@occa/runtime-core':
+        specifier: workspace:*
+        version: link:../runtime-core
 
   packages/adapter-hermes:
     dependencies:

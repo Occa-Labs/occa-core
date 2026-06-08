@@ -10,16 +10,16 @@ import {
   Plus,
   RefreshCw,
   Server,
+  Terminal,
 } from "lucide-react";
 import { Modal } from "@/components/ui/modal";
 import { FloatingPanel } from "@/components/ui/floating-panel";
 import { Autocomplete } from "@/components/ui/autocomplete";
 import { ApiError, adaptersApi, agentsApi } from "@/lib/api";
 import type {
+  AdapterConfig,
   AdapterType,
   AgentDTO,
-  HermesAdapterConfig,
-  OpenclawAdapterConfig,
 } from "@occa/shared/types";
 import { CSUITE_ROLES, ROLE_LABELS, ROLE_ORDER } from "./_shared";
 
@@ -103,6 +103,9 @@ export function DeployAgentModal({
   // both runtimes now authenticate via HTTP + bearer.
   const [hermesGatewayUrl, setHermesGatewayUrl] = useState("");
   const [hermesApiKey, setHermesApiKey] = useState("");
+  // Claude Code form state — no gateway/bearer (host auth); the only knob
+  // is the model. "sonnet" default for cost; "opus" for quality.
+  const [model, setModel] = useState("sonnet");
   // Optional flat per-task invoice rate, entered in SOL. Empty = no rate
   // (operator can set it later from the Wallet tab).
   const [taskRateSol, setTaskRateSol] = useState("");
@@ -149,9 +152,11 @@ export function DeployAgentModal({
     taskRateSol.trim() === "" ||
     (Number.isFinite(Number(taskRateSol)) && Number(taskRateSol) >= 0);
   const credsFilled =
-    adapterType === "openclaw"
-      ? gatewayUrl.trim().length > 0 && apiKey.trim().length > 0
-      : hermesGatewayUrl.trim().length > 0 && hermesApiKey.trim().length > 0;
+    adapterType === "claude-code"
+      ? true // host-level auth — no per-agent credentials to fill
+      : adapterType === "openclaw"
+        ? gatewayUrl.trim().length > 0 && apiKey.trim().length > 0
+        : hermesGatewayUrl.trim().length > 0 && hermesApiKey.trim().length > 0;
   const canProbe = credsFilled && step === "form";
   const canCreate =
     name.trim().length > 0 &&
@@ -185,6 +190,7 @@ export function DeployAgentModal({
     setApiKey("");
     setHermesGatewayUrl("");
     setHermesApiKey("");
+    setModel("sonnet");
     setTaskRateSol("");
     setParentAgentId("");
     setStep("form");
@@ -223,15 +229,17 @@ export function DeployAgentModal({
     setProbeResult(null);
     try {
       const res =
-        adapterType === "openclaw"
-          ? await adaptersApi.probeOpenclaw({
-              gatewayUrl: gatewayUrl.trim(),
-              apiKey: apiKey.trim(),
-            })
-          : await adaptersApi.probeHermes({
-              gatewayUrl: hermesGatewayUrl.trim(),
-              apiKey: hermesApiKey.trim(),
-            });
+        adapterType === "claude-code"
+          ? await adaptersApi.probeClaudeCode({ model })
+          : adapterType === "openclaw"
+            ? await adaptersApi.probeOpenclaw({
+                gatewayUrl: gatewayUrl.trim(),
+                apiKey: apiKey.trim(),
+              })
+            : await adaptersApi.probeHermes({
+                gatewayUrl: hermesGatewayUrl.trim(),
+                apiKey: hermesApiKey.trim(),
+              });
       setProbeResult({
         ok: res.ok,
         latencyMs: res.latencyMs,
@@ -249,7 +257,7 @@ export function DeployAgentModal({
     } finally {
       setStep("form");
     }
-  }, [adapterType, gatewayUrl, apiKey, hermesGatewayUrl, hermesApiKey]);
+  }, [adapterType, gatewayUrl, apiKey, hermesGatewayUrl, hermesApiKey, model]);
 
   type StreamErrorBody = {
     message?: string;
@@ -283,13 +291,15 @@ export function DeployAgentModal({
     setFailedAgentId(null);
     setStepStatuses({ ...INITIAL_STEP_STATUSES });
     try {
-      const adapterConfig: OpenclawAdapterConfig | HermesAdapterConfig =
-        adapterType === "openclaw"
-          ? { gatewayUrl: gatewayUrl.trim(), apiKey: apiKey.trim() }
-          : {
-              gatewayUrl: hermesGatewayUrl.trim(),
-              apiKey: hermesApiKey.trim(),
-            };
+      const adapterConfig: AdapterConfig =
+        adapterType === "claude-code"
+          ? { model }
+          : adapterType === "openclaw"
+            ? { gatewayUrl: gatewayUrl.trim(), apiKey: apiKey.trim() }
+            : {
+                gatewayUrl: hermesGatewayUrl.trim(),
+                apiKey: hermesApiKey.trim(),
+              };
       const res = await agentsApi.createStream(
         {
           name: name.trim(),
@@ -328,6 +338,7 @@ export function DeployAgentModal({
     apiKey,
     hermesGatewayUrl,
     hermesApiKey,
+    model,
     parentAgentId,
     taskRateSol,
     handleStreamError,
@@ -568,24 +579,63 @@ export function DeployAgentModal({
                 label="Hermes"
                 onClick={() => switchAdapter("hermes")}
               />
+              <AdapterTab
+                active={adapterType === "claude-code"}
+                disabled={busy}
+                icon={<Terminal className="size-3" />}
+                label="Claude Code"
+                onClick={() => switchAdapter("claude-code")}
+              />
             </div>
           </div>
 
           {/* Visible help trigger — sits right where the user enters the
-              creds so it actually gets noticed, not a tiny header icon. */}
-          <button
-            ref={helpTriggerRef}
-            type="button"
-            onClick={openHelp}
-            className="flex w-full items-center gap-1.5 rounded-lg px-3 py-2 text-[11.5px] text-white/45 transition-colors hover:bg-white/5 hover:text-white/75"
-            style={{ border: "1px dashed rgba(255,255,255,0.10)" }}
-          >
-            <HelpCircle className="size-3.5 shrink-0" />
-            Where do I find the {adapterType === "openclaw" ? "OpenClaw" : "Hermes"}{" "}
-            Gateway URL and API key?
-          </button>
+              creds so it actually gets noticed, not a tiny header icon.
+              claude-code has no creds, so it shows a note instead. */}
+          {adapterType === "claude-code" ? (
+            <p className="text-[11px] text-white/40 leading-relaxed">
+              Runs on your Claude subscription via the host login
+              (CLAUDE_CODE_OAUTH_TOKEN or interactive login). No gateway or
+              key needed. sonnet is cheapest; opus for higher quality.
+            </p>
+          ) : (
+            <button
+              ref={helpTriggerRef}
+              type="button"
+              onClick={openHelp}
+              className="flex w-full items-center gap-1.5 rounded-lg px-3 py-2 text-[11.5px] text-white/45 transition-colors hover:bg-white/5 hover:text-white/75"
+              style={{ border: "1px dashed rgba(255,255,255,0.10)" }}
+            >
+              <HelpCircle className="size-3.5 shrink-0" />
+              Where do I find the{" "}
+              {adapterType === "openclaw" ? "OpenClaw" : "Hermes"} Gateway URL
+              and API key?
+            </button>
+          )}
 
-          {adapterType === "openclaw" ? (
+          {adapterType === "claude-code" ? (
+            <label className="block">
+              <span className="text-[11px] text-white/50 mb-1.5 block">
+                Model
+              </span>
+              <select
+                value={model}
+                onChange={(e) => {
+                  setModel(e.target.value);
+                  setProbeResult(null);
+                  setFailedAgentId(null);
+                }}
+                disabled={busy}
+                className="w-full rounded-xl bg-white/5 ring-1 ring-inset ring-white/10 focus:ring-white/22 focus:outline-none px-3.5 py-2.5 text-[13px] text-white/85 transition disabled:opacity-50 font-mono"
+              >
+                {["sonnet", "opus", "haiku"].map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : adapterType === "openclaw" ? (
             <div className="space-y-2.5">
               <label className="block">
                 <span className="text-[11px] text-white/50 mb-1.5 block">

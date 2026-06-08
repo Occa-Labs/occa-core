@@ -25,9 +25,17 @@ export const hermesAdapterConfigSchema = z.object({
   apiKey: z.string().min(1).max(LIMITS.API_KEY),
 });
 
+// claude-code runs as a local subprocess (`claude -p`) authed from the
+// host env (CLAUDE_CODE_OAUTH_TOKEN / interactive login). No gateway or
+// per-agent bearer — the only per-agent knob is the model.
+export const claudeCodeAdapterConfigSchema = z.object({
+  model: z.string().trim().min(1).max(LIMITS.LABEL).optional(),
+});
+
 export const adapterConfigSchema = z.union([
   openclawAdapterConfigSchema,
   hermesAdapterConfigSchema,
+  claudeCodeAdapterConfigSchema,
 ]);
 
 // Upper bound for a per-task invoice rate (lamports). 1000 SOL — far above
@@ -80,6 +88,11 @@ export const createAgentBody = z.discriminatedUnion("adapterType", [
     ...createAgentSharedFields,
     adapterType: z.literal("hermes"),
     adapterConfig: hermesAdapterConfigSchema,
+  }),
+  z.object({
+    ...createAgentSharedFields,
+    adapterType: z.literal("claude-code"),
+    adapterConfig: claudeCodeAdapterConfigSchema,
   }),
 ]);
 
@@ -163,6 +176,10 @@ export const switchAdapterBody = z.discriminatedUnion("adapterType", [
   z.object({
     adapterType: z.literal("hermes"),
     adapterConfig: hermesAdapterConfigSchema,
+  }),
+  z.object({
+    adapterType: z.literal("claude-code"),
+    adapterConfig: claudeCodeAdapterConfigSchema,
   }),
 ]);
 

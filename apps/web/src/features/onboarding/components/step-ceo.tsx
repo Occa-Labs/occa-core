@@ -7,11 +7,7 @@
 // real progress instead of a silent 5-30s spinner.
 
 import { AlertTriangle, Crown, Loader2, Sparkles } from "lucide-react";
-import type {
-  AdapterType,
-  HermesAdapterConfig,
-  OpenclawAdapterConfig,
-} from "@occa/shared/types";
+import type { AdapterConfig, AdapterType } from "@occa/shared/types";
 import { useDeployCeo, type DeployStage } from "../api/use-deploy-ceo";
 
 interface StepCeoProps {
@@ -19,7 +15,7 @@ interface StepCeoProps {
   ceoName: string;
   onCeoNameChange: (next: string) => void;
   adapterType: AdapterType;
-  adapterConfig: OpenclawAdapterConfig | HermesAdapterConfig;
+  adapterConfig: AdapterConfig;
   /** When set, retry an existing failed provision via /reprovision
    *  instead of POSTing a fresh deploy. Surfaced by parent resume
    *  detection and updated in-place if a fresh launch fails after the

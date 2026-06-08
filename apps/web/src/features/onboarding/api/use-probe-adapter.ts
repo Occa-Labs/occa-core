@@ -21,13 +21,16 @@ import type {
 
 export type ProbeAdapterInput =
   | { type: "openclaw"; input: ProbeRequest }
-  | { type: "hermes"; input: HermesProbeRequest };
+  | { type: "hermes"; input: HermesProbeRequest }
+  | { type: "claude-code"; input: { model?: string } };
 
 export function useProbeAdapter() {
   return useMutation({
     mutationFn: (variables: ProbeAdapterInput): Promise<ProbeResponse> =>
       variables.type === "openclaw"
         ? adaptersApi.probeOpenclaw(variables.input)
-        : adaptersApi.probeHermes(variables.input),
+        : variables.type === "hermes"
+          ? adaptersApi.probeHermes(variables.input)
+          : adaptersApi.probeClaudeCode(variables.input),
   });
 }

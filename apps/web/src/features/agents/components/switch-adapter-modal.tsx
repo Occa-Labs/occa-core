@@ -7,12 +7,17 @@ import type { AgentDTO } from "@occa/shared/types";
 import { Modal } from "@/components/ui/modal";
 import { Button } from "@/components/ui/button";
 
-type TargetAdapter = "openclaw" | "hermes";
+type TargetAdapter = "openclaw" | "hermes" | "claude-code";
 
 const ADAPTER_LABELS: Record<TargetAdapter, string> = {
   openclaw: "OpenClaw",
   hermes: "Hermes",
+  "claude-code": "Claude Code",
 };
+
+// Claude Code has no gateway/bearer — auth is host-level — so the only
+// per-agent knob is the model.
+const CLAUDE_CODE_MODELS = ["sonnet", "opus", "haiku"];
 
 // Move an already-deployed agent to a different runtime. Provision +
 // probe happen on the server inside one POST; the modal gates the action
@@ -37,6 +42,7 @@ export function SwitchAdapterModal({
   const [target, setTarget] = useState<TargetAdapter>(initialTarget);
   const [gatewayUrl, setGatewayUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
+  const [model, setModel] = useState("sonnet");
   const [probe, setProbe] = useState<{
     ok: boolean;
     latencyMs?: number;
@@ -51,6 +57,7 @@ export function SwitchAdapterModal({
     setTarget(initialTarget);
     setGatewayUrl("");
     setApiKey("");
+    setModel("sonnet");
     setProbe(null);
     setPhase("idle");
     setError(null);
@@ -68,19 +75,31 @@ export function SwitchAdapterModal({
     });
   }, []);
 
+  // claude-code needs no credentials — its model always has a default — so
+  // it's always probeable. The HTTP adapters need a gateway URL + bearer.
   const canProbe =
-    gatewayUrl.trim().length > 0 && apiKey.trim().length > 0 && phase === "idle";
+    phase === "idle" &&
+    (target === "claude-code"
+      ? true
+      : gatewayUrl.trim().length > 0 && apiKey.trim().length > 0);
 
   const handleProbe = useCallback(async () => {
     setPhase("probing");
     setProbe(null);
     setError(null);
     try {
-      const input = { gatewayUrl: gatewayUrl.trim(), apiKey: apiKey.trim() };
       const res =
-        target === "openclaw"
-          ? await adaptersApi.probeOpenclaw(input)
-          : await adaptersApi.probeHermes(input);
+        target === "claude-code"
+          ? await adaptersApi.probeClaudeCode({ model })
+          : target === "openclaw"
+            ? await adaptersApi.probeOpenclaw({
+                gatewayUrl: gatewayUrl.trim(),
+                apiKey: apiKey.trim(),
+              })
+            : await adaptersApi.probeHermes({
+                gatewayUrl: gatewayUrl.trim(),
+                apiKey: apiKey.trim(),
+              });
       setProbe({ ok: res.ok, latencyMs: res.latencyMs, error: res.error });
     } catch (e) {
       setProbe({
@@ -93,16 +112,23 @@ export function SwitchAdapterModal({
     } finally {
       setPhase("idle");
     }
-  }, [target, gatewayUrl, apiKey]);
+  }, [target, gatewayUrl, apiKey, model]);
 
   const handleConfirm = useCallback(async () => {
     setPhase("switching");
     setError(null);
     try {
-      await agentsApi.switchAdapter(agent.id, {
-        adapterType: target,
-        adapterConfig: { gatewayUrl: gatewayUrl.trim(), apiKey: apiKey.trim() },
-      });
+      if (target === "claude-code") {
+        await agentsApi.switchAdapter(agent.id, {
+          adapterType: "claude-code",
+          adapterConfig: { model },
+        });
+      } else {
+        await agentsApi.switchAdapter(agent.id, {
+          adapterType: target,
+          adapterConfig: { gatewayUrl: gatewayUrl.trim(), apiKey: apiKey.trim() },
+        });
+      }
       await onReloadMe();
       onClose();
     } catch (e) {
@@ -115,7 +141,7 @@ export function SwitchAdapterModal({
       setError(reason);
       setPhase("idle");
     }
-  }, [agent.id, target, gatewayUrl, apiKey, onReloadMe, onClose]);
+  }, [agent.id, target, gatewayUrl, apiKey, model, onReloadMe, onClose]);
 
   const probedOk = probe?.ok === true;
 
@@ -157,42 +183,71 @@ export function SwitchAdapterModal({
           })}
         </div>
 
-        {/* Credentials */}
-        <div className="space-y-2.5">
-          <label className="block">
-            <span className="text-[10px] uppercase tracking-wider text-white/40">
-              Gateway URL
-            </span>
-            <input
-              value={gatewayUrl}
-              onChange={(e) => {
-                setGatewayUrl(e.target.value);
-                setProbe(null);
-              }}
-              placeholder={
-                target === "hermes"
-                  ? "https://hermes.occa.team"
-                  : "wss://gateway.occa.team"
-              }
-              className="mt-1 w-full rounded-md border border-white/12 bg-white/5 px-3 py-2 text-xs text-white/90 font-mono focus:outline-none focus:ring-1 focus:ring-white/25"
-            />
-          </label>
-          <label className="block">
-            <span className="text-[10px] uppercase tracking-wider text-white/40">
-              Bearer / API key
-            </span>
-            <input
-              value={apiKey}
-              onChange={(e) => {
-                setApiKey(e.target.value);
-                setProbe(null);
-              }}
-              type="password"
-              placeholder="paste runtime token"
-              className="mt-1 w-full rounded-md border border-white/12 bg-white/5 px-3 py-2 text-xs text-white/90 font-mono focus:outline-none focus:ring-1 focus:ring-white/25"
-            />
-          </label>
-        </div>
+        {/* Config — claude-code is credential-less (host auth), so it only
+            picks a model; the HTTP adapters collect gateway + bearer. */}
+        {target === "claude-code" ? (
+          <div className="space-y-2.5">
+            <label className="block">
+              <span className="text-[10px] uppercase tracking-wider text-white/40">
+                Model
+              </span>
+              <select
+                value={model}
+                onChange={(e) => {
+                  setModel(e.target.value);
+                  setProbe(null);
+                }}
+                className="mt-1 w-full rounded-md border border-white/12 bg-white/5 px-3 py-2 text-xs text-white/90 font-mono focus:outline-none focus:ring-1 focus:ring-white/25"
+              >
+                {CLAUDE_CODE_MODELS.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <p className="text-[10px] text-white/35 leading-relaxed">
+              Runs on your Claude subscription via the host login. No gateway
+              or key needed. sonnet is cheapest; opus for higher quality.
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-2.5">
+            <label className="block">
+              <span className="text-[10px] uppercase tracking-wider text-white/40">
+                Gateway URL
+              </span>
+              <input
+                value={gatewayUrl}
+                onChange={(e) => {
+                  setGatewayUrl(e.target.value);
+                  setProbe(null);
+                }}
+                placeholder={
+                  target === "hermes"
+                    ? "https://hermes.occa.team"
+                    : "wss://gateway.occa.team"
+                }
+                className="mt-1 w-full rounded-md border border-white/12 bg-white/5 px-3 py-2 text-xs text-white/90 font-mono focus:outline-none focus:ring-1 focus:ring-white/25"
+              />
+            </label>
+            <label className="block">
+              <span className="text-[10px] uppercase tracking-wider text-white/40">
+                Bearer / API key
+              </span>
+              <input
+                value={apiKey}
+                onChange={(e) => {
+                  setApiKey(e.target.value);
+                  setProbe(null);
+                }}
+                type="password"
+                placeholder="paste runtime token"
+                className="mt-1 w-full rounded-md border border-white/12 bg-white/5 px-3 py-2 text-xs text-white/90 font-mono focus:outline-none focus:ring-1 focus:ring-white/25"
+              />
+            </label>
+          </div>
+        )}
 
         {/* Probe result */}
         {probe && (

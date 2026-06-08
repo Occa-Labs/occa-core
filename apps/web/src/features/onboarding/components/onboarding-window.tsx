@@ -15,11 +15,10 @@
 import { useMemo, useState } from "react";
 import { AppWindow } from "@/components/ui/app-window";
 import type {
+  AdapterConfig,
   AdapterType,
   AgentDTO,
   CompanyDTO,
-  HermesAdapterConfig,
-  OpenclawAdapterConfig,
 } from "@occa/shared/types";
 import { getTier } from "@occa/shared/role-catalog";
 import { StepperHeader } from "./stepper-header";
@@ -73,6 +72,8 @@ export function OnboardingWindow({ me, onDismiss }: OnboardingWindowProps) {
   // both runtimes now authenticate the same way.
   const [hermesGatewayUrl, setHermesGatewayUrl] = useState("");
   const [hermesApiKey, setHermesApiKey] = useState("");
+  // Claude Code form state — no gateway/bearer (host auth); only the model.
+  const [model, setModel] = useState("sonnet");
   const [ceoName, setCeoName] = useState(resume.ceoName);
   const [pendingAgentId, setPendingAgentId] = useState<string | null>(
     resume.pendingAgentId,
@@ -99,10 +100,12 @@ export function OnboardingWindow({ me, onDismiss }: OnboardingWindowProps) {
   // Pack the adapter config in the shape the deploy hook expects. This
   // mirrors the server-side discriminated union — adapterType and the
   // config object always agree on the same variant.
-  const adapterConfig: OpenclawAdapterConfig | HermesAdapterConfig =
-    adapterType === "openclaw"
-      ? { gatewayUrl, apiKey }
-      : { gatewayUrl: hermesGatewayUrl, apiKey: hermesApiKey };
+  const adapterConfig: AdapterConfig =
+    adapterType === "claude-code"
+      ? { model }
+      : adapterType === "openclaw"
+        ? { gatewayUrl, apiKey }
+        : { gatewayUrl: hermesGatewayUrl, apiKey: hermesApiKey };
 
   const center = useMemo(() => {
     if (typeof window === "undefined") return undefined;
@@ -148,6 +151,8 @@ export function OnboardingWindow({ me, onDismiss }: OnboardingWindowProps) {
               hermesApiKey={hermesApiKey}
               onHermesGatewayUrlChange={setHermesGatewayUrl}
               onHermesApiKeyChange={setHermesApiKey}
+              model={model}
+              onModelChange={setModel}
               onContinue={handleRuntimeContinue}
               onBack={() => setStepIndex(0)}
             />

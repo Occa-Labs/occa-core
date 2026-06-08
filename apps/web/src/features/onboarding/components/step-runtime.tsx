@@ -19,6 +19,7 @@ import {
   Loader2,
   Network,
   Server,
+  Terminal,
 } from "lucide-react";
 import { ApiError } from "@/lib/api";
 import type { AdapterType } from "@occa/shared/types";
@@ -45,6 +46,9 @@ interface StepRuntimeProps {
   hermesApiKey: string;
   onHermesGatewayUrlChange: (next: string) => void;
   onHermesApiKeyChange: (next: string) => void;
+  // claude-code (no creds — host auth — just the model)
+  model: string;
+  onModelChange: (next: string) => void;
 
   onContinue: () => void;
   onBack: () => void;
@@ -67,21 +71,26 @@ export function StepRuntime(props: StepRuntimeProps) {
     if (!canSubmit) return;
     try {
       const result =
-        adapterType === "openclaw"
+        adapterType === "claude-code"
           ? await probe.mutateAsync({
-              type: "openclaw",
-              input: {
-                gatewayUrl: props.gatewayUrl.trim(),
-                apiKey: props.apiKey.trim(),
-              },
+              type: "claude-code",
+              input: { model: props.model },
             })
-          : await probe.mutateAsync({
-              type: "hermes",
-              input: {
-                gatewayUrl: props.hermesGatewayUrl.trim(),
-                apiKey: props.hermesApiKey.trim(),
-              },
-            });
+          : adapterType === "openclaw"
+            ? await probe.mutateAsync({
+                type: "openclaw",
+                input: {
+                  gatewayUrl: props.gatewayUrl.trim(),
+                  apiKey: props.apiKey.trim(),
+                },
+              })
+            : await probe.mutateAsync({
+                type: "hermes",
+                input: {
+                  gatewayUrl: props.hermesGatewayUrl.trim(),
+                  apiKey: props.hermesApiKey.trim(),
+                },
+              });
       if (result.ok) onContinue();
     } catch {
       /* error surfaced inline below */
@@ -149,9 +158,24 @@ export function StepRuntime(props: StepRuntimeProps) {
             description="Self-hosted Hermes Agent on your VPS. OpenAI-compatible HTTP gateway, bearer token."
             onSelect={() => switchAdapter("hermes")}
           />
+          <AdapterCard
+            active={adapterType === "claude-code"}
+            icon={<Terminal className="size-4" />}
+            label="Claude Code"
+            description="Runs on your Claude subscription via the host login. No gateway or key."
+            onSelect={() => switchAdapter("claude-code")}
+          />
         </div>
 
-        {adapterType === "openclaw" ? (
+        {adapterType === "claude-code" ? (
+          <ClaudeCodeForm
+            model={props.model}
+            onModelChange={(next) => {
+              props.onModelChange(next);
+              probe.reset();
+            }}
+          />
+        ) : adapterType === "openclaw" ? (
           <OpenclawForm
             gatewayUrl={props.gatewayUrl}
             apiKey={props.apiKey}
@@ -270,6 +294,8 @@ export function StepRuntime(props: StepRuntimeProps) {
 }
 
 function isFormReady(props: StepRuntimeProps): boolean {
+  // claude-code has no creds — host auth — so it's always ready to probe.
+  if (props.adapterType === "claude-code") return true;
   if (props.adapterType === "openclaw") {
     return (
       props.gatewayUrl.trim().length > 0 && props.apiKey.trim().length > 0
@@ -329,6 +355,40 @@ function AdapterCard({
         {description}
       </p>
     </button>
+  );
+}
+
+function ClaudeCodeForm({
+  model,
+  onModelChange,
+}: {
+  model: string;
+  onModelChange: (next: string) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-1.5">
+        <span className="text-[10px] uppercase tracking-wider text-white/40">
+          Model
+        </span>
+        <select
+          value={model}
+          onChange={(e) => onModelChange(e.target.value)}
+          className="rounded-md border border-white/10 bg-white/5 px-3 py-2 font-mono text-[12px] text-white focus:border-white/25 focus:outline-none"
+        >
+          {["sonnet", "opus", "haiku"].map((m) => (
+            <option key={m} value={m}>
+              {m}
+            </option>
+          ))}
+        </select>
+      </div>
+      <p className="text-[11px] text-white/40 leading-relaxed">
+        Runs on your Claude subscription via the host login
+        (CLAUDE_CODE_OAUTH_TOKEN or interactive login). No gateway or key
+        needed. sonnet is cheapest; opus for higher quality.
+      </p>
+    </div>
   );
 }
 

@@ -485,7 +485,7 @@ export const ROLE_SLUG_MAX = 32;
 // ── Adapter types ──
 // Order = display order in any "pick an adapter" UI. Keep openclaw first
 // as the default-rendered card until usage data says otherwise.
-export const ADAPTER_TYPES = ["openclaw", "hermes"] as const;
+export const ADAPTER_TYPES = ["openclaw", "hermes", "claude-code"] as const;
 export type AdapterType = (typeof ADAPTER_TYPES)[number];
 
 // Narrow an arbitrary string to a registered adapter type. Use when a
@@ -510,9 +510,18 @@ export interface HermesAdapterConfig {
   apiKey: string;
 }
 
+// claude-code runs as a local subprocess authed from the host env, so it
+// has no gateway/bearer — the only per-agent field is the model.
+export interface ClaudeCodeAdapterConfig {
+  model?: string;
+}
+
 // Union of all known adapter configs. Per `adapterType` discrimination
-// lives in the server zod schema; client TS can pass either shape.
-export type AdapterConfig = OpenclawAdapterConfig | HermesAdapterConfig;
+// lives in the server zod schema; client TS can pass any shape.
+export type AdapterConfig =
+  | OpenclawAdapterConfig
+  | HermesAdapterConfig
+  | ClaudeCodeAdapterConfig;
 
 // ── POST /api/adapters/openclaw/probe ──
 export interface ProbeRequest {

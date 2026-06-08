@@ -144,6 +144,11 @@ export const adaptersApi = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+  probeClaudeCode: (input: { model?: string }) =>
+    request<ProbeResponse>("/api/adapters/claude-code/probe", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
 };
 
 // ── On-chain Registry ──────────────────────────────────────────────────────
@@ -960,10 +965,15 @@ export const agentsApi = {
     ),
   switchAdapter: (
     id: string,
-    input: {
-      adapterType: "openclaw" | "hermes";
-      adapterConfig: { gatewayUrl: string; apiKey: string };
-    },
+    input:
+      | {
+          adapterType: "openclaw" | "hermes";
+          adapterConfig: { gatewayUrl: string; apiKey: string };
+        }
+      | {
+          adapterType: "claude-code";
+          adapterConfig: { model?: string };
+        },
   ) =>
     request<AgentResponse>(`/api/agents/${id}/adapter/switch`, {
       method: "POST",
