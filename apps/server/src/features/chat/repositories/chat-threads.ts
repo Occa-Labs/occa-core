@@ -131,6 +131,28 @@ async function resolveUserThread(args: {
   return winner;
 }
 
+// Read the thread's current reset_generation WITHOUT creating it (unlike
+// resolveUserThread). Returns 0 when no thread exists yet — the active chat
+// of a never-used thread is just the (empty) generation 0.
+export async function getThreadResetGeneration(args: {
+  companyId: string;
+  deploymentId: string;
+  kind: UserThreadKind;
+}): Promise<number> {
+  const [row] = await db
+    .select({ resetGeneration: chatThreads.resetGeneration })
+    .from(chatThreads)
+    .where(
+      and(
+        eq(chatThreads.companyId, args.companyId),
+        eq(chatThreads.deploymentId, args.deploymentId),
+        eq(chatThreads.kind, args.kind),
+      ),
+    )
+    .limit(1);
+  return row?.resetGeneration ?? 0;
+}
+
 // Increment the thread's reset_generation, forcing the next call to
 // `threadSessionKey()` to produce a NEW per-session bucket. Returns the
 // new generation. Idempotent in the sense that calling it twice in a

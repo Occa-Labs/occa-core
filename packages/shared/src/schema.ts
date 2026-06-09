@@ -1471,6 +1471,11 @@ export const chatMessages = pgTable(
     deploymentId: uuid("deployment_id")
       .notNull()
       .references(() => deployments.id, { onDelete: "cascade" }),
+    // Which session (thread `reset_generation`) this message belongs to.
+    // "New session" bumps the thread generation WITHOUT deleting prior rows,
+    // so each message stays tagged with the session it was sent in. The
+    // active chat reads the current generation; History browses prior ones.
+    resetGeneration: integer("reset_generation").notNull().default(0),
     // 'user' | 'assistant' | 'system'. System messages mark internal
     // events the user should see ("Task #5 created").
     role: text("role").notNull(),

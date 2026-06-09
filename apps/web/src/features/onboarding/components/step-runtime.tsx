@@ -46,9 +46,13 @@ interface StepRuntimeProps {
   hermesApiKey: string;
   onHermesGatewayUrlChange: (next: string) => void;
   onHermesApiKeyChange: (next: string) => void;
-  // claude-code (no creds — host auth — just the model)
+  // claude-code (gateway-only BYORT — model + Claude Gateway URL + bearer)
   model: string;
   onModelChange: (next: string) => void;
+  ccGatewayUrl: string;
+  ccApiKey: string;
+  onCcGatewayUrlChange: (next: string) => void;
+  onCcApiKeyChange: (next: string) => void;
 
   onContinue: () => void;
   onBack: () => void;
@@ -74,7 +78,11 @@ export function StepRuntime(props: StepRuntimeProps) {
         adapterType === "claude-code"
           ? await probe.mutateAsync({
               type: "claude-code",
-              input: { model: props.model },
+              input: {
+                model: props.model,
+                gatewayUrl: props.ccGatewayUrl.trim(),
+                apiKey: props.ccApiKey.trim(),
+              },
             })
           : adapterType === "openclaw"
             ? await probe.mutateAsync({
@@ -162,7 +170,7 @@ export function StepRuntime(props: StepRuntimeProps) {
             active={adapterType === "claude-code"}
             icon={<Terminal className="size-4" />}
             label="Claude Code"
-            description="Runs on your Claude subscription via the host login. No gateway or key."
+            description="Runs on a Claude subscription via a Claude Gateway (BYORT)."
             onSelect={() => switchAdapter("claude-code")}
           />
         </div>
@@ -172,6 +180,16 @@ export function StepRuntime(props: StepRuntimeProps) {
             model={props.model}
             onModelChange={(next) => {
               props.onModelChange(next);
+              probe.reset();
+            }}
+            gatewayUrl={props.ccGatewayUrl}
+            apiKey={props.ccApiKey}
+            onGatewayUrlChange={(next) => {
+              props.onCcGatewayUrlChange(next);
+              probe.reset();
+            }}
+            onApiKeyChange={(next) => {
+              props.onCcApiKeyChange(next);
               probe.reset();
             }}
           />
@@ -294,8 +312,12 @@ export function StepRuntime(props: StepRuntimeProps) {
 }
 
 function isFormReady(props: StepRuntimeProps): boolean {
-  // claude-code has no creds — host auth — so it's always ready to probe.
-  if (props.adapterType === "claude-code") return true;
+  // claude-code is gateway-only — needs the Claude Gateway URL + bearer.
+  if (props.adapterType === "claude-code") {
+    return (
+      props.ccGatewayUrl.trim().length > 0 && props.ccApiKey.trim().length > 0
+    );
+  }
   if (props.adapterType === "openclaw") {
     return (
       props.gatewayUrl.trim().length > 0 && props.apiKey.trim().length > 0
@@ -361,9 +383,17 @@ function AdapterCard({
 function ClaudeCodeForm({
   model,
   onModelChange,
+  gatewayUrl,
+  apiKey,
+  onGatewayUrlChange,
+  onApiKeyChange,
 }: {
   model: string;
   onModelChange: (next: string) => void;
+  gatewayUrl: string;
+  apiKey: string;
+  onGatewayUrlChange: (next: string) => void;
+  onApiKeyChange: (next: string) => void;
 }) {
   return (
     <div className="flex flex-col gap-3">
@@ -383,10 +413,33 @@ function ClaudeCodeForm({
           ))}
         </select>
       </div>
+      <div className="flex flex-col gap-1.5">
+        <span className="text-[10px] uppercase tracking-wider text-white/40">
+          Claude Gateway URL
+        </span>
+        <input
+          value={gatewayUrl}
+          onChange={(e) => onGatewayUrlChange(e.target.value)}
+          placeholder="https://claude.your-box.com"
+          className="rounded-md border border-white/10 bg-white/5 px-3 py-2 font-mono text-[12px] text-white focus:border-white/25 focus:outline-none"
+        />
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <span className="text-[10px] uppercase tracking-wider text-white/40">
+          Gateway bearer
+        </span>
+        <input
+          value={apiKey}
+          onChange={(e) => onApiKeyChange(e.target.value)}
+          type="password"
+          placeholder="paste gateway token"
+          className="rounded-md border border-white/10 bg-white/5 px-3 py-2 font-mono text-[12px] text-white focus:border-white/25 focus:outline-none"
+        />
+      </div>
       <p className="text-[11px] text-white/40 leading-relaxed">
-        Runs on your Claude subscription via the host login
-        (CLAUDE_CODE_OAUTH_TOKEN or interactive login). No gateway or key
-        needed. sonnet is cheapest; opus for higher quality.
+        Runs on a Claude subscription via a Claude Gateway on the host box
+        (BYORT). For local dev, run a gateway on localhost. sonnet is
+        cheapest; opus for higher quality.
       </p>
     </div>
   );

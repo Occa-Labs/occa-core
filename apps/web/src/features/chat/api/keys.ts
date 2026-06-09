@@ -7,4 +7,13 @@ export const chatKeys = {
   ceo: () => [...chatKeys.all, "ceo"] as const,
   agent: (deploymentId: string) =>
     [...chatKeys.all, "agent", deploymentId] as const,
+  // Base key for one chat target (CEO when deploymentId omitted).
+  target: (deploymentId?: string) =>
+    deploymentId ? chatKeys.agent(deploymentId) : chatKeys.ceo(),
+  // History session list for a target.
+  sessions: (deploymentId?: string) =>
+    [...chatKeys.target(deploymentId), "sessions"] as const,
+  // Messages of one past session (reset_generation) for a target.
+  session: (deploymentId: string | undefined, generation: number) =>
+    [...chatKeys.target(deploymentId), "session", generation] as const,
 };

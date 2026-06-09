@@ -156,7 +156,7 @@ export function DeployAgentModal({
     (Number.isFinite(Number(taskRateSol)) && Number(taskRateSol) >= 0);
   const credsFilled =
     adapterType === "claude-code"
-      ? true // host-level auth — no per-agent credentials to fill
+      ? ccGatewayUrl.trim().length > 0 && ccApiKey.trim().length > 0
       : adapterType === "openclaw"
         ? gatewayUrl.trim().length > 0 && apiKey.trim().length > 0
         : hermesGatewayUrl.trim().length > 0 && hermesApiKey.trim().length > 0;
@@ -618,9 +618,9 @@ export function DeployAgentModal({
               claude-code has no creds, so it shows a note instead. */}
           {adapterType === "claude-code" ? (
             <p className="text-[11px] text-white/40 leading-relaxed">
-              Runs on your Claude subscription via the host login
-              (CLAUDE_CODE_OAUTH_TOKEN or interactive login). No gateway or
-              key needed. sonnet is cheapest; opus for higher quality.
+              Runs on a Claude subscription via a Claude Gateway on the host
+              box (BYORT). Set the gateway URL + bearer below. For local dev,
+              run a gateway on localhost.
             </p>
           ) : (
             <button
@@ -662,7 +662,7 @@ export function DeployAgentModal({
               </label>
               <div className="space-y-2 rounded-xl ring-1 ring-inset ring-white/10 bg-white/2 p-3">
                 <span className="text-[11px] text-white/50 block">
-                  Remote gateway (BYORT) — optional
+                  Claude Gateway (BYORT)
                 </span>
                 <input
                   value={ccGatewayUrl}
@@ -671,7 +671,7 @@ export function DeployAgentModal({
                     setProbeResult(null);
                     setFailedAgentId(null);
                   }}
-                  placeholder="https://claude.your-box.com (blank = run on host)"
+                  placeholder="https://claude.your-box.com"
                   type="url"
                   disabled={busy}
                   className="w-full rounded-xl bg-white/5 ring-1 ring-inset ring-white/10 focus:ring-white/22 focus:outline-none px-3.5 py-2.5 text-[13px] text-white/85 transition disabled:opacity-50 font-mono"

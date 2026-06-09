@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Check, Send, X } from "lucide-react";
+import { ArrowLeft, Check, History, Send, SquarePen, X } from "lucide-react";
 import { Alert } from "@/components/ui/alert";
 import { BubbleMarkdown } from "@/components/ui/bubble-markdown";
 import type {
@@ -11,6 +11,9 @@ import type {
 } from "@occa/shared/types";
 import {
   useChatMessages,
+  useChatSessionMessages,
+  useChatSessions,
+  useClearChat,
   useDecideChatApproval,
   useSendChatMessage,
 } from "../api/use-ceo-chat";
@@ -25,6 +28,10 @@ interface CeoChatWindowProps {
   /** Target a specific owned agent's direct-chat thread. Omit for the
    *  company CEO surface (the shell's floating chat bubble). */
   deploymentId?: string;
+  /** When set, render an in-pane header bar (e.g. "You & Aiden Park") with
+   *  the New session + History controls. Omit for wrappers that own their
+   *  own title bar (the floating CEO bubble). */
+  headerLabel?: string;
   /** Fired after a successful send whose reply spawned a task. The
    *  shell uses it to refresh the kanban (cross-feature side-effect
    *  belongs to the composition layer per CLAUDE.md). */
@@ -39,13 +46,19 @@ export function CeoChatWindow({
   active,
   ceoName,
   deploymentId,
+  headerLabel,
   onTaskCreated,
 }: CeoChatWindowProps) {
   const [draft, setDraft] = useState("");
+  // null = live (active) session; a number = viewing that past session
+  // read-only from History.
+  const [viewingGeneration, setViewingGeneration] = useState<number | null>(null);
   const messagesQuery = useChatMessages(deploymentId, active);
   const sendMutation = useSendChatMessage(deploymentId);
+  const historyQuery = useChatSessionMessages(deploymentId, viewingGeneration);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const viewingHistory = viewingGeneration !== null;
 
   const messages = messagesQuery.data ?? [];
   // Use raw data presence for the loading flag instead of `isPending` —
@@ -107,6 +120,24 @@ export function CeoChatWindow({
 
   return (
     <div className="flex flex-col h-full min-h-0">
+      {headerLabel && (
+        <SessionHeader
+          label={headerLabel}
+          deploymentId={deploymentId}
+          viewingGeneration={viewingGeneration}
+          onViewGeneration={setViewingGeneration}
+        />
+      )}
+      {viewingHistory ? (
+        <ReadOnlySessionView
+          generation={viewingGeneration as number}
+          loading={historyQuery.isPending}
+          messages={historyQuery.data ?? []}
+          onBack={() => setViewingGeneration(null)}
+          deploymentId={deploymentId}
+        />
+      ) : (
+        <>
       <div
         ref={scrollRef}
         className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-2"
@@ -184,8 +215,195 @@ export function CeoChatWindow({
           </div>
         )}
       </div>
+        </>
+      )}
     </div>
   );
+}
+
+// In-pane header for the Chats window: the conversation label on the left,
+// New session + History controls on the right, aligned with the name.
+function SessionHeader({
+  label,
+  deploymentId,
+  viewingGeneration,
+  onViewGeneration,
+}: {
+  label: string;
+  deploymentId?: string;
+  viewingGeneration: number | null;
+  onViewGeneration: (generation: number | null) => void;
+}) {
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [confirmNew, setConfirmNew] = useState(false);
+  const sessionsQuery = useChatSessions(deploymentId, historyOpen);
+  const clearMutation = useClearChat(deploymentId);
+  const sessions = sessionsQuery.data?.sessions ?? [];
+  const currentGeneration = sessionsQuery.data?.currentGeneration ?? 0;
+
+  const startNew = async () => {
+    setConfirmNew(false);
+    setHistoryOpen(false);
+    onViewGeneration(null);
+    try {
+      await clearMutation.mutateAsync();
+    } catch {
+      /* surfaced by the mutation; the thread stays as-is */
+    }
+  };
+
+  return (
+    <div className="relative flex items-center gap-2 border-b border-white/8 px-4 py-2.5">
+      <h3 className="min-w-0 flex-1 truncate text-xs font-semibold text-white/85">
+        {label}
+      </h3>
+      {confirmNew ? (
+        <div className="flex items-center gap-2 text-[11px]">
+          <span className="text-white/55">New session?</span>
+          <button
+            type="button"
+            onClick={() => setConfirmNew(false)}
+            className="cursor-pointer rounded px-1.5 py-0.5 text-white/50 hover:text-white/80"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => void startNew()}
+            disabled={clearMutation.isPending}
+            className="cursor-pointer rounded bg-white/10 px-2 py-0.5 font-medium text-white/85 hover:bg-white/15 disabled:opacity-40"
+          >
+            Start
+          </button>
+        </div>
+      ) : (
+        <>
+          <button
+            type="button"
+            title="Session history"
+            onClick={() => setHistoryOpen((v) => !v)}
+            className={`cursor-pointer rounded-md p-1 transition-colors ${
+              historyOpen ? "text-white/85 bg-white/10" : "text-white/40 hover:text-white/80"
+            }`}
+          >
+            <History className="size-4" />
+          </button>
+          <button
+            type="button"
+            title="New session"
+            onClick={() => setConfirmNew(true)}
+            className="cursor-pointer rounded-md p-1 text-white/40 transition-colors hover:text-white/80"
+          >
+            <SquarePen className="size-4" />
+          </button>
+        </>
+      )}
+      {historyOpen && (
+        <div className="absolute right-3 top-11 z-20 w-56 overflow-hidden rounded-lg border border-white/12 bg-zinc-900/95 shadow-xl backdrop-blur">
+          <div className="border-b border-white/8 px-3 py-2 text-[10px] uppercase tracking-wider text-white/40">
+            Sessions
+          </div>
+          <div className="max-h-64 overflow-y-auto py-1">
+            {sessionsQuery.isPending && (
+              <div className="px-3 py-2 text-[11px] text-white/35">Loading…</div>
+            )}
+            {!sessionsQuery.isPending && sessions.length === 0 && (
+              <div className="px-3 py-2 text-[11px] text-white/35">No sessions yet</div>
+            )}
+            {sessions.map((s) => {
+              const isCurrent = s.generation === currentGeneration;
+              const isViewing = viewingGeneration === s.generation;
+              return (
+                <button
+                  key={s.generation}
+                  type="button"
+                  onClick={() => {
+                    onViewGeneration(isCurrent ? null : s.generation);
+                    setHistoryOpen(false);
+                  }}
+                  className={`flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-white/6 ${
+                    isViewing ? "bg-white/8" : ""
+                  }`}
+                >
+                  <span
+                    className={`size-1.5 shrink-0 rounded-full ${
+                      isCurrent ? "bg-emerald-400" : "bg-white/25"
+                    }`}
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[11.5px] text-white/85">
+                      {isCurrent ? "Current" : `Session ${s.generation + 1}`}
+                    </span>
+                    <span className="block truncate text-[10px] text-white/35">
+                      {formatSessionStamp(s.lastAt)} · {s.messageCount} msgs
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Read-only transcript of a past session. No composer — History is for
+// reviewing, not continuing. "Back" returns to the live session.
+function ReadOnlySessionView({
+  generation,
+  loading,
+  messages,
+  onBack,
+  deploymentId,
+}: {
+  generation: number;
+  loading: boolean;
+  messages: ChatMessageDTO[];
+  onBack: () => void;
+  deploymentId?: string;
+}) {
+  return (
+    <>
+      <div className="flex items-center gap-2 border-b border-white/8 bg-white/2 px-4 py-2 text-[11px] text-white/50">
+        <span className="flex-1 truncate">
+          Viewing Session {generation + 1} · read-only
+        </span>
+        <button
+          type="button"
+          onClick={onBack}
+          className="inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-white/60 hover:text-white/90"
+        >
+          <ArrowLeft className="size-3" />
+          Back
+        </button>
+      </div>
+      <div className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-2">
+        {loading && (
+          <div className="text-xs text-white/30 text-center py-6">Loading…</div>
+        )}
+        {!loading && messages.length === 0 && (
+          <div className="text-xs text-white/30 text-center py-6">
+            This session has no messages.
+          </div>
+        )}
+        {messages.map((m) => (
+          <ChatBubble key={m.id} message={m} deploymentId={deploymentId} />
+        ))}
+      </div>
+    </>
+  );
+}
+
+function formatSessionStamp(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function ChatBubble({

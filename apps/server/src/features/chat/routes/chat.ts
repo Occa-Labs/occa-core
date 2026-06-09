@@ -24,14 +24,15 @@ import {
 } from "../../agents/repositories/deployments";
 import { findByDeploymentId as findRuntimeProfile } from "../../agents/repositories/agent-runtime-profile";
 import {
-  clearThread,
   findLinkedApprovals,
   listMessages,
+  listSessions,
   type ChatMessageRow,
   type LinkedApprovalRow,
 } from "../repositories/chat-messages";
 import {
   bumpThreadResetGeneration,
+  getThreadResetGeneration,
   resolveUserCeoThreadId,
   resolveUserAgentThreadId,
 } from "../repositories/chat-threads";
@@ -41,6 +42,15 @@ import { sendUserTurn } from "../services/chat-handler";
 const log = childLogger("routes:chat");
 
 const router: Router = Router();
+
+// `?generation=N` selects a specific session (reset_generation) for the
+// History read-only view. Absent / invalid → undefined (caller defaults to
+// the thread's current generation = the active chat).
+function parseGenerationQuery(q: unknown): number | undefined {
+  if (typeof q !== "string") return undefined;
+  const n = Number(q);
+  return Number.isInteger(n) && n >= 0 ? n : undefined;
+}
 
 function toDTO(
   row: ChatMessageRow,
@@ -97,9 +107,17 @@ router.get("/ceo", requireAuth, async (req: Request, res: Response) => {
     res.json(empty);
     return;
   }
+  const generation =
+    parseGenerationQuery(req.query.generation) ??
+    (await getThreadResetGeneration({
+      companyId,
+      deploymentId: ceo.id,
+      kind: "user_ceo",
+    }));
   const rows = await listMessages({
     companyId,
     deploymentId: ceo.id,
+    generation,
   });
   const out: ListChatMessagesResponse = {
     messages: await serializeMessages(rows),
@@ -107,11 +125,30 @@ router.get("/ceo", requireAuth, async (req: Request, res: Response) => {
   res.json(out);
 });
 
-// Wipe the current chat thread. Both the DB rows AND the gateway-side
-// conversation memory are reset: the session key is now stable per
-// thread id (no boundary suffix), so a clear must explicitly delete the
-// gateway session — otherwise the CEO would keep its old memory and the
-// "fresh start" the user expects wouldn't happen.
+// GET /ceo/sessions — list past + current sessions for the History dropdown.
+router.get("/ceo/sessions", requireAuth, async (req: Request, res: Response) => {
+  const companyId = await userCompanyId(req.user!.userId);
+  if (!companyId) {
+    res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.NO_COMPANY });
+    return;
+  }
+  const ceo = await findCeoForCompany(companyId);
+  if (!ceo) {
+    res.json({ sessions: [], currentGeneration: 0 });
+    return;
+  }
+  const [sessions, currentGeneration] = await Promise.all([
+    listSessions({ companyId, deploymentId: ceo.id }),
+    getThreadResetGeneration({ companyId, deploymentId: ceo.id, kind: "user_ceo" }),
+  ]);
+  res.json({ sessions, currentGeneration });
+});
+
+// Start a NEW session. Prior messages are NOT deleted — they stay tagged
+// with the old reset_generation so History can browse them. We bump the
+// thread's reset_generation (the active chat moves to a fresh, empty
+// generation) and reset the gateway-side conversation memory so the agent
+// also starts fresh. Best-effort on the gateway reset.
 router.delete("/ceo", requireAuth, async (req: Request, res: Response) => {
   const companyId = await userCompanyId(req.user!.userId);
   if (!companyId) {
@@ -171,9 +208,16 @@ router.delete("/ceo", requireAuth, async (req: Request, res: Response) => {
         "thread reset cleanup failed (non-fatal)",
       );
     }
+  } else {
+    // No runtime profile yet (rare) — still advance the session so the UI
+    // starts a fresh generation. Resolve creates the thread if needed.
+    const { id: threadId } = await resolveUserCeoThreadId({
+      companyId,
+      ceoDeploymentId: ceo.id,
+    });
+    await bumpThreadResetGeneration(threadId);
   }
 
-  await clearThread({ companyId, deploymentId: ceo.id });
   res.status(StatusCodes.NO_CONTENT).end();
 });
 
@@ -289,14 +333,41 @@ router.get(
   async (req: Request, res: Response) => {
     const target = await resolveOwnedChatTarget(req, res);
     if (!target) return;
+    const generation =
+      parseGenerationQuery(req.query.generation) ??
+      (await getThreadResetGeneration({
+        companyId: target.companyId,
+        deploymentId: target.deploymentId,
+        kind: "user_agent",
+      }));
     const rows = await listMessages({
       companyId: target.companyId,
       deploymentId: target.deploymentId,
+      generation,
     });
     const out: ListChatMessagesResponse = {
       messages: await serializeMessages(rows),
     };
     res.json(out);
+  },
+);
+
+// GET /agent/:deploymentId/sessions — History list for a per-agent chat.
+router.get(
+  "/agent/:deploymentId/sessions",
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const target = await resolveOwnedChatTarget(req, res);
+    if (!target) return;
+    const [sessions, currentGeneration] = await Promise.all([
+      listSessions({ companyId: target.companyId, deploymentId: target.deploymentId }),
+      getThreadResetGeneration({
+        companyId: target.companyId,
+        deploymentId: target.deploymentId,
+        kind: "user_agent",
+      }),
+    ]);
+    res.json({ sessions, currentGeneration });
   },
 );
 
@@ -344,12 +415,14 @@ router.delete(
           "agent thread reset cleanup failed (non-fatal)",
         );
       }
+    } else {
+      const { id: threadId } = await resolveUserAgentThreadId({
+        companyId: target.companyId,
+        deploymentId: target.deploymentId,
+      });
+      await bumpThreadResetGeneration(threadId);
     }
 
-    await clearThread({
-      companyId: target.companyId,
-      deploymentId: target.deploymentId,
-    });
     res.status(StatusCodes.NO_CONTENT).end();
   },
 );

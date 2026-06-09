@@ -2,7 +2,7 @@
 // per turn — user prompt + CEO reply land as separate rows so the UI
 // renders them as distinct bubbles.
 
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { approvals, chatMessages } from "@occa/shared/schema";
 import { db } from "../../../infra/database/client";
 
@@ -50,6 +50,10 @@ export async function findLinkedApprovals(
 export async function listMessages(args: {
   companyId: string;
   deploymentId: string;
+  // Scope to one session (thread reset_generation). The active chat passes
+  // the thread's current generation; History passes a prior one. Omitted =
+  // all generations (used by the read-only inbox view).
+  generation?: number;
   limit?: number;
 }): Promise<ChatMessageRow[]> {
   // No pagination cursor yet — the chat is bounded per-deployment and we
@@ -62,10 +66,50 @@ export async function listMessages(args: {
       and(
         eq(chatMessages.companyId, args.companyId),
         eq(chatMessages.deploymentId, args.deploymentId),
+        args.generation === undefined
+          ? undefined
+          : eq(chatMessages.resetGeneration, args.generation),
       ),
     )
     .orderBy(asc(chatMessages.createdAt))
     .limit(args.limit ?? 200);
+}
+
+export interface ChatSessionRow {
+  generation: number;
+  messageCount: number;
+  startedAt: string;
+  lastAt: string;
+}
+
+// One row per session (reset_generation) that has messages, newest first.
+// Drives the History dropdown — each prior session is browsable read-only.
+export async function listSessions(args: {
+  companyId: string;
+  deploymentId: string;
+}): Promise<ChatSessionRow[]> {
+  const rows = await db
+    .select({
+      generation: chatMessages.resetGeneration,
+      messageCount: sql<number>`count(*)::int`,
+      startedAt: sql<string>`min(${chatMessages.createdAt})`,
+      lastAt: sql<string>`max(${chatMessages.createdAt})`,
+    })
+    .from(chatMessages)
+    .where(
+      and(
+        eq(chatMessages.companyId, args.companyId),
+        eq(chatMessages.deploymentId, args.deploymentId),
+      ),
+    )
+    .groupBy(chatMessages.resetGeneration)
+    .orderBy(desc(chatMessages.resetGeneration));
+  return rows.map((r) => ({
+    generation: r.generation,
+    messageCount: r.messageCount,
+    startedAt: new Date(r.startedAt).toISOString(),
+    lastAt: new Date(r.lastAt).toISOString(),
+  }));
 }
 
 export async function insertMessage(
@@ -96,20 +140,9 @@ export async function earliestMessageId(args: {
   return row?.id ?? null;
 }
 
-// Wipe the entire chat thread. The next user message will start with a
-// fresh gateway sessionKey (because the boundary marker changes), so
-// the CEO has no memory of prior turns either.
-export async function clearThread(args: {
-  companyId: string;
-  deploymentId: string;
-}): Promise<void> {
-  await db
-    .delete(chatMessages)
-    .where(
-      and(
-        eq(chatMessages.companyId, args.companyId),
-        eq(chatMessages.deploymentId, args.deploymentId),
-      ),
-    );
-}
+// NOTE: there is no destructive "clear" anymore. "New session" bumps the
+// thread's reset_generation (chat-threads.bumpThreadResetGeneration) so the
+// active chat moves to a fresh, empty generation while prior messages stay
+// tagged with their old generation for History. The adapter session is reset
+// separately via adapter.resetSession.
 

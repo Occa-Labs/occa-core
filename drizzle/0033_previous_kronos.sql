@@ -1,0 +1,1 @@
+ALTER TABLE "chat_messages" ADD COLUMN "reset_generation" integer DEFAULT 0 NOT NULL;

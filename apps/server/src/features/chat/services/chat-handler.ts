@@ -230,6 +230,7 @@ export async function sendUserTurn(
     threadId,
     companyId: args.companyId,
     deploymentId: ceo.id,
+    resetGeneration,
     role: "user",
     content: args.content,
     createdTaskId: null,
@@ -321,6 +322,7 @@ export async function sendUserTurn(
       threadId,
       companyId: args.companyId,
       deploymentId: ceo.id,
+      resetGeneration,
       role: "system",
       content: adapterErrorMessage({
         code: result.error,
@@ -621,6 +623,7 @@ export async function sendUserTurn(
     threadId,
     companyId: args.companyId,
     deploymentId: ceo.id,
+    resetGeneration,
     role: "assistant",
     content: finalContent,
     createdTaskId: createdTask?.id ?? null,

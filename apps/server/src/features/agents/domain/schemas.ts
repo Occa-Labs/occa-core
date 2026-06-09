@@ -30,8 +30,10 @@ export const hermesAdapterConfigSchema = z.object({
 // per-agent bearer — the only per-agent knob is the model.
 export const claudeCodeAdapterConfigSchema = z.object({
   model: z.string().trim().min(1).max(LIMITS.LABEL).optional(),
-  gatewayUrl: z.string().url().optional(),
-  apiKey: z.string().min(1).max(LIMITS.API_KEY).optional(),
+  // Gateway is mandatory — claude-code has no local mode. OCCA always reaches
+  // a Claude Gateway (BYORT); for dev that gateway runs on localhost.
+  gatewayUrl: z.string().url(),
+  apiKey: z.string().min(1).max(LIMITS.API_KEY),
 });
 
 export const adapterConfigSchema = z.union([

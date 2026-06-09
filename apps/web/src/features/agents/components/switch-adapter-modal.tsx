@@ -75,13 +75,12 @@ export function SwitchAdapterModal({
     });
   }, []);
 
-  // claude-code needs no credentials — its model always has a default — so
-  // it's always probeable. The HTTP adapters need a gateway URL + bearer.
+  // Every runtime is reached over a gateway (claude-code is gateway-only
+  // BYORT, like openclaw / hermes), so all need a gateway URL + bearer.
   const canProbe =
     phase === "idle" &&
-    (target === "claude-code"
-      ? true
-      : gatewayUrl.trim().length > 0 && apiKey.trim().length > 0);
+    gatewayUrl.trim().length > 0 &&
+    apiKey.trim().length > 0;
 
   const handleProbe = useCallback(async () => {
     setPhase("probing");
@@ -217,13 +216,12 @@ export function SwitchAdapterModal({
               </select>
             </label>
             <p className="text-[10px] text-white/35 leading-relaxed">
-              Runs on your Claude subscription. Leave the gateway blank to run
-              locally on the host login. sonnet is cheapest; opus for higher
-              quality.
+              Runs on a Claude subscription via a Claude Gateway on the host
+              box. sonnet is cheapest; opus for higher quality.
             </p>
             <div className="space-y-2.5 rounded-md border border-white/10 bg-white/2 p-2.5">
               <span className="text-[10px] uppercase tracking-wider text-white/40">
-                Remote gateway (BYORT) — optional
+                Claude Gateway (BYORT)
               </span>
               <input
                 value={gatewayUrl}

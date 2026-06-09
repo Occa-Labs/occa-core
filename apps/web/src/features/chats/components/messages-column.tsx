@@ -16,7 +16,6 @@ import type { AgentDTO, InboxMessageDTO } from "@occa/shared/types";
 import { CEO_ROLE } from "@occa/shared/role-catalog";
 import { Star } from "lucide-react";
 import { BubbleMarkdown } from "@/components/ui/bubble-markdown";
-import { StatusPill } from "@/components/ui/agent-status";
 import { useInboxMessages } from "../api/use-inbox-messages";
 import { type InboxParty } from "../types";
 
@@ -32,6 +31,7 @@ interface MessagesColumnProps {
   renderAgentChat?: (args: {
     deploymentId: string;
     agentName: string;
+    viewerLabel: string;
   }) => ReactNode;
 }
 
@@ -62,20 +62,16 @@ export function MessagesColumn({
   if (renderAgentChat && viewer.kind === "user" && partner.kind === "deployment") {
     const agent = agents.find((a) => a.id === partner.deploymentId);
     if (agent && agent.role !== CEO_ROLE) {
+      // CeoChatWindow owns the header bar (name + New session + History) so
+      // the session controls sit aligned with the name; we render it full
+      // bleed here.
       return (
         <div className="flex h-full flex-1 flex-col bg-black/5">
-          <div className="flex items-center gap-2 border-b border-white/8 px-4 py-2.5">
-            <h3 className="truncate text-xs font-semibold text-white/85">
-              {viewerLabel} &amp; {agent.name}
-            </h3>
-            <StatusPill agent={agent} />
-          </div>
-          <div className="min-h-0 flex-1">
-            {renderAgentChat({
-              deploymentId: agent.id,
-              agentName: agent.name,
-            })}
-          </div>
+          {renderAgentChat({
+            deploymentId: agent.id,
+            agentName: agent.name,
+            viewerLabel,
+          })}
         </div>
       );
     }

@@ -789,14 +789,31 @@ export const tasksApi = {
     request<TaskResponse>(`/api/tasks/${id}/unarchive`, { method: "POST" }),
 };
 
+// One past/current chat session (thread reset_generation).
+export interface ChatSessionSummary {
+  generation: number;
+  messageCount: number;
+  startedAt: string;
+  lastAt: string;
+}
+export interface ListChatSessionsResponse {
+  sessions: ChatSessionSummary[];
+  currentGeneration: number;
+}
+
 export const chatApi = {
   ceo: {
     list: () => request<ListChatMessagesResponse>("/api/chat/ceo"),
+    listAt: (generation: number) =>
+      request<ListChatMessagesResponse>(`/api/chat/ceo?generation=${generation}`),
+    sessions: () => request<ListChatSessionsResponse>("/api/chat/ceo/sessions"),
     send: (input: SendChatMessageRequest) =>
       request<SendChatMessageResponse>("/api/chat/ceo", {
         method: "POST",
         body: JSON.stringify(input),
       }),
+    // "New session" — server bumps the thread generation (prior messages
+    // kept for History) and resets the gateway-side memory.
     clear: () =>
       request<void>("/api/chat/ceo", {
         method: "DELETE",
@@ -808,6 +825,14 @@ export const chatApi = {
   agent: (deploymentId: string) => ({
     list: () =>
       request<ListChatMessagesResponse>(`/api/chat/agent/${deploymentId}`),
+    listAt: (generation: number) =>
+      request<ListChatMessagesResponse>(
+        `/api/chat/agent/${deploymentId}?generation=${generation}`,
+      ),
+    sessions: () =>
+      request<ListChatSessionsResponse>(
+        `/api/chat/agent/${deploymentId}/sessions`,
+      ),
     send: (input: SendChatMessageRequest) =>
       request<SendChatMessageResponse>(`/api/chat/agent/${deploymentId}`, {
         method: "POST",

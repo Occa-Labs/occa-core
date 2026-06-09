@@ -14,7 +14,7 @@
 // service (remote BYORT mode). It is OCCA-neutral — node builtins only.
 
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 
 // Binary path override for hosts where `claude` isn't on the service PATH.
@@ -449,7 +449,10 @@ export async function probeClaude(model: string): Promise<{
       prompt: "Reply with exactly: ok",
       cwd,
       model,
-      sessionUuid: sessionUuidFromKey(`probe:${model}`),
+      // A fresh session id each probe — a deterministic one collides with
+      // "Session ID already in use" on the second probe (the button can be
+      // clicked repeatedly). Continuity is irrelevant for a one-shot probe.
+      sessionUuid: randomUUID(),
       allowedTools: [],
       timeoutMs: 60_000,
     },

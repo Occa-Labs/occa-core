@@ -72,8 +72,12 @@ export function OnboardingWindow({ me, onDismiss }: OnboardingWindowProps) {
   // both runtimes now authenticate the same way.
   const [hermesGatewayUrl, setHermesGatewayUrl] = useState("");
   const [hermesApiKey, setHermesApiKey] = useState("");
-  // Claude Code form state — no gateway/bearer (host auth); only the model.
+  // Claude Code form state — gateway-only (BYORT): the model plus the Claude
+  // Gateway URL + bearer the agent runs against. For local dev, a gateway on
+  // localhost.
   const [model, setModel] = useState("sonnet");
+  const [ccGatewayUrl, setCcGatewayUrl] = useState("");
+  const [ccApiKey, setCcApiKey] = useState("");
   const [ceoName, setCeoName] = useState(resume.ceoName);
   const [pendingAgentId, setPendingAgentId] = useState<string | null>(
     resume.pendingAgentId,
@@ -102,7 +106,7 @@ export function OnboardingWindow({ me, onDismiss }: OnboardingWindowProps) {
   // config object always agree on the same variant.
   const adapterConfig: AdapterConfig =
     adapterType === "claude-code"
-      ? { model }
+      ? { model, gatewayUrl: ccGatewayUrl.trim(), apiKey: ccApiKey.trim() }
       : adapterType === "openclaw"
         ? { gatewayUrl, apiKey }
         : { gatewayUrl: hermesGatewayUrl, apiKey: hermesApiKey };
@@ -153,6 +157,10 @@ export function OnboardingWindow({ me, onDismiss }: OnboardingWindowProps) {
               onHermesApiKeyChange={setHermesApiKey}
               model={model}
               onModelChange={setModel}
+              ccGatewayUrl={ccGatewayUrl}
+              ccApiKey={ccApiKey}
+              onCcGatewayUrlChange={setCcGatewayUrl}
+              onCcApiKeyChange={setCcApiKey}
               onContinue={handleRuntimeContinue}
               onBack={() => setStepIndex(0)}
             />

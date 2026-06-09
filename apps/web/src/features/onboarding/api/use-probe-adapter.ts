@@ -22,7 +22,11 @@ import type {
 export type ProbeAdapterInput =
   | { type: "openclaw"; input: ProbeRequest }
   | { type: "hermes"; input: HermesProbeRequest }
-  | { type: "claude-code"; input: { model?: string } };
+  | {
+      type: "claude-code";
+      // Gateway-only (BYORT) — the gateway URL + bearer are required.
+      input: { model?: string; gatewayUrl: string; apiKey: string };
+    };
 
 export function useProbeAdapter() {
   return useMutation({

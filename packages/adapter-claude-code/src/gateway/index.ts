@@ -225,6 +225,9 @@ const server = createServer((req, res) => {
   });
 });
 
-server.listen(config.port, config.host, () => {
-  log("info", { host: config.host, port: config.port }, "claude-gateway listening");
-});
+// Undefined host → listen on all interfaces (dual-stack), so localhost,
+// 127.0.0.1, and a remote OCCA all reach it. An explicit host restricts it.
+const onListen = () =>
+  log("info", { host: config.host ?? "*", port: config.port }, "claude-gateway listening");
+if (config.host) server.listen(config.port, config.host, onListen);
+else server.listen(config.port, onListen);

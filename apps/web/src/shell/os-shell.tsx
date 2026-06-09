@@ -476,12 +476,13 @@ export function OsShell({
         <ChatsWindow
           agents={me.agents}
           onClose={close}
-          renderAgentChat={({ deploymentId, agentName }) => (
+          renderAgentChat={({ deploymentId, agentName, viewerLabel }) => (
             <CeoChatWindow
               key={deploymentId}
               active
               deploymentId={deploymentId}
               ceoName={agentName}
+              headerLabel={`${viewerLabel} & ${agentName}`}
             />
           )}
         />

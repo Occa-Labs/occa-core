@@ -24,6 +24,7 @@ interface ChatsWindowProps {
   renderAgentChat?: (args: {
     deploymentId: string;
     agentName: string;
+    viewerLabel: string;
   }) => ReactNode;
 }
 

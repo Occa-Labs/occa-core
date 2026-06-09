@@ -11,7 +11,11 @@ import type {
   ListChatMessagesResponse,
   SendChatMessageResponse,
 } from "@occa/shared/types";
-import { approvalsApi, chatApi } from "@/lib/api";
+import {
+  approvalsApi,
+  chatApi,
+  type ListChatSessionsResponse,
+} from "@/lib/api";
 import { chatKeys } from "./keys";
 
 // Polling cadence — short while the panel is open since the user is
@@ -27,6 +31,8 @@ const REFETCH_INTERVAL_MS = 3_000;
 interface ChatTarget {
   key: QueryKey;
   list: () => Promise<ListChatMessagesResponse>;
+  listAt: (generation: number) => Promise<ListChatMessagesResponse>;
+  sessions: () => Promise<ListChatSessionsResponse>;
   send: (input: { content: string }) => Promise<SendChatMessageResponse>;
   clear: () => Promise<void>;
 }
@@ -135,11 +141,46 @@ export function useClearChat(deploymentId?: string) {
   return useMutation({
     mutationFn: async () => target.clear(),
     onSuccess: () => {
+      // Active chat moves to the new (empty) generation immediately. The
+      // prior session is preserved server-side and shows up in History.
       queryClient.setQueryData<ChatMessageDTO[]>(target.key, []);
     },
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: target.key });
+      void queryClient.invalidateQueries({
+        queryKey: chatKeys.sessions(deploymentId),
+      });
     },
+  });
+}
+
+// History session list for a chat target. Enabled lazily (only when the
+// History dropdown is open) to avoid an extra poll on every chat.
+export function useChatSessions(deploymentId: string | undefined, enabled: boolean) {
+  const target = resolveTarget(deploymentId);
+  return useQuery({
+    queryKey: chatKeys.sessions(deploymentId),
+    queryFn: () => target.sessions(),
+    enabled,
+    refetchOnWindowFocus: false,
+  });
+}
+
+// Read-only messages of one past session (reset_generation). Enabled only
+// while a prior session is being viewed.
+export function useChatSessionMessages(
+  deploymentId: string | undefined,
+  generation: number | null,
+) {
+  const target = resolveTarget(deploymentId);
+  return useQuery({
+    queryKey: chatKeys.session(deploymentId, generation ?? -1),
+    queryFn: async () => {
+      const { messages } = await target.listAt(generation as number);
+      return messages;
+    },
+    enabled: generation !== null,
+    refetchOnWindowFocus: false,
   });
 }
 

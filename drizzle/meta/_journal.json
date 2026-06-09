@@ -232,6 +232,13 @@
       "when": 1780940933645,
       "tag": "0032_conscious_lord_hawal",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1781033942923,
+      "tag": "0033_previous_kronos",
+      "breakpoints": true
     }
   ]
 }
