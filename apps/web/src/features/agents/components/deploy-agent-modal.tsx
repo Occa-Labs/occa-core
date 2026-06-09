@@ -103,9 +103,12 @@ export function DeployAgentModal({
   // both runtimes now authenticate via HTTP + bearer.
   const [hermesGatewayUrl, setHermesGatewayUrl] = useState("");
   const [hermesApiKey, setHermesApiKey] = useState("");
-  // Claude Code form state — no gateway/bearer (host auth); the only knob
-  // is the model. "sonnet" default for cost; "opus" for quality.
+  // Claude Code form state — the model (default "sonnet" for cost, "opus"
+  // for quality) plus an OPTIONAL remote gateway (BYORT): leave blank to run
+  // locally on the host login, or point at a Claude Gateway on another box.
   const [model, setModel] = useState("sonnet");
+  const [ccGatewayUrl, setCcGatewayUrl] = useState("");
+  const [ccApiKey, setCcApiKey] = useState("");
   // Optional flat per-task invoice rate, entered in SOL. Empty = no rate
   // (operator can set it later from the Wallet tab).
   const [taskRateSol, setTaskRateSol] = useState("");
@@ -230,7 +233,12 @@ export function DeployAgentModal({
     try {
       const res =
         adapterType === "claude-code"
-          ? await adaptersApi.probeClaudeCode({ model })
+          ? await adaptersApi.probeClaudeCode({
+              model,
+              ...(ccGatewayUrl.trim() && ccApiKey.trim()
+                ? { gatewayUrl: ccGatewayUrl.trim(), apiKey: ccApiKey.trim() }
+                : {}),
+            })
           : adapterType === "openclaw"
             ? await adaptersApi.probeOpenclaw({
                 gatewayUrl: gatewayUrl.trim(),
@@ -257,7 +265,16 @@ export function DeployAgentModal({
     } finally {
       setStep("form");
     }
-  }, [adapterType, gatewayUrl, apiKey, hermesGatewayUrl, hermesApiKey, model]);
+  }, [
+    adapterType,
+    gatewayUrl,
+    apiKey,
+    hermesGatewayUrl,
+    hermesApiKey,
+    model,
+    ccGatewayUrl,
+    ccApiKey,
+  ]);
 
   type StreamErrorBody = {
     message?: string;
@@ -293,7 +310,12 @@ export function DeployAgentModal({
     try {
       const adapterConfig: AdapterConfig =
         adapterType === "claude-code"
-          ? { model }
+          ? {
+              model,
+              ...(ccGatewayUrl.trim() && ccApiKey.trim()
+                ? { gatewayUrl: ccGatewayUrl.trim(), apiKey: ccApiKey.trim() }
+                : {}),
+            }
           : adapterType === "openclaw"
             ? { gatewayUrl: gatewayUrl.trim(), apiKey: apiKey.trim() }
             : {
@@ -339,6 +361,8 @@ export function DeployAgentModal({
     hermesGatewayUrl,
     hermesApiKey,
     model,
+    ccGatewayUrl,
+    ccApiKey,
     parentAgentId,
     taskRateSol,
     handleStreamError,
@@ -614,27 +638,58 @@ export function DeployAgentModal({
           )}
 
           {adapterType === "claude-code" ? (
-            <label className="block">
-              <span className="text-[11px] text-white/50 mb-1.5 block">
-                Model
-              </span>
-              <select
-                value={model}
-                onChange={(e) => {
-                  setModel(e.target.value);
-                  setProbeResult(null);
-                  setFailedAgentId(null);
-                }}
-                disabled={busy}
-                className="w-full rounded-xl bg-white/5 ring-1 ring-inset ring-white/10 focus:ring-white/22 focus:outline-none px-3.5 py-2.5 text-[13px] text-white/85 transition disabled:opacity-50 font-mono"
-              >
-                {["sonnet", "opus", "haiku"].map((m) => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <div className="space-y-2.5">
+              <label className="block">
+                <span className="text-[11px] text-white/50 mb-1.5 block">
+                  Model
+                </span>
+                <select
+                  value={model}
+                  onChange={(e) => {
+                    setModel(e.target.value);
+                    setProbeResult(null);
+                    setFailedAgentId(null);
+                  }}
+                  disabled={busy}
+                  className="w-full rounded-xl bg-white/5 ring-1 ring-inset ring-white/10 focus:ring-white/22 focus:outline-none px-3.5 py-2.5 text-[13px] text-white/85 transition disabled:opacity-50 font-mono"
+                >
+                  {["sonnet", "opus", "haiku"].map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="space-y-2 rounded-xl ring-1 ring-inset ring-white/10 bg-white/2 p-3">
+                <span className="text-[11px] text-white/50 block">
+                  Remote gateway (BYORT) — optional
+                </span>
+                <input
+                  value={ccGatewayUrl}
+                  onChange={(e) => {
+                    setCcGatewayUrl(e.target.value);
+                    setProbeResult(null);
+                    setFailedAgentId(null);
+                  }}
+                  placeholder="https://claude.your-box.com (blank = run on host)"
+                  type="url"
+                  disabled={busy}
+                  className="w-full rounded-xl bg-white/5 ring-1 ring-inset ring-white/10 focus:ring-white/22 focus:outline-none px-3.5 py-2.5 text-[13px] text-white/85 transition disabled:opacity-50 font-mono"
+                />
+                <input
+                  value={ccApiKey}
+                  onChange={(e) => {
+                    setCcApiKey(e.target.value);
+                    setProbeResult(null);
+                    setFailedAgentId(null);
+                  }}
+                  placeholder="gateway bearer (required with a gateway)"
+                  type="password"
+                  disabled={busy}
+                  className="w-full rounded-xl bg-white/5 ring-1 ring-inset ring-white/10 focus:ring-white/22 focus:outline-none px-3.5 py-2.5 text-[13px] text-white/85 transition disabled:opacity-50 font-mono"
+                />
+              </div>
+            </div>
           ) : adapterType === "openclaw" ? (
             <div className="space-y-2.5">
               <label className="block">

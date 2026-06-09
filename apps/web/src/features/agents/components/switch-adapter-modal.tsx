@@ -90,7 +90,12 @@ export function SwitchAdapterModal({
     try {
       const res =
         target === "claude-code"
-          ? await adaptersApi.probeClaudeCode({ model })
+          ? await adaptersApi.probeClaudeCode({
+              model,
+              ...(gatewayUrl.trim() && apiKey.trim()
+                ? { gatewayUrl: gatewayUrl.trim(), apiKey: apiKey.trim() }
+                : {}),
+            })
           : target === "openclaw"
             ? await adaptersApi.probeOpenclaw({
                 gatewayUrl: gatewayUrl.trim(),
@@ -121,7 +126,12 @@ export function SwitchAdapterModal({
       if (target === "claude-code") {
         await agentsApi.switchAdapter(agent.id, {
           adapterType: "claude-code",
-          adapterConfig: { model },
+          adapterConfig: {
+            model,
+            ...(gatewayUrl.trim() && apiKey.trim()
+              ? { gatewayUrl: gatewayUrl.trim(), apiKey: apiKey.trim() }
+              : {}),
+          },
         });
       } else {
         await agentsApi.switchAdapter(agent.id, {
@@ -207,9 +217,34 @@ export function SwitchAdapterModal({
               </select>
             </label>
             <p className="text-[10px] text-white/35 leading-relaxed">
-              Runs on your Claude subscription via the host login. No gateway
-              or key needed. sonnet is cheapest; opus for higher quality.
+              Runs on your Claude subscription. Leave the gateway blank to run
+              locally on the host login. sonnet is cheapest; opus for higher
+              quality.
             </p>
+            <div className="space-y-2.5 rounded-md border border-white/10 bg-white/2 p-2.5">
+              <span className="text-[10px] uppercase tracking-wider text-white/40">
+                Remote gateway (BYORT) — optional
+              </span>
+              <input
+                value={gatewayUrl}
+                onChange={(e) => {
+                  setGatewayUrl(e.target.value);
+                  setProbe(null);
+                }}
+                placeholder="https://claude.your-box.com"
+                className="w-full rounded-md border border-white/12 bg-white/5 px-3 py-2 text-xs text-white/90 font-mono focus:outline-none focus:ring-1 focus:ring-white/25"
+              />
+              <input
+                value={apiKey}
+                onChange={(e) => {
+                  setApiKey(e.target.value);
+                  setProbe(null);
+                }}
+                type="password"
+                placeholder="gateway bearer (required with a gateway)"
+                className="w-full rounded-md border border-white/12 bg-white/5 px-3 py-2 text-xs text-white/90 font-mono focus:outline-none focus:ring-1 focus:ring-white/25"
+              />
+            </div>
           </div>
         ) : (
           <div className="space-y-2.5">

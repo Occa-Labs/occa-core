@@ -510,10 +510,16 @@ export interface HermesAdapterConfig {
   apiKey: string;
 }
 
-// claude-code runs as a local subprocess authed from the host env, so it
-// has no gateway/bearer — the only per-agent field is the model.
+// claude-code runs either as a local subprocess (authed from the host env)
+// or, for BYORT, against a remote Claude Gateway. When `gatewayUrl` is set
+// the adapter talks HTTP to that gateway (with `apiKey` as bearer); absent,
+// it spawns `claude -p` locally. The only always-present field is the model.
 export interface ClaudeCodeAdapterConfig {
   model?: string;
+  /** Remote Claude Gateway base URL. Absent = local subprocess mode. */
+  gatewayUrl?: string;
+  /** Bearer for the remote gateway. Required when `gatewayUrl` is set. */
+  apiKey?: string;
 }
 
 // Union of all known adapter configs. Per `adapterType` discrimination

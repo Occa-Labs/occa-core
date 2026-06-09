@@ -179,11 +179,14 @@ router.post("/hermes/probe", requireAuth, async (req: Request, res: Response) =>
 
 // POST /api/adapters/claude-code/probe
 //
-// Runs `claude -p "ok"` on the host to confirm the binary is present and
-// the subscription auth resolves (CLAUDE_CODE_OAUTH_TOKEN / interactive
-// login). No gateway or per-agent bearer — the only input is the model.
+// Local mode: runs `claude -p "ok"` on the host to confirm the binary is
+// present and the subscription auth resolves. Remote mode (BYORT): when
+// `gatewayUrl` is supplied, probeConnection hits the gateway's /v1/health
+// instead. The route is mode-agnostic — the adapter branches on the config.
 const claudeCodeProbeBody = z.object({
   model: z.string().trim().min(1).max(LIMITS.LABEL).optional(),
+  gatewayUrl: z.string().url().optional(),
+  apiKey: z.string().min(1).max(LIMITS.API_KEY).optional(),
 });
 
 router.post(

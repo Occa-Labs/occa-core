@@ -7,7 +7,15 @@
   "exports": {
     ".": "./src/index.ts"
   },
+  "scripts": {
+    "gateway": "tsx src/gateway/index.ts"
+  },
   "dependencies": {
     "@occa/runtime-core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "tsx": "^4.21.0",
+    "typescript": "^5"
   }
 }

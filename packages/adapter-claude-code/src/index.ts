@@ -1,14 +1,15 @@
 // @occa/adapter-claude-code — Claude Code runtime adapter
 //
-// Drives Claude Code (`claude -p`) as a local subprocess. Each agent gets
-// an isolated workspace directory; OCCA's persona + skills are seeded as
-// files (Claude Code auto-loads CLAUDE.md), and each turn is one `claude
-// -p` invocation with JSON output. Conversation continuity rides on Claude
-// Code's own session store via a deterministic session id.
+// Drives Claude Code (`claude -p`) in one of two modes:
+//   • local  — spawns claude as a local subprocess (auth from the host env).
+//   • remote — when `config.gatewayUrl` is set, talks HTTP to a Claude
+//     Gateway (this package's `src/gateway/`) running on another box. This
+//     is the BYORT path: someone else hosts claude, OCCA reaches it over the
+//     network, exactly like the openclaw / hermes adapters.
 //
-// Auth is subscription-based: CLAUDE_CODE_OAUTH_TOKEN (from `claude
-// setup-token`) on a server, or the interactive login on a dev machine.
-// The adapter never handles the token — it inherits the process env.
+// Either way each agent gets an isolated workspace; OCCA's persona + skills
+// are seeded as files (Claude Code auto-loads CLAUDE.md), and continuity
+// rides on Claude Code's own session store via a deterministic session id.
 
 import { rm, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -38,14 +39,48 @@ import {
   probeClaude,
   sessionUuidFromKey,
   type RunClaudeResult,
+  type ClaudeStreamEvent,
 } from "./claude-cli";
-import { parseConfig, workspacePathFor } from "./types";
+import { workspacePathFor } from "./workspace";
+import { parseConfig, type ClaudeCodeAdapterConfig } from "./types";
+import {
+  gatewayHealth,
+  gatewaySeed,
+  gatewayDeprovision,
+  gatewayRun,
+  type GatewayTarget,
+} from "./gateway-client";
+
+// A parsed config with `gatewayUrl` present narrows to remote mode. Returns
+// the gateway target when remote, else null (local subprocess mode).
+function remoteTarget(cfg: ClaudeCodeAdapterConfig): GatewayTarget | null {
+  return cfg.gatewayUrl ? { gatewayUrl: cfg.gatewayUrl, apiKey: cfg.apiKey } : null;
+}
 
 export type { ClaudeCodeAdapterConfig } from "./types";
 
-// Tools a task-mode agent may use. Chat (sendPrompt) passes none. Kept
-// conservative — no MCP, no subagent spawning (headless can't approve).
+// Tools a task-mode agent may use. Kept conservative — no MCP. Subagent
+// spawning (Task) is blocked separately via the denylist since headless
+// can't approve nested agents.
 const TASK_TOOLS = ["Bash", "Read", "Edit", "Write", "Glob", "Grep", "WebFetch", "WebSearch"];
+
+// Always blocked on a task run: subagent spawning bypasses OCCA's task
+// board + gate (same reason routine wakes forbid native sub-agents).
+const TASK_DENY = ["Task"];
+
+// Hard deny for a conversational turn — every tool that touches the world
+// plus any agentic escalation (subagent spawn, workflow, skill run).
+// Paired with an empty allowlist so chat stays text-only even on a host
+// whose settings.json pre-approves these tools.
+const CHAT_DENY = [...TASK_TOOLS, "Task", "Workflow", "Skill"];
+
+// Internal ceiling for a single task run. One `claude -p` invocation drives
+// the agent's entire multi-turn loop, so it can legitimately run longer than
+// openclaw's single gateway wait (180s) — but it must still be bounded so a
+// runaway tool loop can't pin the worker indefinitely. The dispatcher's
+// AbortSignal is the outer cancel; this is the adapter-side backstop, and it
+// maps to a `timed_out` outcome (parity with openclaw's WAIT_TIMEOUT_MS).
+const TASK_TIMEOUT_MS = 600_000;
 
 // Assemble OCCA's persona + skills into a CLAUDE.md so Claude Code loads
 // the agent's identity automatically at session start (cached on its side
@@ -62,13 +97,45 @@ function buildClaudeMd(files: WorkspaceFile[], skills: AssignedSkill[]): string 
     lines.push("", `## ${f.filename}`, "", f.content.trim());
   }
   if (skills.length > 0) {
-    lines.push("", "# Assigned skills");
+    lines.push(
+      "",
+      "# Assigned skills",
+      "",
+      "Full content below — read before acting.",
+      "",
+      "Auxiliary lookups (only if you need extra files for a multi-file skill):",
+      "  GET {apiUrl}/api/me/agent/skills/{urlEncodedKey}/files/{path}",
+    );
     for (const s of skills) {
       const desc = s.description ? ` — ${s.description}` : "";
-      lines.push("", `## skill: ${s.key} (${s.name})${desc}`, "", s.markdown.trim());
+      lines.push(
+        "",
+        `## skill: ${s.key} (slug: ${s.slug}, name: ${s.name})${desc}`,
+        "",
+        s.markdown.trim(),
+      );
     }
   }
   return lines.join("\n");
+}
+
+// The flat file list seeded into a workspace: the assembled CLAUDE.md
+// identity bundle plus verbatim copies of each workspace file. Built once
+// and either written to a local dir (seedFiles) or shipped to a remote
+// gateway (seedWorkspace remote branch) — both land the same files.
+function buildSeedFileList(
+  files: WorkspaceFile[],
+  skills: AssignedSkill[],
+): Array<{ filename: string; content: string }> {
+  const out: Array<{ filename: string; content: string }> = [
+    { filename: "CLAUDE.md", content: buildClaudeMd(files, skills) },
+  ];
+  for (const f of files) {
+    // Guard against path traversal in filenames.
+    if (f.filename.includes("/") || f.filename.includes("..")) continue;
+    out.push({ filename: f.filename, content: f.content });
+  }
+  return out;
 }
 
 async function seedFiles(
@@ -77,18 +144,11 @@ async function seedFiles(
   skills: AssignedSkill[],
 ): Promise<number> {
   await mkdir(workspacePath, { recursive: true });
-  let pushed = 0;
-  // CLAUDE.md = auto-loaded identity bundle.
-  await writeFile(join(workspacePath, "CLAUDE.md"), buildClaudeMd(files, skills), "utf8");
-  pushed += 1;
-  // Verbatim copies for by-name reads.
-  for (const f of files) {
-    // Guard against path traversal in filenames.
-    if (f.filename.includes("/") || f.filename.includes("..")) continue;
+  const list = buildSeedFileList(files, skills);
+  for (const f of list) {
     await writeFile(join(workspacePath, f.filename), f.content, "utf8");
-    pushed += 1;
   }
-  return pushed;
+  return list.length;
 }
 
 function toTraceUsage(usage: RunClaudeResult["usage"], costUsd: number | null) {
@@ -98,6 +158,59 @@ function toTraceUsage(usage: RunClaudeResult["usage"], costUsd: number | null) {
     tokensOut: usage.outputTokens,
     cachedTokensIn: usage.cachedTokensIn,
     costCents: costUsd != null ? Math.round(costUsd * 100) : 0,
+  };
+}
+
+// Map normalized stream events onto OCCA's AdapterTraceEvent for the WORKER
+// executeTrace path. These land in the trace history view (rendered by
+// eventType + payload), mirroring how openclaw forwards `{ type, payload }`.
+// AdapterTraceEvent.stream is stdout/stderr only, so tool identity rides in
+// `type` + `payload`, not a custom stream value.
+function forwardRunEvent(
+  onEvent: AdapterExecutionContext["onEvent"],
+): (ev: ClaudeStreamEvent) => void {
+  return (ev) => {
+    if (ev.kind === "tool_use") {
+      onEvent({
+        type: "tool_use",
+        message: ev.toolName,
+        payload: { name: ev.toolName, input: ev.toolInput },
+      });
+    } else if (ev.kind === "tool_result") {
+      onEvent({
+        type: "tool_result",
+        payload: { result: ev.toolResult, isError: ev.isError },
+      });
+    } else if (ev.kind === "error") {
+      onEvent({
+        type: "error",
+        level: "error",
+        message: ev.text,
+        payload: { error: ev.text },
+      });
+    }
+    // assistant_text intentionally dropped — see executeTrace.
+  };
+}
+
+// Map normalized stream events onto the sendPrompt `(stream, data)` callback
+// for the SERVER dispatcher path. Here `stream` is an unconstrained string,
+// and the web LiveTraceFeed switches on it: `tool_call` → tool row (reads
+// data.name + data.input), `error` → error row. Mirrors openclaw, which
+// forwards every non-assistant gateway frame as `{ stream, data }`.
+function forwardSendEvent(
+  onEvent: NonNullable<AdapterSendPromptInput["onEvent"]>,
+): (ev: ClaudeStreamEvent) => void {
+  return (ev) => {
+    if (ev.kind === "tool_use") {
+      onEvent("tool_call", { name: ev.toolName, input: ev.toolInput });
+    } else if (ev.kind === "tool_result") {
+      onEvent("tool_result", { result: ev.toolResult, isError: ev.isError });
+    } else if (ev.kind === "error") {
+      onEvent("error", { error: ev.text });
+    }
+    // assistant_text dropped — the final reply is emitted once by the caller
+    // (openclaw likewise skips per-turn assistant frames in sendPrompt).
   };
 }
 
@@ -129,8 +242,9 @@ export const claudeCodeAdapter: AgentAdapter = {
 
   async probeConnection(config): Promise<ProbeResult> {
     const cfg = parseConfig(config as Record<string, unknown>);
+    const target = remoteTarget(cfg);
     const started = Date.now();
-    const res = await probeClaude(cfg.model);
+    const res = target ? await gatewayHealth(target) : await probeClaude(cfg.model);
     return {
       ok: res.ok,
       latencyMs: Date.now() - started,
@@ -141,7 +255,8 @@ export const claudeCodeAdapter: AgentAdapter = {
 
   async prepareCredentials(baseConfig): Promise<PrepareCredentialsResult> {
     const cfg = parseConfig(baseConfig as Record<string, unknown>);
-    const res = await probeClaude(cfg.model);
+    const target = remoteTarget(cfg);
+    const res = target ? await gatewayHealth(target) : await probeClaude(cfg.model);
     if (!res.ok) {
       return { ok: false, error: res.error ?? "probe_failed", reason: res.reason };
     }
@@ -149,8 +264,11 @@ export const claudeCodeAdapter: AgentAdapter = {
   },
 
   async provision(input: AdapterProvisionInput): Promise<AdapterProvisionResult> {
+    const cfg = parseConfig(input.adapterConfig);
     const workspacePath = workspacePathFor(input.desiredExternalId);
-    await mkdir(workspacePath, { recursive: true });
+    // Local mode pre-creates the workspace dir; remote mode leaves it to the
+    // gateway, which mkdirs the agent's workspace on first seed/run.
+    if (!remoteTarget(cfg)) await mkdir(workspacePath, { recursive: true });
     return {
       ok: true,
       externalAgentId: input.desiredExternalId,
@@ -160,9 +278,13 @@ export const claudeCodeAdapter: AgentAdapter = {
   },
 
   async deprovision(input: AdapterDeprovisionInput): Promise<void> {
-    // Best-effort: remove the agent's local workspace (+ its Claude
-    // sessions live in ~/.claude keyed by cwd, so they're orphaned, not
-    // leaked). Never throws — callers treat cleanup as non-fatal.
+    // Best-effort cleanup — never throws; callers treat it as non-fatal.
+    const cfg = parseConfig(input.adapterConfig);
+    const target = remoteTarget(cfg);
+    if (target) {
+      await gatewayDeprovision(target, input.externalAgentId);
+      return;
+    }
     try {
       await rm(workspacePathFor(input.externalAgentId), {
         recursive: true,
@@ -174,10 +296,21 @@ export const claudeCodeAdapter: AgentAdapter = {
   },
 
   async seedWorkspace(input: AdapterSeedInput): Promise<AdapterSeedResult> {
+    const cfg = parseConfig(input.adapterConfig);
+    const target = remoteTarget(cfg);
+    const files: WorkspaceFile[] = input.files;
+    if (target) {
+      const res = await gatewaySeed(
+        target,
+        input.externalAgentId,
+        buildSeedFileList(files, []),
+      );
+      return res.ok
+        ? { ok: true, pushed: res.pushed }
+        : { ok: false, error: res.error ?? "seed_failed", reason: res.reason };
+    }
     try {
-      const workspacePath = workspacePathFor(input.externalAgentId);
-      const files: WorkspaceFile[] = input.files;
-      const pushed = await seedFiles(workspacePath, files, []);
+      const pushed = await seedFiles(workspacePathFor(input.externalAgentId), files, []);
       return { ok: true, pushed };
     } catch (err) {
       return {
@@ -192,17 +325,49 @@ export const claudeCodeAdapter: AgentAdapter = {
     input: AdapterSendPromptInput,
   ): Promise<AdapterSendPromptResult> {
     const cfg = parseConfig(input.adapterConfig);
-    const workspacePath = workspacePathFor(input.externalAgentId);
-    const result = await runClaude({
-      prompt: input.message,
-      cwd: workspacePath,
-      model: cfg.model,
-      sessionUuid: sessionUuidFromKey(input.sessionKey),
-      // Chat = text only. No tools so a conversational agent can't shell
-      // out and a permission prompt never hangs.
-      allowedTools: [],
-      timeoutMs: input.waitTimeoutMs,
-    });
+    const target = remoteTarget(cfg);
+    // Conversational sessions (CEO chat `:chat:`, per-agent DM `:thread:`)
+    // stay text-only so an agent can't shell out mid-chat and a missing
+    // permission prompt never hangs headless. EVERY other session is real
+    // work that needs the toolset — task dispatch (`:task:`), skill install
+    // (`:skill:`), head review (`:review:`). Gate the inverse so a work
+    // session never silently loses its tools. openclaw/hermes get this for
+    // free because the runtime owns the toolset; here the adapter IS the
+    // runtime, so it decides from the sessionKey.
+    const isConversational =
+      input.sessionKey.includes(":chat:") ||
+      input.sessionKey.includes(":thread:");
+    const useTools = !isConversational;
+    const allowedTools = useTools ? TASK_TOOLS : [];
+    const disallowedTools = useTools ? TASK_DENY : CHAT_DENY;
+    const timeoutMs = input.waitTimeoutMs ?? (useTools ? TASK_TIMEOUT_MS : undefined);
+    // Stream tool activity to the live trace feed for task runs. Chat has
+    // no tools, so this only ever carries an error event there.
+    const onRunEvent = input.onEvent ? forwardSendEvent(input.onEvent) : undefined;
+    const result = target
+      ? await gatewayRun(
+          target,
+          {
+            externalAgentId: input.externalAgentId,
+            prompt: input.message,
+            model: cfg.model,
+            sessionKey: input.sessionKey,
+            allowedTools,
+            disallowedTools,
+            timeoutMs,
+          },
+          onRunEvent,
+        )
+      : await runClaude({
+          prompt: input.message,
+          cwd: workspacePathFor(input.externalAgentId),
+          model: cfg.model,
+          sessionUuid: sessionUuidFromKey(input.sessionKey),
+          allowedTools,
+          disallowedTools,
+          timeoutMs,
+          onEvent: onRunEvent,
+        });
     if (!result.ok) {
       input.onEvent?.("error", { error: result.error, reason: result.reason });
       return { ok: false, error: result.error ?? "prompt_failed", reason: result.reason };
@@ -215,14 +380,20 @@ export const claudeCodeAdapter: AgentAdapter = {
 
   async executeTrace(ctx: AdapterExecutionContext): Promise<AdapterTraceResult> {
     const cfg = parseConfig(ctx.adapterConfig);
+    const target = remoteTarget(cfg);
     const { payload, sessionParams } = ctx;
     // runtimeEnv.agentId IS the external (adapter-side) agent id.
-    const workspacePath = workspacePathFor(ctx.runtimeEnv.agentId);
+    const externalAgentId = ctx.runtimeEnv.agentId;
 
-    // Refresh the seeded identity for this run so persona/skill edits in
-    // OCCA show up without a redeploy.
+    // Refresh the seeded identity (persona + skills) for this run so OCCA
+    // edits show up without a redeploy. Remote ships the files to the
+    // gateway; local writes them to the workspace dir. Non-fatal either way.
     try {
-      await seedFiles(workspacePath, ctx.workspaceFiles, ctx.skills);
+      if (target) {
+        await gatewaySeed(target, externalAgentId, buildSeedFileList(ctx.workspaceFiles, ctx.skills));
+      } else {
+        await seedFiles(workspacePathFor(externalAgentId), ctx.workspaceFiles, ctx.skills);
+      }
     } catch {
       /* non-fatal — stale files still work */
     }
@@ -249,20 +420,51 @@ export const claudeCodeAdapter: AgentAdapter = {
       explicitSessionKey ??
       `agent:${ctx.runtimeEnv.agentId}:task:${payload.taskId ?? payload.traceId}`;
 
-    const result = await runClaude({
-      prompt: wakeText,
-      cwd: workspacePath,
-      model: cfg.model,
-      sessionUuid: sessionUuidFromKey(sessionKey),
-      appendSystemPrompt: buildTraceSystemPrompt(ctx),
-      allowedTools: TASK_TOOLS,
-      signal: ctx.signal,
-    });
+    // Surface per-turn tool activity to the run-detail feed. Tool calls map
+    // to the `tool_call` stream the LiveTraceFeed renders; tool results ride
+    // the audit history. Assistant text is dropped here — one coalesced
+    // message is emitted at run-end below (mirrors openclaw, which forwards
+    // tool/command frames but a single final reply).
+    const onRunEvent = forwardRunEvent(ctx.onEvent);
+    const appendSystemPrompt = buildTraceSystemPrompt(ctx);
+    const result = target
+      ? await gatewayRun(
+          target,
+          {
+            externalAgentId,
+            prompt: wakeText,
+            model: cfg.model,
+            sessionKey,
+            appendSystemPrompt,
+            allowedTools: TASK_TOOLS,
+            disallowedTools: TASK_DENY,
+            timeoutMs: TASK_TIMEOUT_MS,
+          },
+          onRunEvent,
+          ctx.signal,
+        )
+      : await runClaude({
+          prompt: wakeText,
+          cwd: workspacePathFor(externalAgentId),
+          model: cfg.model,
+          sessionUuid: sessionUuidFromKey(sessionKey),
+          appendSystemPrompt,
+          allowedTools: TASK_TOOLS,
+          disallowedTools: TASK_DENY,
+          signal: ctx.signal,
+          timeoutMs: TASK_TIMEOUT_MS,
+          onEvent: onRunEvent,
+        });
 
     if (!result.ok) {
-      const cancelled = result.error === "cancelled";
+      const outcome =
+        result.error === "cancelled"
+          ? "cancelled"
+          : result.error === "timeout"
+            ? "timed_out"
+            : "failed";
       return {
-        outcome: cancelled ? "cancelled" : "failed",
+        outcome,
         livenessState: null,
         usage: toTraceUsage(result.usage, result.costUsd),
         error: {

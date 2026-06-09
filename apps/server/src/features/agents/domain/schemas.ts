@@ -30,6 +30,8 @@ export const hermesAdapterConfigSchema = z.object({
 // per-agent bearer — the only per-agent knob is the model.
 export const claudeCodeAdapterConfigSchema = z.object({
   model: z.string().trim().min(1).max(LIMITS.LABEL).optional(),
+  gatewayUrl: z.string().url().optional(),
+  apiKey: z.string().min(1).max(LIMITS.API_KEY).optional(),
 });
 
 export const adapterConfigSchema = z.union([

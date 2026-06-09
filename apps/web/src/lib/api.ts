@@ -144,7 +144,7 @@ export const adaptersApi = {
       method: "POST",
       body: JSON.stringify(input),
     }),
-  probeClaudeCode: (input: { model?: string }) =>
+  probeClaudeCode: (input: { model?: string; gatewayUrl?: string; apiKey?: string }) =>
     request<ProbeResponse>("/api/adapters/claude-code/probe", {
       method: "POST",
       body: JSON.stringify(input),
