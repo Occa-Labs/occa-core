@@ -157,17 +157,25 @@ export async function syncTaskOnTraceSucceeded(args: {
   if (!responseText.trim()) return;
 
   const needsReview = REVIEW_MARKER.test(responseText);
-  // Routine wrapper tasks: when the orchestrator emits DELEGATE the work
-  // isn't really finished — it just spawned children. Keep the wrapper
-  // in_progress so cascade.ts can re-wake the orchestrator when each
-  // child completes; otherwise the parent_already_done short-circuit at
-  // cascade.ts:160 swallows the wake.
   const emittedActionBlocks = extractActionBlocks(responseText);
   const hasDelegate = emittedActionBlocks.some((b) => b.token === "DELEGATE");
-  const target: TaskStatus = needsReview
-    ? "review"
-    : hasDelegate
-      ? "in_progress"
+  // DELEGATE wins over REVIEW. A task that just spawned children isn't
+  // review-ready — the real work is happening in the children, so it stays
+  // in_progress until they complete and it synthesizes for real. cascade.ts
+  // re-wakes the orchestrator when each child settles.
+  //
+  // Priority matters: if an agent emits BOTH [[OCCA:REVIEW]] and a DELEGATE
+  // (the CEO/head prompts sometimes do), routing to "review" would settle
+  // this task immediately. cascade.ts settles-wakes the PARENT the moment
+  // every sibling is settled, so a delegating-but-"review" task would wake
+  // its parent one tier up, re-run that agent, and let it re-delegate — to a
+  // different target, slipping past the same-target no-loop guard in
+  // delegation.ts — duplicating the whole subtree. Keeping it in_progress
+  // closes that loop.
+  const target: TaskStatus = hasDelegate
+    ? "in_progress"
+    : needsReview
+      ? "review"
       : "done";
 
   // Append a result block. Drop empty trailing paragraph so fresh tasks (which

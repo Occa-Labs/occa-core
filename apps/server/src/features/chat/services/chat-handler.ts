@@ -22,8 +22,8 @@
 //     markers module — same parser the task system uses — so users can
 //     migrate it server-side later without parser fork.
 
-import { eq } from "drizzle-orm";
-import { deployments, traces } from "@occa/shared/schema";
+import { and, eq } from "drizzle-orm";
+import { agentIdentities, deployments, traces } from "@occa/shared/schema";
 import { extractActionBlocks, stripOccaMarkers } from "@occa/shared/markers";
 import { getTier } from "@occa/shared/role-catalog";
 import { adapterErrorMessage } from "../../../lib/adapter-error-messages";
@@ -113,6 +113,42 @@ export interface SendUserTurnArgs {
 //
 // Both paths stamp `originatingUserId` on the task so cascade knows
 // which chat thread the synthesis/report should land on.
+// First non-empty trimmed string among a set of candidate keys. The chat
+// markers are emitted by an LLM, which doesn't always honor the exact field
+// names from the prompt (sonnet has emitted "message" where the spec says
+// "description"), so the readers accept the common aliases rather than drop
+// an otherwise-valid delegation on the floor.
+function firstString(
+  body: Record<string, unknown>,
+  keys: string[],
+): string {
+  for (const k of keys) {
+    const v = body[k];
+    if (typeof v === "string" && v.trim().length > 0) return v.trim();
+  }
+  return "";
+}
+
+// Derive a short imperative title from the scope text when the model omits
+// an explicit `title`. First line / ~70 chars on a word boundary.
+function deriveTitle(text: string): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  if (flat.length <= 70) return flat;
+  const cut = flat.slice(0, 70);
+  const lastSpace = cut.lastIndexOf(" ");
+  return `${lastSpace > 40 ? cut.slice(0, lastSpace) : cut}…`;
+}
+
+const SCOPE_KEYS = [
+  "description",
+  "brief",
+  "message",
+  "instruction",
+  "scope",
+  "body",
+  "details",
+];
+
 interface CreateTaskBody {
   title: string;
   brief: string;
@@ -124,9 +160,9 @@ function readCreateTaskBody(
   body: Record<string, unknown> | null,
 ): CreateTaskBody | null {
   if (!body) return null;
-  const title = typeof body.title === "string" ? body.title.trim() : "";
-  const brief = typeof body.brief === "string" ? body.brief.trim() : "";
-  if (title.length === 0 || brief.length === 0) return null;
+  const brief = firstString(body, SCOPE_KEYS);
+  if (brief.length === 0) return null;
+  const title = firstString(body, ["title"]) || deriveTitle(brief);
   const tags = Array.isArray(body.tags)
     ? body.tags.filter((t): t is string => typeof t === "string")
     : undefined;
@@ -148,22 +184,19 @@ function readDelegateBody(
   body: Record<string, unknown> | null,
 ): DelegateBody | null {
   if (!body) return null;
-  const targetAgentId =
-    typeof body.targetAgentId === "string" ? body.targetAgentId.trim() : "";
-  const title = typeof body.title === "string" ? body.title.trim() : "";
-  const description =
-    typeof body.description === "string" ? body.description.trim() : "";
-  if (
-    targetAgentId.length === 0 ||
-    title.length === 0 ||
-    description.length === 0
-  ) {
+  const targetAgentId = firstString(body, [
+    "targetAgentId",
+    "target",
+    "agentId",
+    "deploymentId",
+  ]);
+  const description = firstString(body, SCOPE_KEYS);
+  if (targetAgentId.length === 0 || description.length === 0) {
     return null;
   }
+  const title = firstString(body, ["title"]) || deriveTitle(description);
   const acceptanceCriteria =
-    typeof body.acceptanceCriteria === "string"
-      ? body.acceptanceCriteria.trim()
-      : undefined;
+    firstString(body, ["acceptanceCriteria"]) || undefined;
   const tags = Array.isArray(body.tags)
     ? body.tags.filter((t): t is string => typeof t === "string")
     : undefined;
@@ -358,6 +391,10 @@ export async function sendUserTurn(
       : never
     : never = null;
 
+  // Set when the hierarchy gate redirects a delegation to the target's head,
+  // so the operator sees the routing instead of a silent CEO → head hop.
+  let routingNote: string | null = null;
+
   if (delegateBlock) {
     const dp = readDelegateBody(delegateBlock.body);
     if (dp) {
@@ -365,16 +402,58 @@ export async function sendUserTurn(
       // top-level with tier=ceo, so canDeploy would always pass — skip
       // the full hierarchy check and just enforce the cross-company
       // boundary directly.
+      const targetFields = {
+        id: deployments.id,
+        companyId: deployments.companyId,
+        status: deployments.status,
+        role: deployments.role,
+        deploymentIndex: deployments.deploymentIndex,
+        parentDeploymentIndex: deployments.parentDeploymentIndex,
+      };
       const [target] = await db
-        .select({
-          id: deployments.id,
-          companyId: deployments.companyId,
-          status: deployments.status,
-          role: deployments.role,
-        })
+        .select(targetFields)
         .from(deployments)
         .where(eq(deployments.id, dp.targetAgentId))
         .limit(1);
+      // Hierarchy discipline: if the requested target sits under a head (its
+      // manager isn't the CEO), route the directive to that head so the work
+      // flows CEO → head → leaf instead of skipping the head. Only a CEO
+      // direct report is delegated to directly. An inactive manager falls
+      // back to the requested target so a paused head can't block the work.
+      let routed = target;
+      if (
+        target &&
+        target.id !== ceo.id &&
+        target.parentDeploymentIndex !== null
+      ) {
+        const [manager] = await db
+          .select({ ...targetFields, name: agentIdentities.name })
+          .from(deployments)
+          .innerJoin(
+            agentIdentities,
+            eq(deployments.agentIdentityId, agentIdentities.id),
+          )
+          .where(
+            and(
+              eq(deployments.companyId, args.companyId),
+              eq(deployments.deploymentIndex, target.parentDeploymentIndex),
+              eq(deployments.status, "active"),
+            ),
+          )
+          .limit(1);
+        if (manager && manager.id !== ceo.id) {
+          log.info(
+            {
+              requestedTargetId: target.id,
+              managerId: manager.id,
+              ceoId: ceo.id,
+            },
+            "chat DELEGATE routed to manager (hierarchy discipline)",
+          );
+          routed = manager;
+          routingNote = `↪ Routed via ${manager.name} per the org hierarchy — your head briefs their own specialist rather than the CEO assigning them directly.`;
+        }
+      }
       if (
         !target ||
         target.companyId !== args.companyId ||
@@ -392,7 +471,7 @@ export async function sendUserTurn(
           { ceoId: ceo.id },
           "chat DELEGATE ignored: target is the CEO itself (use CREATE_TASK for self-execute)",
         );
-      } else if (getTier(target.role) === "head") {
+      } else if (getTier(routed!.role) === "head") {
         // Phase C: non-leaf target → open an agent_dm thread for the
         // Head and post the directive there. No task is created; the
         // Head's worker will pick up the DM thread and emit its own
@@ -400,7 +479,7 @@ export async function sendUserTurn(
         const opened = await openAgentDmThread({
           companyId: args.companyId,
           callerDeploymentId: ceo.id,
-          calleeDeploymentId: target.id,
+          calleeDeploymentId: routed!.id,
           parentThreadId: threadId,
           directive: {
             title: dp.title,
@@ -413,7 +492,7 @@ export async function sendUserTurn(
         log.info(
           {
             ceoId: ceo.id,
-            calleeDeploymentId: target.id,
+            calleeDeploymentId: routed!.id,
             dmThreadId: opened.threadId,
             directiveMessageId: opened.messageId,
           },
@@ -432,7 +511,7 @@ export async function sendUserTurn(
         const opened = await openAgentDmThread({
           companyId: args.companyId,
           callerDeploymentId: ceo.id,
-          calleeDeploymentId: target.id,
+          calleeDeploymentId: routed!.id,
           parentThreadId: threadId,
           directive: {
             title: dp.title,
@@ -453,7 +532,7 @@ export async function sendUserTurn(
           effortLevel: "m",
           tags: dp.tags ?? [],
           dueDate: null,
-          assignedDeploymentId: dp.targetAgentId,
+          assignedDeploymentId: routed!.id,
           parentTaskId: null,
           createdByUserId: args.userId,
           createdByDeploymentId: null,
@@ -513,6 +592,11 @@ export async function sendUserTurn(
           { err, taskId: taskRow.id },
           "enqueueTaskDispatch from chat CREATE_TASK failed",
         ),
+      );
+    } else {
+      log.warn(
+        { ceoId: ceo.id },
+        "chat CREATE_TASK ignored: payload missing a usable scope field",
       );
     }
   }
@@ -613,7 +697,7 @@ export async function sendUserTurn(
       `synthesized result lands back here on completion.`,
     ].join("\n");
   } else {
-    const parts = [cleanReply, ...osMutationReceipts].filter(
+    const parts = [cleanReply, routingNote ?? "", ...osMutationReceipts].filter(
       (s) => s.length > 0,
     );
     finalContent = parts.length > 0 ? parts.join("\n\n") : "(empty reply)";

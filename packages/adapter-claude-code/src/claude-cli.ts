@@ -432,6 +432,73 @@ export async function runClaude(input: RunClaudeInput): Promise<RunClaudeResult>
   return toResult(resumeOut);
 }
 
+// Cheap liveness check: confirms the `claude` binary is present and runs,
+// without a real model round-trip. This is what the periodic connection
+// probe uses — running a full inference (probeClaude) every 90s per agent
+// would spawn claude constantly and burn tokens for nothing, and a cold or
+// loaded `claude -p` routinely exceeds the probe's 10s budget, flapping the
+// agent to a false "Disconnected". Mirrors the Hermes/OpenClaw probes, which
+// only check transport reachability, not that the model can generate. Auth /
+// "can actually infer" is validated on the first real task, same as them.
+export async function claudeAvailable(): Promise<{
+  ok: boolean;
+  version?: string;
+  error?: string;
+  reason?: string;
+}> {
+  return await new Promise((resolve) => {
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const finish = (r: {
+      ok: boolean;
+      version?: string;
+      error?: string;
+      reason?: string;
+    }) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(r);
+    };
+    const child = spawn(CLAUDE_BIN, ["--version"], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      finish({
+        ok: false,
+        error: "gateway_unreachable",
+        reason: "claude --version timed out",
+      });
+    }, 5_000);
+    child.stdout.on("data", (d) => {
+      stdout += String(d);
+    });
+    child.stderr.on("data", (d) => {
+      stderr += String(d);
+    });
+    child.on("error", (err) => {
+      finish({
+        ok: false,
+        error: "config_invalid",
+        reason: `claude binary not found: ${err.message}`,
+      });
+    });
+    child.on("close", (code) => {
+      if (code === 0) {
+        finish({ ok: true, version: stdout.trim() || undefined });
+      } else {
+        finish({
+          ok: false,
+          error: "config_invalid",
+          reason: (stderr || `claude --version exited ${code}`).slice(0, 200),
+        });
+      }
+    });
+  });
+}
+
 // One-shot reachability probe: confirms the binary runs and auth resolves.
 // Uses plain `json` output (a single result object) — no event stream needed.
 export async function probeClaude(model: string): Promise<{

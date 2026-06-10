@@ -7,15 +7,21 @@
 // orchestration kept inline here for now; a follow-up pass can extract
 // the shared provision pipeline into a service.
 
-import { Router, type Request, type Response } from "express";
+import {
+  Router,
+  type NextFunction,
+  type Request,
+  type Response,
+} from "express";
 import { ERROR_CODES } from "@occa/shared/error-codes";
 import { StatusCodes } from "http-status-codes";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, or } from "drizzle-orm";
 import { normalizeGatewayUrl } from "../../../lib/gateway-url";
 import { getAdapter } from "../../../lib/adapter-registry";
 import {
   agentIdentities,
   agentRuntimeProfile,
+  chatThreads,
   companies,
   deploymentWorkspaceFiles,
   deployments,
@@ -1151,7 +1157,22 @@ router.post("/:id/activate", requireAuth, async (req: Request, res: Response) =>
 // state, sessions, traces. The shared `agent_identity` survives by
 // design (an identity may be deployed to multiple companies owned by
 // the same wallet).
-router.delete("/:id", requireAuth, async (req: Request, res: Response) => {
+router.delete(
+  "/:id",
+  requireAuth,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      await retireDeployment(req, res);
+    } catch (err) {
+      // Express 4 doesn't auto-forward async rejections — hand off to the
+      // global error handler so a failed retire returns 500 instead of
+      // crashing the process with an unhandled rejection.
+      next(err);
+    }
+  },
+);
+
+async function retireDeployment(req: Request, res: Response): Promise<void> {
   const existing = await findAccessibleByUserId({
     userId: req.user!.userId,
     deploymentId: req.params.id,
@@ -1206,8 +1227,27 @@ router.delete("/:id", requireAuth, async (req: Request, res: Response) => {
     }
   }
 
-  await db.delete(deployments).where(eq(deployments.id, existing.id));
+  // A task can reference this deployment via assigned/created_by (SET NULL)
+  // AND originate from a chat_thread the deployment owns (originating_thread_id
+  // SET NULL, where the thread itself cascade-deletes with the deployment).
+  // Deleting the deployment in one cascade makes those two RI paths converge
+  // on the same task row, and Postgres raises a spurious FK violation
+  // (originating_thread_id still set while the thread is already gone). Delete
+  // the deployment's chat threads in their own statement first so the
+  // originating_thread_id SET NULL settles cleanly, then delete the
+  // deployment. One transaction so a failure rolls the whole retire back.
+  await db.transaction(async (tx) => {
+    await tx
+      .delete(chatThreads)
+      .where(
+        or(
+          eq(chatThreads.deploymentId, existing.id),
+          eq(chatThreads.callerDeploymentId, existing.id),
+        ),
+      );
+    await tx.delete(deployments).where(eq(deployments.id, existing.id));
+  });
   res.json({ ok: true });
-});
+}
 
 export default router;

@@ -18,7 +18,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   runClaude,
-  probeClaude,
+  claudeAvailable,
   sessionUuidFromKey,
   type ClaudeStreamEvent,
 } from "../claude-cli";
@@ -88,7 +88,11 @@ function asStringArray(v: unknown): string[] | null {
 // ── Handlers ──────────────────────────────────────────────────────────────
 
 async function handleHealth(res: ServerResponse): Promise<void> {
-  const probe = await probeClaude(config.healthModel);
+  // Cheap liveness only (claude binary present + this request proves the
+  // gateway is up and the bearer is valid). No real `claude -p` inference —
+  // the connection probe hits this every 90s per agent, so a model round-trip
+  // here would burn tokens and flap on slow/cold spawns.
+  const probe = await claudeAvailable();
   sendJson(res, 200, {
     object: "claude.gateway.health",
     ok: probe.ok,
@@ -147,6 +151,16 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
     return;
   }
 
+  // Per-run observability — one line in, one line out, so the gateway log
+  // shows which agent/session is running and how long it took (the prompt
+  // body itself is never logged).
+  const started = Date.now();
+  log(
+    "info",
+    { externalAgentId, model, sessionKey, promptChars: prompt.length },
+    "run start",
+  );
+
   // Stream NDJSON: one `{t:"event",...}` line per run event, a final
   // `{t:"result",...}` line carrying the reply + usage.
   res.writeHead(200, { "Content-Type": "application/x-ndjson" });
@@ -176,6 +190,11 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
   });
 
   finished = true;
+  log(
+    "info",
+    { externalAgentId, sessionKey, durationMs: Date.now() - started },
+    "run done",
+  );
   res.write(`${JSON.stringify({ t: "result", result })}\n`);
   res.end();
 }
