@@ -270,7 +270,7 @@ export const hermesAdapter: AgentAdapter = {
       return { ok: false, error: result.error, reason: result.reason };
     }
 
-    return { ok: true, reply: result.reply };
+    return { ok: true, reply: result.reply, usage: result.usage ?? null };
   },
 
   async executeTrace(ctx: AdapterExecutionContext): Promise<AdapterTraceResult> {

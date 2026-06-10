@@ -16,11 +16,12 @@
 // now owned by the Context Pipeline directly.
 
 import { v4 as uuid } from "uuid";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import {
   agentIdentities,
   agentRuntimeProfile,
   deployments,
+  deploymentRuntimeState,
   tasks,
   traces,
   traceEvents,
@@ -29,7 +30,7 @@ import {
   hasOccaMarker,
   stripOccaMarkers,
 } from "@occa/shared/markers";
-import type { ContentBlock, TaskStatus } from "@occa/shared/types";
+import type { ContentBlock, TaskStatus, TraceUsage } from "@occa/shared/types";
 import { db } from "../../../infra/database/client";
 import {
   AGENT_KEY_TRACE_TTL_MS,
@@ -491,6 +492,7 @@ export async function dispatchTask(
     nextStatus,
     blockedBy,
     blockedReason,
+    usage: result.usage ?? null,
   });
 
   publishTraceEvent(traceId, {
@@ -841,6 +843,7 @@ interface CloseSucceededArgs {
   nextStatus: TaskStatus;
   blockedBy: string[] | null;
   blockedReason: string | undefined;
+  usage: TraceUsage | null;
 }
 
 async function closeSucceededTrace(args: CloseSucceededArgs): Promise<void> {
@@ -854,9 +857,43 @@ async function closeSucceededTrace(args: CloseSucceededArgs): Promise<void> {
       status: "succeeded",
       finishedAt,
       resultJson: { text: cleanReply },
+      usageJson: args.usage ?? null,
       updatedAt: finishedAt,
     })
     .where(eq(traces.id, traceId));
+
+  // Roll this run's tokens/cost into the deployment's running totals. The
+  // sendPrompt path never did this (usage was dropped at the adapter
+  // boundary), so per-agent token visibility read 0 — mirror the worker
+  // dispatcher's updateRuntimeCounters here. Skips cleanly when the adapter
+  // surfaced no usage (e.g. openclaw).
+  if (args.usage) {
+    const u = args.usage;
+    await db
+      .insert(deploymentRuntimeState)
+      .values({
+        deploymentId: agentRow.id,
+        companyId: taskRow.companyId,
+        totalInputTokens: u.tokensIn,
+        totalOutputTokens: u.tokensOut,
+        totalCachedInputTokens: u.cachedTokensIn,
+        totalCostCents: u.costCents,
+        lastTraceId: traceId,
+        lastTraceStatus: "succeeded",
+      })
+      .onConflictDoUpdate({
+        target: deploymentRuntimeState.deploymentId,
+        set: {
+          totalInputTokens: sql`${deploymentRuntimeState.totalInputTokens} + ${u.tokensIn}`,
+          totalOutputTokens: sql`${deploymentRuntimeState.totalOutputTokens} + ${u.tokensOut}`,
+          totalCachedInputTokens: sql`${deploymentRuntimeState.totalCachedInputTokens} + ${u.cachedTokensIn}`,
+          totalCostCents: sql`${deploymentRuntimeState.totalCostCents} + ${u.costCents}`,
+          lastTraceId: traceId,
+          lastTraceStatus: "succeeded",
+          updatedAt: finishedAt,
+        },
+      });
+  }
 
   const agentResultBlock: ContentBlock = {
     type: "agent_result",

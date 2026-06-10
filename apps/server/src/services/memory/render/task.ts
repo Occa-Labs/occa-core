@@ -41,6 +41,27 @@ const COMMENT_RENDER_LIMIT = 6;
 // Per-comment body cap in the rendered prompt.
 const COMMENT_BODY_MAX = 800;
 
+// Skill inlining budget. Context is a finite resource — inlining every
+// assigned skill's full markdown on every wake drowns the actual task brief
+// (measured: 8 skills = 220KB, 89% of one news_writer prompt, brief itself
+// 0.5%). So inline small, high-signal skills verbatim and pointer-truncate
+// large ones to fetch-on-demand (progressive disclosure). See
+// docs/context-engineering.md.
+//
+// Under this byte cap → inline whole (keeps small editorial/fact-check
+// skills unavoidable, the property the previous always-inline design cared
+// about). Over it → header slice + fetch pointer.
+const SKILL_INLINE_CAP = 12_000;
+// Total budget across all inlined skill bodies. Once exceeded, remaining
+// skills are pointer-only regardless of individual size — bounds worst-case
+// prompt growth as an agent accrues skills. desiredSkills order is priority
+// order, so the highest-priority skills win the budget.
+const SKILLS_TOTAL_BUDGET = 48_000;
+// Header slice kept when a skill is pointer-truncated: enough for the
+// frontmatter + description + opening section so the agent knows what the
+// skill does and when to pull the rest.
+const SKILL_HEADER_SLICE = 2_000;
+
 function blocksToMarkdown(blocks: ContentBlock[]): string {
   return blocks
     .map((b) => {
@@ -347,21 +368,50 @@ function renderRuntimeEnvBlock(spec: ContextSpec): string {
   ].join("\n");
 }
 
-// Inline assigned skills with full markdown content. Previous design
-// emitted only the key list and pushed agents to GET /api/me/agent/skills
-// on demand, but agents kept skipping that fetch and refusing tasks with
-// "no skill available" (X-posting regress, 2026-05-20). Inlining the
-// markdown makes the protocol unavoidable.
+// Pointer line for a pointer-truncated skill. `key` is the canonical
+// "owner/repo/slug" identifier the fetch route matches on, URL-encoded so
+// the slashes survive the path segment. The agent already has the Bearer
+// credential from the OCCA runtime block above.
+function skillFetchPointer(key: string): string {
+  return (
+    `  [skill body truncated to save context — summary above] ` +
+    `Fetch the full skill before relying on it: ` +
+    `GET /api/me/agent/skills/${encodeURIComponent(key)} ` +
+    `(Bearer per the OCCA runtime block above).`
+  );
+}
+
+// Inline assigned skills under a context budget. Small, high-signal skills
+// are inlined whole — the previous always-inline design existed because
+// pointer-ONLY made agents skip the fetch and refuse tasks ("no skill
+// available", X-posting regress 2026-05-20), and that property is preserved
+// for skills that fit. Large skills (and any past the total budget) instead
+// get a header slice + a fetch pointer so one 130KB research skill can't
+// drown the whole prompt. Just-in-time loading per docs/context-engineering.md.
 function renderSkillsBlock(skills: ContextSpec["skills"]): string {
   const lines = [
-    `SKILLS ASSIGNED TO YOU (full content below — read before acting):`,
+    `SKILLS ASSIGNED TO YOU. Skills small enough are inlined in full below;`,
+    `larger ones show a summary plus a fetch pointer — pull the full body via`,
+    `that endpoint when the task actually needs the skill.`,
   ];
+  let budgetSpent = 0;
   for (const s of skills) {
     const desc = s.description ? ` — ${s.description}` : "";
+    const body = s.markdown.trim();
+    const bytes = Buffer.byteLength(body, "utf8");
+    const inlineWhole =
+      bytes <= SKILL_INLINE_CAP && budgetSpent + bytes <= SKILLS_TOTAL_BUDGET;
     lines.push("");
     lines.push(`=== SKILL: ${s.key} (slug: ${s.slug}, name: ${s.name})${desc} ===`);
     lines.push("");
-    lines.push(s.markdown.trim());
+    if (inlineWhole) {
+      lines.push(body);
+      budgetSpent += bytes;
+    } else {
+      lines.push(`${body.slice(0, SKILL_HEADER_SLICE)}…`);
+      lines.push("");
+      lines.push(skillFetchPointer(s.key));
+    }
     lines.push("");
     lines.push(`=== END SKILL: ${s.key} ===`);
   }
@@ -521,6 +571,13 @@ export function renderTaskPrompt(spec: ContextSpec): string {
     ...(spec.skills.length > 0 ? [renderSkillsBlock(spec.skills), ``] : []),
     `INSTRUCTIONS:`,
     `- Work on the task described below and respond with your findings or result.`,
+    `- Research budget — work efficiently, you have a bounded run. If the task`,
+    `  needs web research, issue searches/fetches in PARALLEL (batch multiple`,
+    `  tool calls in one turn), aim for roughly 6-8 searches and 6-8 fetches`,
+    `  total, then STOP gathering and write. Once you have enough sourced facts`,
+    `  to satisfy the brief, do not keep verifying past sufficiency — diminishing`,
+    `  returns will exhaust the run before you produce the deliverable. Prefer a`,
+    `  complete, well-sourced piece over an exhaustive but unfinished one.`,
     `- If the task requires human review before being closed, end your reply with: [[OCCA:REVIEW]]`,
     `- If you published your deliverable at a public URL (e.g. via a posting`,
     `  tool), report that URL in the SAME reply so it is anchored on-chain as`,

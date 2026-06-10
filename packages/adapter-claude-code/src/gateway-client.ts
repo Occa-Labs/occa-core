@@ -22,6 +22,7 @@ export interface GatewayRunBody {
   allowedTools?: string[] | null;
   disallowedTools?: string[] | null;
   timeoutMs?: number;
+  maxBudgetUsd?: number;
 }
 
 function headers(apiKey?: string): Record<string, string> {

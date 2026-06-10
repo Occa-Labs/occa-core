@@ -72,6 +72,11 @@ export interface RunClaudeInput {
   disallowedTools?: string[] | null;
   signal?: AbortSignal;
   timeoutMs?: number;
+  /** Hard dollar ceiling on the run's API spend (`--max-budget-usd`). The
+   *  CLI ends the run once spend crosses this, bounding both cost and the
+   *  runaway research-loop that otherwise burns the full timeout. Omit for
+   *  unbounded (chat — short by nature). */
+  maxBudgetUsd?: number;
   /** Live per-turn events (tool calls, assistant text). Omit for chat. */
   onEvent?: (event: ClaudeStreamEvent) => void;
 }
@@ -248,6 +253,9 @@ function spawnClaude(
   }
   if (input.disallowedTools && input.disallowedTools.length > 0) {
     args.push("--disallowedTools", input.disallowedTools.join(","));
+  }
+  if (input.maxBudgetUsd && input.maxBudgetUsd > 0) {
+    args.push("--max-budget-usd", String(input.maxBudgetUsd));
   }
 
   return new Promise<SpawnOutput>((resolve) => {

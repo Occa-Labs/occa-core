@@ -185,6 +185,8 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
     allowedTools: asStringArray(body.allowedTools),
     disallowedTools: asStringArray(body.disallowedTools),
     timeoutMs: typeof body.timeoutMs === "number" ? body.timeoutMs : undefined,
+    maxBudgetUsd:
+      typeof body.maxBudgetUsd === "number" ? body.maxBudgetUsd : undefined,
     signal: controller.signal,
     onEvent,
   });

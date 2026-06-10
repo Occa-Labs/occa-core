@@ -86,6 +86,50 @@ router.get("/", requireAgentToken, async (req: Request, res: Response) => {
   res.json({ skills: ordered });
 });
 
+// GET /api/me/agent/skills/:skillKey — single SkillDTO with full markdown.
+// The task prompt inlines small skills whole but pointer-truncates large
+// ones to save context; this is the on-demand fetch target so an agent can
+// pull one skill's body without re-loading the entire roster (the list
+// route returns every skill's markdown at once). `:skillKey` is URL-encoded
+// ("owner%2Frepo%2Fslug").
+router.get(
+  "/:skillKey",
+  requireAgentToken,
+  async (req: Request, res: Response) => {
+    const { agentId: deploymentId, companyId } = req.agent!;
+    const skillKey = decodeURIComponent(req.params.skillKey);
+
+    const [profileRow] = await db
+      .select({ desiredSkills: agentRuntimeProfile.desiredSkills })
+      .from(agentRuntimeProfile)
+      .where(eq(agentRuntimeProfile.deploymentId, deploymentId))
+      .limit(1);
+    if (!profileRow || !profileRow.desiredSkills.includes(skillKey)) {
+      res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.SKILL_NOT_ASSIGNED });
+      return;
+    }
+
+    const [skillRow] = await db
+      .select()
+      .from(companySkills)
+      .where(
+        and(
+          or(
+            eq(companySkills.companyId, companyId),
+            isNull(companySkills.companyId),
+          ),
+          eq(companySkills.key, skillKey),
+        ),
+      )
+      .limit(1);
+    if (!skillRow) {
+      res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.SKILL_NOT_FOUND });
+      return;
+    }
+    res.json({ skill: toSkillDTO(skillRow) });
+  },
+);
+
 // GET /api/me/agent/skills/:skillKey/files/*
 // `:skillKey` must be URL-encoded ("owner%2Frepo%2Fslug"). The path after
 // /files/ is the relative path inside the skill directory; must exist in

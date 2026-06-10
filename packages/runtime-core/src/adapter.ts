@@ -143,7 +143,15 @@ export interface AdapterSendPromptInput {
 }
 
 export type AdapterSendPromptResult =
-  | { ok: true; reply: string }
+  | {
+      ok: true;
+      reply: string;
+      /** Token/cost accounting for this turn, when the adapter's gateway
+       *  reports it. The task dispatcher persists this to the trace's
+       *  usageJson + the deployment's running totals. Undefined/null when
+       *  the adapter can't surface usage (e.g. openclaw gateway). */
+      usage?: TraceUsage | null;
+    }
   | { ok: false; error: string; reason?: string };
 
 // ── Session reset ────────────────────────────────────────────────────────────
