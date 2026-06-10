@@ -25,6 +25,7 @@ interface ChatsWindowProps {
     deploymentId: string;
     agentName: string;
     viewerLabel: string;
+    isCeo: boolean;
   }) => ReactNode;
 }
 

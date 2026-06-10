@@ -32,6 +32,7 @@ interface MessagesColumnProps {
     deploymentId: string;
     agentName: string;
     viewerLabel: string;
+    isCeo: boolean;
   }) => ReactNode;
 }
 
@@ -56,12 +57,14 @@ export function MessagesColumn({
     );
   }
 
-  // Owner chatting one of their own non-CEO agents → live composer thread
-  // (the user_agent surface). Everything else (agent-as-viewer, agent_dm,
-  // the CEO row) stays read-only observability.
+  // Owner chatting one of their own agents → live composer thread. Non-CEO
+  // agents use the user_agent surface (keyed by deploymentId); the CEO uses
+  // the user_ceo surface (same thread as the floating bubble) — the shell
+  // resolves which via the isCeo flag. Agent-as-viewer and agent_dm stay
+  // read-only observability.
   if (renderAgentChat && viewer.kind === "user" && partner.kind === "deployment") {
     const agent = agents.find((a) => a.id === partner.deploymentId);
-    if (agent && agent.role !== CEO_ROLE) {
+    if (agent) {
       // CeoChatWindow owns the header bar (name + New session + History) so
       // the session controls sit aligned with the name; we render it full
       // bleed here.
@@ -71,6 +74,7 @@ export function MessagesColumn({
             deploymentId: agent.id,
             agentName: agent.name,
             viewerLabel,
+            isCeo: agent.role === CEO_ROLE,
           })}
         </div>
       );

@@ -1,11 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { AlertCircle, CheckCircle2, Loader2 } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { AlertCircle, CheckCircle2, HelpCircle, Loader2 } from "lucide-react";
 import { ApiError, adaptersApi, agentsApi } from "@/lib/api";
 import type { AgentDTO } from "@occa/shared/types";
 import { Modal } from "@/components/ui/modal";
+import { FloatingPanel } from "@/components/ui/floating-panel";
 import { Button } from "@/components/ui/button";
+import { AdapterCredsHelp } from "./adapter-creds-help";
 
 type TargetAdapter = "openclaw" | "hermes" | "claude-code";
 
@@ -51,6 +53,15 @@ export function SwitchAdapterModal({
   const [phase, setPhase] = useState<"idle" | "probing" | "switching">("idle");
   const [error, setError] = useState<string | null>(null);
 
+  // Per-runtime "where do I find the URL + key" help popover.
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [helpRect, setHelpRect] = useState<DOMRect | null>(null);
+  const helpTriggerRef = useRef<HTMLButtonElement>(null);
+  const openHelp = useCallback(() => {
+    setHelpRect(helpTriggerRef.current?.getBoundingClientRect() ?? null);
+    setHelpOpen(true);
+  }, []);
+
   // Reset everything when the modal (re)opens.
   useEffect(() => {
     if (!open) return;
@@ -61,6 +72,7 @@ export function SwitchAdapterModal({
     setProbe(null);
     setPhase("idle");
     setError(null);
+    setHelpOpen(false);
     // initialTarget is derived from agent.adapterType — stable per open.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
@@ -191,6 +203,19 @@ export function SwitchAdapterModal({
             );
           })}
         </div>
+
+        {/* Per-runtime help — sits right above the creds so it gets noticed.
+            Content tracks the selected target (URL + bearer for all three). */}
+        <button
+          ref={helpTriggerRef}
+          type="button"
+          onClick={openHelp}
+          className="flex w-full cursor-pointer items-center gap-1.5 rounded-lg px-3 py-2 text-[11.5px] text-white/45 transition-colors hover:bg-white/5 hover:text-white/75"
+          style={{ border: "1px dashed rgba(255,255,255,0.10)" }}
+        >
+          <HelpCircle className="size-3.5 shrink-0" />
+          Where do I find the {ADAPTER_LABELS[target]} Gateway URL and API key?
+        </button>
 
         {/* Config — claude-code is credential-less (host auth), so it only
             picks a model; the HTTP adapters collect gateway + bearer. */}
@@ -345,6 +370,20 @@ export function SwitchAdapterModal({
           )}
         </div>
       </div>
+
+      {helpOpen && (
+        <FloatingPanel
+          title={`${ADAPTER_LABELS[target]} credentials`}
+          subtitle="Where to get the URL + key"
+          triggerRect={helpRect}
+          width={420}
+          zIndex={300}
+          backdrop="transparent"
+          onClose={() => setHelpOpen(false)}
+        >
+          <AdapterCredsHelp adapter={target} />
+        </FloatingPanel>
+      )}
     </Modal>
   );
 }

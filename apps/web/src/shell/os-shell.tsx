@@ -476,11 +476,15 @@ export function OsShell({
         <ChatsWindow
           agents={me.agents}
           onClose={close}
-          renderAgentChat={({ deploymentId, agentName, viewerLabel }) => (
+          renderAgentChat={({ deploymentId, agentName, viewerLabel, isCeo }) => (
+            // The CEO row resolves to the user_ceo surface (deploymentId
+            // omitted) so it shares the floating bubble's thread; non-CEO
+            // agents use their own user_agent thread. Both get the in-pane
+            // header with New session + History.
             <CeoChatWindow
-              key={deploymentId}
+              key={isCeo ? "ceo" : deploymentId}
               active
-              deploymentId={deploymentId}
+              deploymentId={isCeo ? undefined : deploymentId}
               ceoName={agentName}
               headerLabel={`${viewerLabel} & ${agentName}`}
             />
