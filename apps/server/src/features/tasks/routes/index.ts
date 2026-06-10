@@ -10,6 +10,7 @@
 import tasksRouter from "./tasks";
 import taskCommentsRouter from "./task-comments";
 import taskEventsRouter from "./task-events";
+import taskUsageRouter from "./task-usage";
 import taskArchiveRouter from "./task-archive";
 import agentTaskCommentsRouter from "./agent-task-comments";
 import { Router } from "express";
@@ -19,6 +20,7 @@ const tasksFeatureRouter: Router = Router();
 tasksFeatureRouter.use(tasksRouter);
 tasksFeatureRouter.use(taskCommentsRouter);
 tasksFeatureRouter.use(taskEventsRouter);
+tasksFeatureRouter.use(taskUsageRouter);
 tasksFeatureRouter.use(taskArchiveRouter);
 
 export { tasksFeatureRouter, agentTaskCommentsRouter };

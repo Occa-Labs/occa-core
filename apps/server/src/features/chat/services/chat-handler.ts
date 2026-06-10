@@ -721,6 +721,7 @@ export async function sendUserTurn(
       status: "succeeded",
       finishedAt,
       resultJson: { text: result.reply },
+      usageJson: result.usage ?? null,
       updatedAt: finishedAt,
     })
     .where(eq(traces.id, traceId));

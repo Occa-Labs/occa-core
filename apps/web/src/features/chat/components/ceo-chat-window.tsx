@@ -171,12 +171,14 @@ export function CeoChatWindow({
               content: "Thinking…",
               createdTaskId: null,
               linkedApproval: null,
+              usage: null,
               createdAt: new Date().toISOString(),
             }}
             muted
           />
         )}
       </div>
+      <SessionTotal messages={messages} />
       <div className="px-4 py-3 border-t border-white/8">
         <div className="glass-light rounded-xl px-3 py-2 focus-within:ring-1 focus-within:ring-white/20 transition-shadow">
           <textarea
@@ -438,6 +440,15 @@ function ChatBubble({
             Task created
           </div>
         )}
+        {message.usage && !isUser && !muted && (
+          <div
+            className="mt-1.5 text-[10px] text-white/30 tabular-nums"
+            title={`${message.usage.tokensIn} in · ${message.usage.tokensOut} out · ${message.usage.cachedTokensIn} cached`}
+          >
+            {compact(message.usage.tokensIn + message.usage.tokensOut)} tokens ·{" "}
+            {dollars(message.usage.costCents)}
+          </div>
+        )}
         {message.linkedApproval && !isUser && (
           <InlineApprovalCard
             approval={message.linkedApproval}
@@ -570,6 +581,40 @@ function formatApprovalValue(value: unknown): string {
   if (value === null || value === undefined) return "—";
   if (typeof value === "object") return JSON.stringify(value);
   return String(value);
+}
+
+// Running token/cost total for the visible session — sums every assistant
+// turn's usage. A thin strip above the composer; hidden until at least one
+// turn reported usage so a fresh thread stays clean.
+function SessionTotal({ messages }: { messages: ChatMessageDTO[] }) {
+  let tokens = 0;
+  let cents = 0;
+  let turns = 0;
+  for (const m of messages) {
+    if (!m.usage) continue;
+    tokens += m.usage.tokensIn + m.usage.tokensOut;
+    cents += m.usage.costCents;
+    turns += 1;
+  }
+  if (turns === 0) return null;
+  return (
+    <div className="flex items-center justify-end gap-2 px-4 pt-2 text-[10px] text-white/30 tabular-nums">
+      <span className="uppercase tracking-wider text-white/25">Session</span>
+      <span>
+        {compact(tokens)} tokens · {dollars(cents)}
+      </span>
+    </div>
+  );
+}
+
+function compact(n: number): string {
+  if (n < 1_000) return String(n);
+  if (n < 1_000_000) return `${(n / 1_000).toFixed(1)}K`;
+  return `${(n / 1_000_000).toFixed(2)}M`;
+}
+
+function dollars(cents: number): string {
+  return `$${(cents / 100).toFixed(2)}`;
 }
 
 function extractError(err: unknown): string {

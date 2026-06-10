@@ -18,5 +18,6 @@ export const taskKeys = {
   counts: () => [...taskKeys.all, "counts"] as const,
   detail: (id: string) => [...taskKeys.all, "detail", id] as const,
   events: (id: string) => [...taskKeys.all, "events", id] as const,
+  usage: (id: string) => [...taskKeys.all, "usage", id] as const,
   comments: (id: string) => [...taskKeys.all, "comments", id] as const,
 };

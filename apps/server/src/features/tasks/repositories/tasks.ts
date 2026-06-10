@@ -7,8 +7,13 @@ import {
   agentIdentities,
   deployments,
   tasks,
+  traces,
 } from "@occa/shared/schema";
-import type { TaskStatus } from "@occa/shared/types";
+import type {
+  TaskStatus,
+  TaskUsageSummary,
+  TraceUsage,
+} from "@occa/shared/types";
 import { db } from "../../../infra/database/client";
 
 export type TaskRow = typeof tasks.$inferSelect;
@@ -16,6 +21,34 @@ export type TaskRow = typeof tasks.$inferSelect;
 export async function findTaskById(taskId: string): Promise<TaskRow | null> {
   const [row] = await db.select().from(tasks).where(eq(tasks.id, taskId)).limit(1);
   return row ?? null;
+}
+
+// Sum token/cost across every trace this task ran. Re-dispatches each open a
+// new trace, so a task's true cost is the sum, not the latest run. Only
+// traces that carried usage count toward `runs` (a timed-out run with null
+// usageJson contributes nothing).
+export async function sumTaskUsage(taskId: string): Promise<TaskUsageSummary> {
+  const rows = await db
+    .select({ usage: traces.usageJson })
+    .from(traces)
+    .where(eq(traces.taskId, taskId));
+  const summary: TaskUsageSummary = {
+    runs: 0,
+    tokensIn: 0,
+    tokensOut: 0,
+    cachedTokensIn: 0,
+    costCents: 0,
+  };
+  for (const r of rows) {
+    const u = r.usage as TraceUsage | null;
+    if (!u) continue;
+    summary.runs += 1;
+    summary.tokensIn += u.tokensIn ?? 0;
+    summary.tokensOut += u.tokensOut ?? 0;
+    summary.cachedTokensIn += u.cachedTokensIn ?? 0;
+    summary.costCents += u.costCents ?? 0;
+  }
+  return summary;
 }
 
 export async function findTaskInCompany(

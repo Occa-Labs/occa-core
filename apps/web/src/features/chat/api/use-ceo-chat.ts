@@ -84,6 +84,7 @@ export function useSendChatMessage(deploymentId?: string) {
         content,
         createdTaskId: null,
         linkedApproval: null,
+        usage: null,
         createdAt: new Date().toISOString(),
       };
       queryClient.setQueryData<ChatMessageDTO[]>(target.key, [

@@ -416,6 +416,7 @@ export async function processAgentDmTurn(
       finishedAt,
       updatedAt: finishedAt,
       resultJson: { text: result.reply },
+      usageJson: result.usage ?? null,
     })
     .where(eq(traces.id, traceId));
 

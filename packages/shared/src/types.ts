@@ -72,6 +72,10 @@ export interface ChatMessageDTO {
    *  approval. Drives the inline Approve/Reject card in chat. The approval
    *  row is still the canonical record in the Approvals window. */
   linkedApproval: ChatLinkedApproval | null;
+  /** Token/cost this turn spent, from the assistant message's trace. Null on
+   *  user/system messages and on assistant turns whose adapter reported no
+   *  usage. Drives the per-bubble cost line + the thread running total. */
+  usage: TraceUsage | null;
   createdAt: string;
 }
 
@@ -920,6 +924,17 @@ export interface TaskEventDTO {
 
 export interface ListTaskEventsResponse {
   events: TaskEventDTO[];
+}
+
+// Summed token/cost accounting across every trace a task ran (re-dispatches
+// accumulate). `runs` counts the traces that carried usage. costCents is
+// integer cents. Powers the per-task "Run cost" block in the task detail.
+export interface TaskUsageSummary {
+  runs: number;
+  tokensIn: number;
+  tokensOut: number;
+  cachedTokensIn: number;
+  costCents: number;
 }
 
 // ── Task comments — agent ↔ agent + user ↔ agent thread ─────────────

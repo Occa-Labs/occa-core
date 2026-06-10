@@ -39,6 +39,7 @@ import {
 } from "./form-controls";
 import { BlockEditor } from "./block-editor";
 import { DeliverableJourney } from "./deliverable-journey";
+import { RunCost } from "./run-cost";
 import { DetailField } from "./detail-field";
 import { ReadOnlyBlocks } from "./readonly-blocks";
 import { LiveTraceFeed } from "./live-trace-feed";
@@ -525,6 +526,8 @@ export function TaskDetail({
             }}
           />
         )}
+
+        <RunCost taskId={task.id} />
 
         <DeliverableJourney task={task} events={taskEvents.data ?? []} />
 

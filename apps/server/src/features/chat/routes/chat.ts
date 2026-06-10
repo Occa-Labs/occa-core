@@ -12,6 +12,7 @@ import type {
   ChatMessageRole,
   ListChatMessagesResponse,
   SendChatMessageResponse,
+  TraceUsage,
 } from "@occa/shared/types";
 import { childLogger } from "../../../lib/logger";
 import { requireAuth } from "../../../middleware/auth";
@@ -25,6 +26,7 @@ import {
 import { findByDeploymentId as findRuntimeProfile } from "../../agents/repositories/agent-runtime-profile";
 import {
   findLinkedApprovals,
+  findTraceUsages,
   listMessages,
   listSessions,
   type ChatMessageRow,
@@ -55,6 +57,7 @@ function parseGenerationQuery(q: unknown): number | undefined {
 function toDTO(
   row: ChatMessageRow,
   approval: LinkedApprovalRow | undefined,
+  usage: TraceUsage | undefined,
 ): ChatMessageDTO {
   return {
     id: row.id,
@@ -69,25 +72,34 @@ function toDTO(
           status: approval.status as ApprovalStatus,
         }
       : null,
+    usage: usage ?? null,
     createdAt: row.createdAt.toISOString(),
   };
 }
 
-// Map message rows to DTOs, batch-resolving any linked approvals so the
-// chat can render inline Approve/Reject cards in the same fetch.
+// Map message rows to DTOs, batch-resolving linked approvals (inline
+// Approve/Reject cards) and per-turn usage (per-bubble token/cost) so the
+// chat renders both in the same fetch.
 async function serializeMessages(
   rows: ChatMessageRow[],
 ): Promise<ChatMessageDTO[]> {
   const approvalIds = rows
     .map((r) => r.linkedApprovalId)
     .filter((id): id is string => id !== null);
-  const approvalsById = await findLinkedApprovals(approvalIds);
+  const traceIds = rows
+    .map((r) => r.traceId)
+    .filter((id): id is string => id !== null);
+  const [approvalsById, usageByTrace] = await Promise.all([
+    findLinkedApprovals(approvalIds),
+    findTraceUsages(traceIds),
+  ]);
   return rows.map((r) =>
     toDTO(
       r,
       r.linkedApprovalId
         ? approvalsById.get(r.linkedApprovalId)
         : undefined,
+      r.traceId ? usageByTrace.get(r.traceId) : undefined,
     ),
   );
 }

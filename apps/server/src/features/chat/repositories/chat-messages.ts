@@ -3,7 +3,8 @@
 // renders them as distinct bubbles.
 
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
-import { approvals, chatMessages } from "@occa/shared/schema";
+import { approvals, chatMessages, traces } from "@occa/shared/schema";
+import type { TraceUsage } from "@occa/shared/types";
 import { db } from "../../../infra/database/client";
 
 export type ChatMessageRow = typeof chatMessages.$inferSelect;
@@ -45,6 +46,26 @@ export async function findLinkedApprovals(
       },
     ]),
   );
+}
+
+// Fetch usageJson for a batch of message trace ids, keyed by traceId. Each
+// chat turn opens one trace; the assistant message carries its traceId, so
+// this maps a turn's token/cost back onto its bubble. Empty input / null
+// usage short-circuit. Reads the traces table directly (shared schema), same
+// no-cross-feature-import rationale as findLinkedApprovals above.
+export async function findTraceUsages(
+  traceIds: string[],
+): Promise<Map<string, TraceUsage>> {
+  if (traceIds.length === 0) return new Map();
+  const rows = await db
+    .select({ id: traces.id, usage: traces.usageJson })
+    .from(traces)
+    .where(inArray(traces.id, traceIds));
+  const out = new Map<string, TraceUsage>();
+  for (const r of rows) {
+    if (r.usage) out.set(r.id, r.usage as TraceUsage);
+  }
+  return out;
 }
 
 export async function listMessages(args: {

@@ -33,6 +33,7 @@ import type {
   ListTaskEventsResponse,
   ListTasksResponse,
   TaskCountsResponse,
+  TaskUsageSummary,
   TaskStatus,
   OpenclawAdapterConfig,
   ChannelDTO,
@@ -780,6 +781,8 @@ export const tasksApi = {
     }),
   events: (id: string) =>
     request<ListTaskEventsResponse>(`/api/tasks/${id}/events`),
+  usage: (id: string) =>
+    request<TaskUsageSummary>(`/api/tasks/${id}/usage`),
   archive: (id: string, input: { reason?: string }) =>
     request<TaskResponse>(`/api/tasks/${id}/archive`, {
       method: "POST",
