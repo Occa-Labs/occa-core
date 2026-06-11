@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertCircle, CheckCircle2, HelpCircle, Loader2 } from "lucide-react";
 import { ApiError, adaptersApi, agentsApi } from "@/lib/api";
 import type { AgentDTO } from "@occa/shared/types";
+import { CLAUDE_CODE_MODELS } from "@occa/shared/types";
 import { Modal } from "@/components/ui/modal";
 import { FloatingPanel } from "@/components/ui/floating-panel";
 import { Button } from "@/components/ui/button";
@@ -16,10 +17,6 @@ const ADAPTER_LABELS: Record<TargetAdapter, string> = {
   hermes: "Hermes",
   "claude-code": "Claude Code",
 };
-
-// Claude Code has no gateway/bearer — auth is host-level — so the only
-// per-agent knob is the model.
-const CLAUDE_CODE_MODELS = ["sonnet", "opus", "haiku"];
 
 // Move an already-deployed agent to a different runtime. Provision +
 // probe happen on the server inside one POST; the modal gates the action
@@ -234,15 +231,16 @@ export function SwitchAdapterModal({
                 className="mt-1 w-full rounded-md border border-white/12 bg-white/5 px-3 py-2 text-xs text-white/90 font-mono focus:outline-none focus:ring-1 focus:ring-white/25"
               >
                 {CLAUDE_CODE_MODELS.map((m) => (
-                  <option key={m} value={m}>
-                    {m}
+                  <option key={m.value} value={m.value}>
+                    {m.label}
                   </option>
                 ))}
               </select>
             </label>
             <p className="text-[10px] text-white/35 leading-relaxed">
               Runs on a Claude subscription via a Claude Gateway on the host
-              box. sonnet is cheapest; opus for higher quality.
+              box. Sonnet is the efficient default; Fable is most capable but
+              priciest.
             </p>
             <div className="space-y-2.5 rounded-md border border-white/10 bg-white/2 p-2.5">
               <span className="text-[10px] uppercase tracking-wider text-white/40">

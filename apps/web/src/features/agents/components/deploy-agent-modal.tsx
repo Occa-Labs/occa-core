@@ -22,6 +22,7 @@ import type {
   AdapterType,
   AgentDTO,
 } from "@occa/shared/types";
+import { CLAUDE_CODE_MODELS } from "@occa/shared/types";
 import { CSUITE_ROLES, ROLE_LABELS, ROLE_ORDER } from "./_shared";
 
 type DeployStep = "form" | "probing" | "creating";
@@ -654,9 +655,9 @@ export function DeployAgentModal({
                   disabled={busy}
                   className="w-full rounded-xl bg-white/5 ring-1 ring-inset ring-white/10 focus:ring-white/22 focus:outline-none px-3.5 py-2.5 text-[13px] text-white/85 transition disabled:opacity-50 font-mono"
                 >
-                  {["sonnet", "opus", "haiku"].map((m) => (
-                    <option key={m} value={m}>
-                      {m}
+                  {CLAUDE_CODE_MODELS.map((m) => (
+                    <option key={m.value} value={m.value}>
+                      {m.label}
                     </option>
                   ))}
                 </select>

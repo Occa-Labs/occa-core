@@ -526,6 +526,19 @@ export interface ClaudeCodeAdapterConfig {
   apiKey?: string;
 }
 
+// Model options offered in the claude-code runtime picker. The `value` is the
+// alias passed to `claude --model` — aliases auto-upgrade to the latest
+// version in each family and keep older stored configs (e.g. "sonnet") valid,
+// so no migration is needed when Anthropic ships a new point release. The
+// `label` surfaces the current version + a one-line tier hint so the picker
+// mirrors Claude Code's own model menu instead of showing bare alias names.
+export const CLAUDE_CODE_MODELS = [
+  { value: "sonnet", label: "Sonnet 4.6 · efficient (default)" },
+  { value: "opus", label: "Opus 4.8 · highest quality" },
+  { value: "fable", label: "Fable 5 · most capable, priciest" },
+  { value: "haiku", label: "Haiku 4.5 · fastest, cheapest" },
+] as const;
+
 // Union of all known adapter configs. Per `adapterType` discrimination
 // lives in the server zod schema; client TS can pass any shape.
 export type AdapterConfig =

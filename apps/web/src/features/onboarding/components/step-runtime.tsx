@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { ApiError } from "@/lib/api";
 import type { AdapterType } from "@occa/shared/types";
+import { CLAUDE_CODE_MODELS } from "@occa/shared/types";
 import { FloatingPanel } from "@/components/ui/floating-panel";
 import { useProbeAdapter } from "../api/use-probe-adapter";
 import {
@@ -406,9 +407,9 @@ function ClaudeCodeForm({
           onChange={(e) => onModelChange(e.target.value)}
           className="rounded-md border border-white/10 bg-white/5 px-3 py-2 font-mono text-[12px] text-white focus:border-white/25 focus:outline-none"
         >
-          {["sonnet", "opus", "haiku"].map((m) => (
-            <option key={m} value={m}>
-              {m}
+          {CLAUDE_CODE_MODELS.map((m) => (
+            <option key={m.value} value={m.value}>
+              {m.label}
             </option>
           ))}
         </select>
