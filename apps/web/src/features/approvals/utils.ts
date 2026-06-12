@@ -70,6 +70,10 @@ export function humanizeApprovalAction(
   if (actionType === "edit_skill_library") {
     const op = typeof payload.op === "string" ? payload.op : "";
     const key = typeof payload.skillKey === "string" ? payload.skillKey : "";
+    if (op === "import")
+      return key
+        ? `Wants to import skill ${key} into the library`
+        : "Wants to import a skill into the library";
     if (op === "remove")
       return key
         ? `Wants to remove skill ${key} from the library`

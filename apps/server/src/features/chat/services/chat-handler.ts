@@ -973,7 +973,9 @@ function formatOsMutationReceipt(outcome: ActionBlockOutcome): string {
     case "skill_library_edit_proposed":
       return outcome.op === "remove"
         ? `✓ Queued removing a skill from the library for your approval. Open the Approvals window to review and apply it. Nothing changes until you approve.`
-        : `✓ Queued a skill allowed-roles change for your approval. Open the Approvals window to review and apply it. Nothing changes until you approve.`;
+        : outcome.op === "import"
+          ? `✓ Queued importing ${outcome.skillKey} into the library for your approval. Open the Approvals window to review and apply it. Nothing changes until you approve.`
+          : `✓ Queued a skill allowed-roles change for your approval. Open the Approvals window to review and apply it. Nothing changes until you approve.`;
     case "skill_library_edit_propose_rejected":
       switch (outcome.reason) {
         case "invalid_body":

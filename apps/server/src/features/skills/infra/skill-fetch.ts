@@ -118,8 +118,34 @@ export async function fetchGithubSkill(
   // 2. Fetch recursive tree at sha.
   const tree = await fetchTree(parsed.owner, parsed.repo, sha);
 
-  // 3. Filter blobs under parsed.path.
-  const prefix = parsed.path.endsWith("/") ? parsed.path : `${parsed.path}/`;
+  // 3. Filter blobs under the skill directory. The shorthand's
+  // `skills/<slug>` path is only a convention — real repos also keep
+  // skills at the root (`<slug>/SKILL.md`, e.g. Occa-Labs/occa-skills) or
+  // nested under plugin dirs (`<plugin>/skills/<slug>/SKILL.md`, e.g. the
+  // jamditis packs). When the conventional path has no files, discover the
+  // directory by locating a SKILL.md whose parent dir is exactly the slug,
+  // preferring the shallowest match.
+  const prefixFor = (p: string) => (p.endsWith("/") ? p : `${p}/`);
+  let skillPath = parsed.path;
+  if (
+    !tree.some(
+      (entry) =>
+        entry.type === "blob" && entry.path.startsWith(prefixFor(skillPath)),
+    )
+  ) {
+    const discovered = tree
+      .filter(
+        (entry) =>
+          entry.type === "blob" &&
+          (entry.path === `${parsed.slug}/SKILL.md` ||
+            entry.path.endsWith(`/${parsed.slug}/SKILL.md`)),
+      )
+      .map((entry) => entry.path.slice(0, -"/SKILL.md".length))
+      .sort((a, b) => a.split("/").length - b.split("/").length);
+    if (discovered.length > 0) skillPath = discovered[0];
+  }
+
+  const prefix = prefixFor(skillPath);
   const blobs = tree.filter(
     (entry) => entry.type === "blob" && entry.path.startsWith(prefix),
   );
@@ -149,7 +175,7 @@ export async function fetchGithubSkill(
     parsed.owner,
     parsed.repo,
     sha,
-    `${parsed.path}/SKILL.md`,
+    `${skillPath}/SKILL.md`,
   );
 
   // 5. Parse YAML frontmatter.
@@ -162,7 +188,7 @@ export async function fetchGithubSkill(
   }
 
   const key = `${parsed.owner}/${parsed.repo}/${parsed.slug}`;
-  const sourceLocator = `https://github.com/${parsed.owner}/${parsed.repo}/tree/${sha}/${parsed.path}`;
+  const sourceLocator = `https://github.com/${parsed.owner}/${parsed.repo}/tree/${sha}/${skillPath}`;
 
   return {
     key,
@@ -174,7 +200,7 @@ export async function fetchGithubSkill(
     sourceRef: sha,
     sourceOwner: parsed.owner,
     sourceRepo: parsed.repo,
-    sourcePath: parsed.path,
+    sourcePath: skillPath,
     fileInventory: inventory.sort((a, b) => a.path.localeCompare(b.path)),
     metadata: {
       importedAt: new Date().toISOString(),

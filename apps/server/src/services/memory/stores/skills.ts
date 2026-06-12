@@ -37,6 +37,7 @@ export async function loadSkills(args: {
       name: companySkills.name,
       description: companySkills.description,
       markdown: companySkills.markdown,
+      companyId: companySkills.companyId,
     })
     .from(companySkills)
     .where(
@@ -49,7 +50,12 @@ export async function loadSkills(args: {
       ),
     );
 
-  const byKey = new Map(rows.map((r) => [r.key, r]));
+  // A company-scoped import shadows a builtin with the same key — it is
+  // the company's chosen (possibly refreshed-from-GitHub) version. Insert
+  // builtins first so a company row deterministically overwrites it.
+  const byKey = new Map<string, (typeof rows)[number]>();
+  for (const r of rows.filter((r) => r.companyId === null)) byKey.set(r.key, r);
+  for (const r of rows.filter((r) => r.companyId !== null)) byKey.set(r.key, r);
   return desired
     .map((k) => byKey.get(k))
     .filter((r): r is NonNullable<typeof r> => r != null);

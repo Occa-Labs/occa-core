@@ -484,6 +484,12 @@ function renderFirstTurnPrompt(spec: ContextSpec, userMessage: string): string {
 function renderRefreshTurn(spec: ContextSpec, userMessage: string): string {
   const recentWorkBlock = formatRecentWork(spec);
   const ceoOpsStateBlock = formatCeoOpsState(spec);
+  // The OS-mutation marker spec must be present on EVERY turn, not just the
+  // first. It's the CEO's capability contract, not recallable context — the
+  // adapter's session memory cannot be trusted to retain it across a long
+  // conversation. Without it the CEO forgets it can edit the profile / install
+  // skills / bind tools on follow-up turns and punts to "use the web UI".
+  const installSkillSpecBlock = formatInstallSkillMarkerSpec(spec);
   return [
     `[Team snapshot — auto-refreshed]`,
     formatTeam(spec.org.team),
@@ -492,6 +498,7 @@ function renderRefreshTurn(spec: ContextSpec, userMessage: string): string {
     ``,
     ...(ceoOpsStateBlock ? [ceoOpsStateBlock, ``] : []),
     ...(recentWorkBlock ? [recentWorkBlock, ``] : []),
+    ...(installSkillSpecBlock ? [installSkillSpecBlock, ``] : []),
     `---`,
     ``,
     `Owner says:`,

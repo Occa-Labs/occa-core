@@ -96,10 +96,13 @@ import {
   updateRoutine,
 } from "../../../features/routines/repositories/routines";
 import {
+  broadcastSkillToEligibleAgents,
   deleteSkillById,
   findByKeyInCompany,
+  insertSkillReturning,
   updateSkillById,
 } from "../../../features/skills/repositories/company-skills";
+import { fetchGithubSkill } from "../../../features/skills/infra/skill-fetch";
 import {
   deleteById as deleteToolById,
   updateById as updateToolById,
@@ -2081,11 +2084,16 @@ export async function handleProposeSkillLibraryEditBlock(
 }
 
 // With-approval side-effect for "edit_skill_library". Re-validates the stored
-// payload, resolves the skill by key WITHIN the company (so platform built-ins
-// — companyId IS NULL — never resolve and thus can't be edited/removed), then
-// applies. A missing/built-in key throws skill_not_in_library, stamped into
-// the approval's failureReason. deleteSkillById is not company-scoped, so the
-// company-scoped resolve here is the guard that makes the delete safe.
+// payload, then applies per op. For set_roles/remove the skill is resolved by
+// key WITHIN the company (so platform built-ins — companyId IS NULL — never
+// resolve and thus can't be edited/removed); a missing/built-in key throws
+// skill_not_in_library, stamped into the approval's failureReason.
+// deleteSkillById is not company-scoped, so the company-scoped resolve here
+// is the guard that makes the delete safe. For import the skill may not
+// exist yet: the flow mirrors POST /api/skills/import — fetch from GitHub at
+// approve time, upsert, and broadcast only on first import (re-import
+// refreshes content without re-broadcasting, so per-agent disables survive).
+// A GitHub fetch failure throws and lands in failureReason the same way.
 export async function applySkillLibraryEditApproval(
   approval: typeof approvals.$inferSelect,
 ): Promise<typeof approvals.$inferSelect> {
@@ -2094,6 +2102,45 @@ export async function applySkillLibraryEditApproval(
     throw new Error("skill_library_edit_payload_invalid");
   }
   const edit = parsed.data;
+
+  if (edit.op === "import") {
+    const fetched = await fetchGithubSkill(edit.skillKey);
+    const allowedRoles = [...new Set(edit.allowedRoles ?? [])];
+    const existing = await findByKeyInCompany({
+      companyId: approval.companyId,
+      key: fetched.key,
+    });
+    const content = {
+      slug: fetched.slug,
+      name: fetched.name,
+      description: fetched.description,
+      markdown: fetched.markdown,
+      sourceType: "github" as const,
+      sourceLocator: fetched.sourceLocator,
+      sourceRef: fetched.sourceRef,
+      sourceOwner: fetched.sourceOwner,
+      sourceRepo: fetched.sourceRepo,
+      sourcePath: fetched.sourcePath,
+      fileInventory: fetched.fileInventory,
+      allowedRoles,
+      metadata: fetched.metadata,
+    };
+    if (existing) {
+      await updateSkillById({ skillId: existing.id, patch: content });
+    } else {
+      const row = await insertSkillReturning({
+        companyId: approval.companyId,
+        key: fetched.key,
+        ...content,
+      });
+      await broadcastSkillToEligibleAgents({
+        companyId: approval.companyId,
+        skillKey: row.key,
+        allowedRoles,
+      });
+    }
+    return approval;
+  }
 
   const skill = await findByKeyInCompany({
     companyId: approval.companyId,

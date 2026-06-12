@@ -173,11 +173,23 @@ export async function listLibraryForCompany(args: {
     visibilityFilter = or(builtinShown, customImport);
   }
 
-  return db
+  const rows = await db
     .select()
     .from(companySkills)
     .where(and(scopeFilter, visibilityFilter))
     .orderBy(desc(companySkills.createdAt));
+
+  // A company-scoped import shadows a builtin with the same key (the
+  // company's chosen / refreshed-from-GitHub version) — list each key once,
+  // preferring the company row, so the catalog never shows duplicates.
+  const byKey = new Map<string, CompanySkillRow>();
+  for (const row of rows) {
+    const prev = byKey.get(row.key);
+    if (!prev || (prev.companyId === null && row.companyId !== null)) {
+      byKey.set(row.key, row);
+    }
+  }
+  return [...byKey.values()];
 }
 
 // ── Mutations ────────────────────────────────────────────────────────────

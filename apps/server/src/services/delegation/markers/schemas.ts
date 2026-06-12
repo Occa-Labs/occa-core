@@ -146,7 +146,9 @@ export const proposeDeploymentBlockPayload = z.object({
 //
 // Max items in a profile list field (content pillars, USPs, etc.) — a sanity
 // cap on the marker; the DB columns themselves are unbounded text arrays.
-const PROFILE_LIST_MAX = 24;
+// Kept generous because forbiddenWords is legitimately a long anti-slop /
+// anti-hype banned list (50+ terms is normal), not a short tag list.
+const PROFILE_LIST_MAX = 100;
 const profileText = z.string().trim().max(LIMITS.DESCRIPTION);
 const profileShort = z.string().trim().max(LIMITS.TITLE);
 const profileList = z
@@ -221,15 +223,17 @@ export const proposeRoutineEditBlockPayload = z.discriminatedUnion("op", [
   z.object({ op: z.literal("delete"), routineId }),
 ]);
 
-// PROPOSE_SKILL_LIBRARY_EDIT: CEO drafts a change to a company-imported
-// skill in the library — set its allowed-roles whitelist, or remove it from
-// the library entirely. With-approval tier; the marker NEVER writes (the
-// repo write runs on approve). Addressed by skillKey (canonical owner/repo/
-// slug), consistent with INSTALL_SKILL. This targets ONLY company-imported
-// skills: platform built-ins (companyId IS NULL) are not company-scoped, so
-// the apply lookup never resolves them — they cannot be edited or removed
-// here. Installing/uninstalling a skill ONTO an agent stays autonomous;
-// importing a skill from a source repo is operator-only.
+// PROPOSE_SKILL_LIBRARY_EDIT: CEO drafts a change to the company skill
+// library — import a new GitHub-sourced skill, set a skill's allowed-roles
+// whitelist, or remove it from the library entirely. With-approval tier; the
+// marker NEVER writes (the repo write runs on approve). Addressed by skillKey
+// (canonical owner/repo/slug), consistent with INSTALL_SKILL. set_roles /
+// remove target ONLY company-imported skills: platform built-ins (companyId
+// IS NULL) are not company-scoped, so the apply lookup never resolves them —
+// they cannot be edited or removed here. Importing is the one op where the
+// skill does not exist yet: the operator's approval IS the supply-chain gate
+// (skill markdown lands in agent prompts), so it is with-approval, never
+// autonomous. Installing/uninstalling a skill ONTO an agent stays autonomous.
 const skillKeyField = z.string().trim().min(1).max(LIMITS.KEY);
 export const proposeSkillLibraryEditBlockPayload = z.discriminatedUnion("op", [
   z.object({
@@ -240,6 +244,18 @@ export const proposeSkillLibraryEditBlockPayload = z.discriminatedUnion("op", [
     allowedRoles: z.array(roleSchema).max(ROLE_WHITELIST_MAX),
   }),
   z.object({ op: z.literal("remove"), skillKey: skillKeyField }),
+  z.object({
+    op: z.literal("import"),
+    // Canonical GitHub key (owner/repo/slug) — the same form the catalog and
+    // INSTALL_SKILL use. On approve the platform fetches the skill from
+    // GitHub and upserts it into the company library.
+    skillKey: skillKeyField.regex(
+      /^[^\s/]+\/[^\s/]+\/[^\s/]+$/,
+      "skillKey must be owner/repo/slug",
+    ),
+    // Optional initial whitelist. Omitted or empty = unrestricted.
+    allowedRoles: z.array(roleSchema).max(ROLE_WHITELIST_MAX).optional(),
+  }),
 ]);
 
 // PROPOSE_TOOL_EDIT: CEO drafts a change to a company tool — set its
@@ -757,13 +773,14 @@ export type ActionBlockOutcome =
       kind: "routine_edit_propose_rejected";
       reason: RoutineEditProposeRejectReason;
     }
-  // PROPOSE_SKILL_LIBRARY_EDIT: a pending skill-library edit/remove proposal
-  // row was created. `op` + `skillKey` identify the draft; approve runs the
-  // repo write (set allowed-roles, or remove from the library).
+  // PROPOSE_SKILL_LIBRARY_EDIT: a pending skill-library proposal row was
+  // created. `op` + `skillKey` identify the draft; approve runs the repo
+  // write (import from GitHub, set allowed-roles, or remove from the
+  // library).
   | {
       kind: "skill_library_edit_proposed";
       proposalId: string;
-      op: "set_roles" | "remove";
+      op: "set_roles" | "remove" | "import";
       skillKey: string;
     }
   | {
