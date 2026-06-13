@@ -253,6 +253,13 @@
       "when": 1781343477539,
       "tag": "0035_handy_black_queen",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1781346589885,
+      "tag": "0036_wooden_valeria_richards",
+      "breakpoints": true
     }
   ]
 }

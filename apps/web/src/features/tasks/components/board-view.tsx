@@ -6,7 +6,7 @@ import { Spinner } from "@/components/ui/spinner";
 import type { TaskDTO } from "@occa/shared/types";
 import type { BoardColumnData, BoardData } from "../api/use-board-data";
 import { useInView } from "@/lib/use-in-view";
-import { STATUS_COLUMNS } from "../types";
+import { BOARD_COLUMNS } from "../types";
 import { TaskCard } from "./task-card";
 
 // Read-only kanban board. Each column is an independently paginated infinite
@@ -28,14 +28,12 @@ export function BoardView({
 }) {
   return (
     <div className="flex gap-3 h-full overflow-x-auto pb-2 px-1">
-      {STATUS_COLUMNS.map((col) => (
+      {BOARD_COLUMNS.map((col) => (
         <BoardColumn
           key={col.id}
           label={col.label}
           dot={<span className={`size-2 rounded-full ${col.dot}`} />}
-          // STATUS_COLUMNS only holds the four board statuses, so this key
-          // always exists on `columns`.
-          data={columns[col.id as keyof BoardData["columns"]]}
+          data={columns[col.id]}
           parentNumberFor={parentNumberFor}
           onTaskClick={onTaskClick}
         />

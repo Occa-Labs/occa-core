@@ -83,7 +83,14 @@ export function TaskDetail({
     !isLocked &&
     !isArchived &&
     !!task.assignedAgentId &&
-    (task.status === "done" || task.status === "review");
+    (task.status === "done" ||
+      task.status === "review" ||
+      task.status === "error" ||
+      task.status === "blocked");
+  // Technical failure / blocked → operator decides retry vs dismiss. The
+  // banner surfaces the reason and the two actions prominently.
+  const showAttentionBanner =
+    !isArchived && (task.status === "error" || task.status === "blocked");
   // Auto-suggest archive banner: shown once status hits `review` on a
   // non-system, non-archived task. User can dismiss for the current
   // session; the suggestion comes back on the next open.
@@ -263,6 +270,62 @@ export function TaskDetail({
               <ArchiveRestore className="size-3" />
               {unarchiveTask.isPending ? "Unarchiving…" : "Unarchive task"}
             </button>
+          </div>
+        )}
+
+        {showAttentionBanner && (
+          <div
+            className={`rounded-xl border px-4 py-3 space-y-2.5 ${
+              task.status === "error"
+                ? "border-red-400/25 bg-red-500/5"
+                : "border-amber-400/25 bg-amber-500/5"
+            }`}
+          >
+            <div
+              className={`flex items-center gap-2 text-xs ${
+                task.status === "error" ? "text-red-300/90" : "text-amber-300/90"
+              }`}
+            >
+              <AlertTriangle className="size-3.5" />
+              <span>
+                {task.status === "error" ? (
+                  <>
+                    This task hit a technical error
+                    {task.errorCode ? (
+                      <span className="font-mono text-white/55">
+                        {" "}
+                        ({task.errorCode})
+                      </span>
+                    ) : null}
+                    .
+                  </>
+                ) : (
+                  "Agent is blocked and can't proceed without input."
+                )}
+                <span className="text-white/55"> Decide what&apos;s next:</span>
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={handleRerun}
+                disabled={rerunTask.isPending}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium bg-blue-500/15 hover:bg-blue-500/25 text-blue-200 disabled:opacity-40 transition-colors"
+              >
+                <RotateCcw
+                  className={`size-3 ${rerunTask.isPending ? "animate-spin" : ""}`}
+                />
+                {rerunTask.isPending ? "Retrying…" : "Retry"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setArchiveModalOpen(true)}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium bg-white/8 hover:bg-white/12 text-white/70 transition-colors"
+              >
+                <Archive className="size-3" />
+                Dismiss
+              </button>
+            </div>
           </div>
         )}
 

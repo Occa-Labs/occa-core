@@ -41,16 +41,27 @@ router.get("/", requireAuth, async (req: Request, res: Response) => {
   const includeArchived = req.query.include_archived === "1";
   const archivedOnly = req.query.archived === "1";
 
-  // Optional single-status column filter (validated against the enum).
+  // Optional status column filter. `attention` is a pseudo-status the board
+  // uses for its "Needs attention" column = blocked + error grouped. Any
+  // other value is validated against the real enum.
   const statusParam =
     typeof req.query.status === "string" ? req.query.status : undefined;
-  if (statusParam && !TASK_STATUSES.includes(statusParam as TaskStatus)) {
+  const ATTENTION_STATUSES: TaskStatus[] = ["blocked", "error"];
+  const isAttention = statusParam === "attention";
+  if (
+    statusParam &&
+    !isAttention &&
+    !TASK_STATUSES.includes(statusParam as TaskStatus)
+  ) {
     res
       .status(StatusCodes.BAD_REQUEST)
       .json({ error: ERROR_CODES.INVALID_BODY, detail: "unknown status" });
     return;
   }
-  const status = statusParam as TaskStatus | undefined;
+  const status = isAttention
+    ? undefined
+    : (statusParam as TaskStatus | undefined);
+  const statusIn = isAttention ? ATTENTION_STATUSES : undefined;
 
   // Pagination is opt-in: presence of `limit` switches to a single page.
   // Absent → legacy full list (keeps the pre-pagination client working).
@@ -71,6 +82,7 @@ router.get("/", requireAuth, async (req: Request, res: Response) => {
     includeArchived,
     archivedOnly,
     status,
+    statusIn,
     ...(paginated ? { limit: limit! + 1, offset } : {}),
   });
 
@@ -364,18 +376,29 @@ router.post("/:id/rerun", requireAuth, async (req: Request, res: Response) => {
     return;
   }
 
+  // Retry from the "Needs attention" column: reset the technical-failure /
+  // blocked state back to `todo` and clear the error reason BEFORE
+  // enqueueing, so dispatch advances it cleanly (todo → in_progress) and
+  // the card leaves the attention column immediately.
+  let task = existing;
+  if (existing.status === "error" || existing.status === "blocked") {
+    task =
+      (await updateTask(existing.id, { status: "todo", errorCode: null })) ??
+      existing;
+  }
+
   const names = await agentNameMap(companyId);
   res.json({
     task: toTaskDTO(
-      existing,
-      existing.assignedDeploymentId
-        ? (names.get(existing.assignedDeploymentId) ?? null)
+      task,
+      task.assignedDeploymentId
+        ? (names.get(task.assignedDeploymentId) ?? null)
         : null,
     ),
   });
 
-  enqueueTaskDispatch(existing.id).catch((err) =>
-    log.error({ err, taskId: existing.id }, "enqueue task dispatch failed"),
+  enqueueTaskDispatch(task.id).catch((err) =>
+    log.error({ err, taskId: task.id }, "enqueue task dispatch failed"),
   );
 });
 

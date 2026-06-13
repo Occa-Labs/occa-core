@@ -19,6 +19,8 @@ export interface BoardData {
   columns: {
     todo: BoardColumnData;
     in_progress: BoardColumnData;
+    // Combined blocked + error — tasks needing operator attention.
+    attention: BoardColumnData;
     review: BoardColumnData;
     done: BoardColumnData;
   };
@@ -59,14 +61,17 @@ export function useBoardData(enabled: boolean, includeArchived: boolean): BoardD
   const counts = useTaskCounts(enabled);
   const todo = useTaskColumn("todo", enabled);
   const inProgress = useTaskColumn("in_progress", enabled);
+  const attention = useTaskColumn("attention", enabled);
   const review = useTaskColumn("review", enabled);
   const done = useTaskColumn("done", enabled);
   const archived = useTaskColumn("archived", enabled && includeArchived);
 
   const byStatus = counts.data?.counts ?? {};
+  const attentionTotal = (byStatus.blocked ?? 0) + (byStatus.error ?? 0);
   const columns = {
     todo: toColumnData(todo, byStatus.todo),
     in_progress: toColumnData(inProgress, byStatus.in_progress),
+    attention: toColumnData(attention, attentionTotal),
     review: toColumnData(review, byStatus.review),
     done: toColumnData(done, byStatus.done),
   };
@@ -75,6 +80,7 @@ export function useBoardData(enabled: boolean, includeArchived: boolean): BoardD
   const allLoaded = [
     ...columns.todo.tasks,
     ...columns.in_progress.tasks,
+    ...columns.attention.tasks,
     ...columns.review.tasks,
     ...columns.done.tasks,
     ...archivedColumn.tasks,
@@ -84,7 +90,7 @@ export function useBoardData(enabled: boolean, includeArchived: boolean): BoardD
   // has no column) so the subtitle matches reality, not just the 4 columns.
   const activeTotal = Object.values(byStatus).reduce((sum, n) => sum + n, 0);
 
-  const activeColumns = [todo, inProgress, review, done];
+  const activeColumns = [todo, inProgress, attention, review, done];
   const isPending =
     enabled && (counts.isPending || activeColumns.some((q) => q.isPending));
   const isError = counts.isError || activeColumns.some((q) => q.isError);

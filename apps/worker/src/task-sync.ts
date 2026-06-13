@@ -82,6 +82,12 @@ export async function syncTaskOnTraceStart(
   // Kick it off the backlog/todo column once; never regress completed work.
   if (row.status === "todo") {
     await setTaskStatus(taskId, ["todo"], "in_progress");
+    // Fresh run — clear any prior technical-failure reason so a retry
+    // (error → todo → in_progress) doesn't carry a stale error badge.
+    await db
+      .update(tasks)
+      .set({ errorCode: null })
+      .where(eq(tasks.id, taskId));
     if (ctx) {
       void appendTaskEventBestEffort({
         companyId: row.companyId,
@@ -307,22 +313,40 @@ export async function syncTaskOnTraceFailed(args: {
       : row.blocks;
   await appendBlocks(args.taskId, [...trimmed, failureBlock]);
 
-  await db
-    .update(tasks)
-    .set({
-      archivedAt: args.finishedAt,
-      archiveReason: `trace_${args.outcome}`,
-      updatedAt: args.finishedAt,
-    })
-    .where(eq(tasks.id, args.taskId));
+  // A technical failure (failed / timed_out) is usually transient and not
+  // the agent's fault — retries are already exhausted by the time we get
+  // here, so park the task in the visible `error` state for the operator
+  // to retry or dismiss (board's "Needs attention" column). A `cancelled`
+  // outcome is an intentional stop, not breakage, so it still archives.
+  const parkAsError = args.outcome === "failed" || args.outcome === "timed_out";
+  if (parkAsError) {
+    await db
+      .update(tasks)
+      .set({
+        status: "error",
+        errorCode: args.errorCode ?? `trace_${args.outcome}`,
+        updatedAt: args.finishedAt,
+      })
+      .where(eq(tasks.id, args.taskId));
+  } else {
+    await db
+      .update(tasks)
+      .set({
+        archivedAt: args.finishedAt,
+        archiveReason: `trace_${args.outcome}`,
+        updatedAt: args.finishedAt,
+      })
+      .where(eq(tasks.id, args.taskId));
+  }
 
   void appendTaskEventBestEffort({
     companyId: row.companyId,
     taskId: args.taskId,
-    eventType: "task_archived",
+    eventType: parkAsError ? "task_status_changed" : "task_archived",
     actorType: "system",
     actorId: "system",
     payload: {
+      ...(parkAsError ? { to: "error" } : {}),
       reason: `trace_${args.outcome}`,
       traceId: args.traceId,
       errorCode: args.errorCode,

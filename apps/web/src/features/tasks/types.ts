@@ -7,11 +7,35 @@ import type {
   TaskType,
 } from "@occa/shared/types";
 
+// Real task statuses a user can pick from the status dropdown + the labels
+// list-view resolves against. Excludes pseudo / system states.
 export const STATUS_COLUMNS: { id: TaskStatus; label: string; dot: string }[] = [
   { id: "todo", label: "To Do", dot: "bg-white/30" },
   { id: "in_progress", label: "In Progress", dot: "bg-blue-400" },
   { id: "review", label: "Review", dot: "bg-amber-400" },
   { id: "done", label: "Done", dot: "bg-green-400" },
+];
+
+// Kanban board columns. "attention" is a pseudo-column grouping `blocked`
+// + `error` (tasks the operator must act on) — distinct from STATUS_COLUMNS
+// so it never leaks into the status dropdown. Keyed to BoardData["columns"].
+export type BoardColumnKey =
+  | "todo"
+  | "in_progress"
+  | "attention"
+  | "review"
+  | "done";
+
+export const BOARD_COLUMNS: {
+  id: BoardColumnKey;
+  label: string;
+  dot: string;
+}[] = [
+  { id: "todo", label: "To Do", dot: "bg-white/30" },
+  { id: "in_progress", label: "In Progress", dot: "bg-blue-400" },
+  { id: "review", label: "Review", dot: "bg-amber-400" },
+  { id: "done", label: "Done", dot: "bg-green-400" },
+  { id: "attention", label: "Needs attention", dot: "bg-red-400" },
 ];
 
 // `color` = badge background+text (PriorityBadge). `dot` = solid dot

@@ -57,6 +57,7 @@ export function toTaskDTO(row: TaskRow, agentName: string | null): TaskDTO {
     acceptanceCriteria: row.acceptanceCriteria ?? null,
     archivedAt: row.archivedAt ? row.archivedAt.toISOString() : null,
     archiveReason: row.archiveReason ?? null,
+    errorCode: row.errorCode ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };

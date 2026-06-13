@@ -744,7 +744,8 @@ export const tasksApi = {
   list: (opts?: {
     includeArchived?: boolean;
     archivedOnly?: boolean;
-    status?: TaskStatus;
+    // "attention" is the board's pseudo-status = blocked + error grouped.
+    status?: TaskStatus | "attention";
     limit?: number;
     offset?: number;
   }) => {

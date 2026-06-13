@@ -20,7 +20,8 @@ const REFETCH_INTERVAL_MS = 4_000;
  * first page of each column is loaded unless the user scrolls deep, so the
  * poll cost stays bounded — a fraction of the old "fetch every task" model.
  */
-export type ColumnKey = TaskStatus | "archived" | "all";
+// "attention" is the board's combined blocked + error column.
+export type ColumnKey = TaskStatus | "archived" | "all" | "attention";
 
 export function useTaskColumn(
   column: ColumnKey,
@@ -47,7 +48,11 @@ export function useTaskColumn(
 function columnParams(
   column: ColumnKey,
   opts: { includeArchived?: boolean },
-): { status?: TaskStatus; archivedOnly?: boolean; includeArchived?: boolean } {
+): {
+  status?: TaskStatus | "attention";
+  archivedOnly?: boolean;
+  includeArchived?: boolean;
+} {
   if (column === "archived") return { archivedOnly: true };
   if (column === "all") return { includeArchived: opts.includeArchived };
   return { status: column };

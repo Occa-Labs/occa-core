@@ -72,6 +72,9 @@ export async function listTasksByCompany(
     archivedOnly?: boolean;
     /** Restrict to a single status column. */
     status?: TaskStatus;
+    /** Restrict to a set of statuses (the "Needs attention" column groups
+     *  blocked + error). Mutually exclusive with `status`. */
+    statusIn?: TaskStatus[];
     /** Page size. Omit for the full unbounded list (legacy callers). */
     limit?: number;
     /** Page offset, paired with `limit`. */
@@ -85,6 +88,9 @@ export async function listTasksByCompany(
     conditions.push(isNull(tasks.archivedAt));
   }
   if (opts.status) conditions.push(eq(tasks.status, opts.status));
+  if (opts.statusIn && opts.statusIn.length > 0) {
+    conditions.push(inArray(tasks.status, opts.statusIn));
+  }
 
   let query = db
     .select()

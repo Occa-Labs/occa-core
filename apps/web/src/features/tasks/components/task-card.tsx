@@ -62,6 +62,14 @@ export function TaskCard({
             <span className="inline-flex items-center text-[10px] px-1.5 py-0.5 rounded bg-white/8 text-white/45 font-mono uppercase tracking-wide">
               Archived
             </span>
+          ) : task.status === "error" ? (
+            <span className="inline-flex items-center text-[10px] px-1.5 py-0.5 rounded bg-red-500/15 text-red-300 font-mono uppercase tracking-wide">
+              Error
+            </span>
+          ) : task.status === "blocked" ? (
+            <span className="inline-flex items-center text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 font-mono uppercase tracking-wide">
+              Blocked
+            </span>
           ) : isSystemTask(task) ? (
             <MetaChip mono>⚙ SYSTEM</MetaChip>
           ) : (
@@ -117,6 +125,12 @@ export function TaskCard({
       {isArchived && task.archiveReason && (
         <p className="text-[10px] text-white/35 italic line-clamp-1">
           &ldquo;{task.archiveReason}&rdquo;
+        </p>
+      )}
+
+      {!isArchived && task.status === "error" && task.errorCode && (
+        <p className="text-[10px] text-red-300/70 font-mono line-clamp-1">
+          {task.errorCode}
         </p>
       )}
     </button>

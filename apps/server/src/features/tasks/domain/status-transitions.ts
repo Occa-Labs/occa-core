@@ -71,6 +71,9 @@ const ALLOWED_USER_TRANSITIONS: Record<TaskStatus, ReadonlySet<TaskStatus>> = {
   review: new Set<TaskStatus>(["todo", "done"]),
   blocked: new Set<TaskStatus>(["todo", "review", "done"]),
   done: new Set<TaskStatus>([]), // terminal — must rerun or unarchive
+  // Technical failure → operator sends it back to todo to retry (or
+  // dismisses to archive, which is not a status transition).
+  error: new Set<TaskStatus>(["todo"]),
 };
 
 export function isUserStatusTransitionAllowed(

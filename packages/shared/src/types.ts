@@ -789,6 +789,11 @@ export const TASK_STATUSES = [
   "review",
   "done",
   "blocked",
+  // Technical failure (gateway down, timeout, server restart, missing
+  // tool). Distinct from `done` (no disbursement) and from archive (stays
+  // visible). Surfaced in the board's "Needs attention" column alongside
+  // `blocked` so the operator sees it and can retry or dismiss.
+  "error",
 ] as const;
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 
@@ -874,6 +879,10 @@ export interface TaskDTO {
   // only when the user toggles "Show archived". Reversible.
   archivedAt: string | null;
   archiveReason: string | null;
+  // Set when status is `error` — the technical reason the run failed
+  // (e.g. "timeout", "server_restart", gateway error code). Drives the
+  // reason badge on the card. Cleared when a fresh run starts.
+  errorCode: string | null;
   createdAt: string;
   updatedAt: string;
 }

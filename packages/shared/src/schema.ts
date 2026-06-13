@@ -652,6 +652,10 @@ export const tasks = pgTable(
     // unarchive). Free-text reason captured at archive time for context.
     archivedAt: timestamp("archived_at", { withTimezone: true }),
     archiveReason: text("archive_reason"),
+    // Technical failure reason when status = 'error' (e.g. "timeout",
+    // "server_restart", gateway error code). Drives the card's reason
+    // badge. Cleared when a fresh run starts on the task.
+    errorCode: text("error_code"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

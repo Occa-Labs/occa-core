@@ -688,6 +688,9 @@ async function openTrace({
     .set({
       status: "in_progress",
       linkedTraceId: traceId,
+      // Fresh run — clear any prior technical-failure reason so a retry
+      // doesn't carry a stale error badge.
+      errorCode: null,
       updatedAt: startedAt,
     })
     .where(eq(tasks.id, taskRow.id));
@@ -810,20 +813,17 @@ async function closeFailedTrace(args: CloseFailedArgs): Promise<void> {
       updatedAt: finishedAt,
     })
     .where(eq(traces.id, traceId));
-  // Archive the task on terminal failure instead of bouncing it back to
-  // `todo`. The previous behavior left dead cards on the board forever:
-  // there is no auto-retry pipeline for trace failures, and routine
-  // wrappers that timed out during Phase-A research would accumulate
-  // every cycle. Archiving keeps the failure searchable while clearing
-  // the kanban; user can unarchive if they want to rerun. Mirrors the
-  // worker-side syncTaskOnTraceFailed path so both dispatchers behave
-  // the same on failure.
+  // Technical failure → park the task in the visible `error` state instead
+  // of archiving it. A gateway-down / timeout / restart is not the agent's
+  // fault and is usually retryable, so the operator must SEE it (board's
+  // "Needs attention" column) and decide retry vs dismiss — burying it in
+  // archive hid real breakage. errorCode drives the card's reason badge;
+  // linkedTraceId is kept so the detail view can open the failed run.
   await db
     .update(tasks)
     .set({
-      archivedAt: finishedAt,
-      archiveReason: "trace_failed",
-      linkedTraceId: null,
+      status: "error",
+      errorCode: errorCode ?? "trace_failed",
       updatedAt: finishedAt,
     })
     .where(eq(tasks.id, taskRow.id));
@@ -840,10 +840,11 @@ async function closeFailedTrace(args: CloseFailedArgs): Promise<void> {
   void appendTaskEventBestEffort({
     companyId: taskRow.companyId,
     taskId: taskRow.id,
-    eventType: "task_archived",
+    eventType: "task_status_changed",
     actorType: "system",
     actorId: "system",
     payload: {
+      to: "error",
       reason: "trace_failed",
       traceId,
       errorCode,
