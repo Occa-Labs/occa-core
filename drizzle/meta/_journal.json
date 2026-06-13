@@ -239,6 +239,20 @@
       "when": 1781033942923,
       "tag": "0033_previous_kronos",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1781339873473,
+      "tag": "0034_special_sir_ram",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1781343477539,
+      "tag": "0035_handy_black_queen",
+      "breakpoints": true
     }
   ]
 }

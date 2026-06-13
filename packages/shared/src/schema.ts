@@ -72,6 +72,19 @@ export const companies = pgTable(
     pausedAt: timestamp("paused_at", { withTimezone: true }),
     pausedReason: text("paused_reason"),
 
+    // Per-company monthly token-spend pool, in US cents. Covers EVERY
+    // token-consuming activity (task runs + chat). Operator-domain — a
+    // budget the CEO can't raise on itself. NOT a per-run cap: individual
+    // runs are never truncated. The gate is at the start of new work —
+    // once month-to-date spend reaches this pool, no new task or chat
+    // turn starts until the next calendar month. Spend is summed live
+    // from `traces.usage_json`, so the monthly reset is implicit.
+    //
+    // DB column is named `task_budget_cents` for migration-history
+    // continuity (it began life as a per-task cap); the field is the
+    // monthly pool now.
+    monthlyBudgetCents: integer("task_budget_cents").notNull().default(20000),
+
     // Kickoff lifecycle — drives the post-onboarding "CEO discovery → bulk
     // deploy" flow. Stays at 'not_started' until the user completes the
     // kickoff dialog; flips through 'provisioning' → 'completed'.

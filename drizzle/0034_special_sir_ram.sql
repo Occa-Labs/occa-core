@@ -1,0 +1,1 @@
+ALTER TABLE "companies" ADD COLUMN "task_budget_cents" integer DEFAULT 150 NOT NULL;

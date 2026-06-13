@@ -13,7 +13,16 @@ import { WebhookFormModal } from "./webhook-form-modal";
 // Per-company webhook connections, embedded in the Settings window. List +
 // create/edit/delete. Routing (which task fires a webhook) is not set here —
 // that lives in workflows. This is the connection registry only.
-export function WebhooksSection({ companyId }: { companyId: string }) {
+//
+// `embedded` drops the self-contained SectionLabel header (the host pane
+// already supplies a title) and keeps just the Add action above the list.
+export function WebhooksSection({
+  companyId,
+  embedded = false,
+}: {
+  companyId: string;
+  embedded?: boolean;
+}) {
   const { webhooks, loading, error, create, update, remove, test } =
     useWebhooks(companyId);
   // null = closed, undefined = create, a webhook = edit.
@@ -45,16 +54,25 @@ export function WebhooksSection({ companyId }: { companyId: string }) {
 
   return (
     <section>
-      <div className="flex items-center justify-between gap-2 mb-3">
-        <div className="flex items-center gap-1.5">
-          <Webhook className="size-3 text-white/35" />
-          <SectionLabel>Webhooks</SectionLabel>
+      {embedded ? (
+        <div className="flex justify-end mb-2">
+          <Button variant="ghost" size="sm" onClick={() => setModal(undefined)}>
+            <Plus className="size-3" />
+            Add
+          </Button>
         </div>
-        <Button variant="ghost" size="sm" onClick={() => setModal(undefined)}>
-          <Plus className="size-3" />
-          Add
-        </Button>
-      </div>
+      ) : (
+        <div className="flex items-center justify-between gap-2 mb-3">
+          <div className="flex items-center gap-1.5">
+            <Webhook className="size-3 text-white/35" />
+            <SectionLabel>Webhooks</SectionLabel>
+          </div>
+          <Button variant="ghost" size="sm" onClick={() => setModal(undefined)}>
+            <Plus className="size-3" />
+            Add
+          </Button>
+        </div>
+      )}
 
       {error && <Alert variant="error">Couldn&apos;t load webhooks.</Alert>}
 

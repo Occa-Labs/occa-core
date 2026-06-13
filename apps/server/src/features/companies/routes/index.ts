@@ -22,6 +22,7 @@ import {
 } from "../repositories/companies";
 import { PG_ERROR_CODES } from "../../../lib/pg-errors";
 import { upsert as upsertProfile } from "../repositories/company-profiles";
+import { getCompanyMonthSpendCents } from "../../../services/company-budget";
 
 const router: Router = Router();
 
@@ -36,12 +37,14 @@ async function buildStats(companyId: string): Promise<CompanyStats> {
     .select({ n: count() })
     .from(tasks)
     .where(eq(tasks.companyId, companyId));
+  const budgetSpentCents = await getCompanyMonthSpendCents(companyId);
   return {
     agentsCount: Number(agentRow?.n ?? 0),
     tasksCount: Number(taskRow?.n ?? 0),
     // Wired up once company_memory table lands. Returning 0 keeps the UI
     // contract stable today.
     memoryEntriesCount: 0,
+    budgetSpentCents,
   };
 }
 
@@ -91,12 +94,18 @@ const PROFILE_FIELDS = new Set<keyof UpdateCompanyBody>([
 type UpdateCompanyBody = z.infer<typeof updateCompanyBody>;
 
 function splitCompanyPatch(patch: UpdateCompanyBody): {
-  core: { name?: string };
-  profile: Partial<Omit<UpdateCompanyBody, "name">>;
+  core: { name?: string; monthlyBudgetCents?: number };
+  profile: Partial<Omit<UpdateCompanyBody, "name" | "monthlyBudgetCents">>;
 } {
-  const core: { name?: string } = {};
-  const profile: Partial<Omit<UpdateCompanyBody, "name">> = {};
+  const core: { name?: string; monthlyBudgetCents?: number } = {};
+  const profile: Partial<
+    Omit<UpdateCompanyBody, "name" | "monthlyBudgetCents">
+  > = {};
   if ("name" in patch && patch.name !== undefined) core.name = patch.name;
+  // monthlyBudgetCents lives on the companies row, not company_profile.
+  if ("monthlyBudgetCents" in patch && patch.monthlyBudgetCents !== undefined) {
+    core.monthlyBudgetCents = patch.monthlyBudgetCents;
+  }
   for (const key of PROFILE_FIELDS) {
     if (key in patch) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

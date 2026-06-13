@@ -55,6 +55,12 @@ export const updateCompanyBody = z.object({
     .optional(),
   treasuryAddress: nullableText(200),
   chainsCovered: optionalArray(80),
+  monthlyBudgetCents: z
+    .number()
+    .int()
+    .min(LIMITS.MONTHLY_BUDGET_CENTS_MIN)
+    .max(LIMITS.MONTHLY_BUDGET_CENTS_MAX)
+    .optional(),
 }) satisfies z.ZodType<UpdateCompanyRequest>;
 
 export const pauseCompanyBody = z.object({

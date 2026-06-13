@@ -50,6 +50,8 @@ export function toCompanyDTO(
     treasuryAddress: profile?.treasuryAddress ?? null,
     chainsCovered: profile?.chainsCovered ?? [],
 
+    monthlyBudgetCents: company.monthlyBudgetCents,
+
     pausedAt: company.pausedAt ? company.pausedAt.toISOString() : null,
     pausedReason: company.pausedReason,
 

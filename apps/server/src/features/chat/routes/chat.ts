@@ -271,13 +271,14 @@ router.post("/ceo", requireAuth, async (req: Request, res: Response) => {
         .status(StatusCodes.BAD_REQUEST)
         .json({ error: ERROR_CODES.AGENT_NOT_PROVISIONED });
       return;
+    case "budget_exhausted":
     case "adapter_failed": {
-      // Adapter-failed surfaces as a system message (already inserted)
-      // rather than an HTTP error — the FE renders it inline so the user
-      // sees what happened without a toast.
+      // Both surface as a system message (already inserted) rather than an
+      // HTTP error — the FE renders it inline so the user sees what
+      // happened without a toast. budget_exhausted = monthly pool reached.
       log.warn(
-        { companyId },
-        "CEO adapter call failed; system message returned to UI",
+        { companyId, kind: result.kind },
+        "CEO turn returned a system message instead of a reply",
       );
       const [user, assistant] = await serializeMessages([
         result.user,
@@ -476,6 +477,7 @@ router.post(
           .status(StatusCodes.BAD_REQUEST)
           .json({ error: ERROR_CODES.AGENT_NOT_PROVISIONED });
         return;
+      case "budget_exhausted":
       case "adapter_failed": {
         const [user, assistant] = await serializeMessages([
           result.user,

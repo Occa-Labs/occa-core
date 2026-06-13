@@ -140,6 +140,12 @@ export interface AdapterSendPromptInput {
   message: string;
   onEvent?: (stream: string, data: Record<string, unknown>) => void;
   waitTimeoutMs?: number;
+  /** Optional hard spend ceiling for this single run, in USD. OCCA's
+   *  budget model gates at dispatch time (monthly pool) rather than
+   *  truncating live runs, so this is left undefined in normal operation.
+   *  Kept in the contract for adapters/callers that want a per-run cap.
+   *  Undefined → no per-run cap. */
+  maxBudgetUsd?: number;
 }
 
 export type AdapterSendPromptResult =

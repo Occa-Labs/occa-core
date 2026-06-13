@@ -56,6 +56,7 @@ import {
 } from "../../../services/memory";
 import { CEO_ACTIONS } from "../../../services/delegation/markers/registry";
 import type { ActionBlockOutcome } from "../../../services/delegation/markers/schemas";
+import { getCompanyBudgetStatus } from "../../../services/company-budget";
 
 const log = childLogger("services:chat-handler");
 
@@ -76,6 +77,11 @@ export type ChatHandlerResult =
       kind: "adapter_failed";
       user: ChatMessageRow;
       assistant: ChatMessageRow; // system role with the failure note
+    }
+  | {
+      kind: "budget_exhausted";
+      user: ChatMessageRow;
+      assistant: ChatMessageRow; // system role explaining the monthly pause
     };
 
 export interface SendUserTurnArgs {
@@ -269,6 +275,34 @@ export async function sendUserTurn(
     createdTaskId: null,
     traceId: null,
   });
+
+  // Monthly token-spend gate. Chat costs tokens too, so once the company's
+  // monthly pool is reached no new chat turn runs until next month. The
+  // user's message is kept (already persisted above); the reply is a system
+  // note instead of an agent run — no trace, no spend.
+  const budget = await getCompanyBudgetStatus(args.companyId);
+  if (!budget.withinBudget) {
+    log.warn(
+      {
+        companyId: args.companyId,
+        spentCents: budget.spentCents,
+        budgetCents: budget.budgetCents,
+      },
+      "monthly budget reached, skipping chat turn",
+    );
+    const fmt = (cents: number) => `$${(cents / 100).toFixed(2)}`;
+    const sysMsg = await insertMessage({
+      threadId,
+      companyId: args.companyId,
+      deploymentId: ceo.id,
+      resetGeneration,
+      role: "system",
+      content: `Monthly budget reached — ${fmt(budget.spentCents)} of ${fmt(budget.budgetCents)} used this month. Agents are paused until the next calendar month. Raise the monthly budget in Settings to resume now.`,
+      createdTaskId: null,
+      traceId: null,
+    });
+    return { kind: "budget_exhausted", user: userMsg, assistant: sysMsg };
+  }
 
   const startedAt = new Date();
   const [traceRow] = await db

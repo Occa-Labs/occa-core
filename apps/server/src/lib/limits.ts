@@ -34,6 +34,10 @@ export const LIMITS = {
   TOOL_CALL_RESULT_SUMMARY: 4_096, // serialized result summary for tool_call_logs
   TOOL_ERROR_MESSAGE: 2_000, // captured error message stored on logs / row
 
+  // ─── Spend bounds ──────────────────────────────────────────────────────
+  MONTHLY_BUDGET_CENTS_MIN: 100, // $1 floor — a sub-dollar monthly pool is meaningless
+  MONTHLY_BUDGET_CENTS_MAX: 1_000_000, // $10,000/mo ceiling — fat-finger guard, not a billing limit
+
   // ─── Array / count limits ──────────────────────────────────────────────
   TRIGGERS_MAX: 8, // routines: max trigger array
   TAGS_MAX: 20, // task: max tag count

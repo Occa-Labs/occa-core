@@ -1,0 +1,1 @@
+ALTER TABLE "companies" ALTER COLUMN "task_budget_cents" SET DEFAULT 20000;

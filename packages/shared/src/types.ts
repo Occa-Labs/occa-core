@@ -224,6 +224,11 @@ export interface CompanyDTO {
   treasuryAddress: string | null;
   chainsCovered: string[];
 
+  // Operations — operator-domain monthly token-spend pool (US cents).
+  // Covers all token-consuming activity (tasks + chat). Not a per-run cap;
+  // gates the start of new work once month-to-date spend reaches it.
+  monthlyBudgetCents: number;
+
   // State
   pausedAt: string | null;
   pausedReason: string | null;
@@ -277,6 +282,7 @@ export interface UpdateCompanyRequest {
   socialHandles?: Record<string, string>;
   treasuryAddress?: string | null;
   chainsCovered?: string[];
+  monthlyBudgetCents?: number;
 }
 
 export interface PauseCompanyRequest {
@@ -289,6 +295,9 @@ export interface CompanyStats {
   tasksCount: number;
   // Reserved for future Company Brain integration.
   memoryEntriesCount: number;
+  // Month-to-date token spend (US cents) summed live from trace usage —
+  // the draw-down against `monthlyBudgetCents`. Resets each calendar month.
+  budgetSpentCents: number;
 }
 
 export interface CompanyResponse {

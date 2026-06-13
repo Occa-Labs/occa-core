@@ -77,15 +77,6 @@ const CHAT_DENY = [...TASK_TOOLS, "Task", "Workflow", "Skill"];
 // maps to a `timed_out` outcome (parity with openclaw's WAIT_TIMEOUT_MS).
 const TASK_TIMEOUT_MS = 600_000;
 
-// Hard dollar ceiling per task run (`--max-budget-usd`). The deterministic
-// cost cap that bounds the runaway research-loop: an agent that keeps
-// searching/fetching past sufficiency hits this and stops, rather than
-// burning the full 10-minute timeout (a documented agent failure mode). The
-// renderer's soft tool-budget instruction should make a normal task finish
-// well under this — the cap is the backstop, not the target. Chat runs are
-// short by nature and left unbounded.
-const TASK_BUDGET_USD = 0.5;
-
 // Assemble OCCA's persona + skills into a CLAUDE.md so Claude Code loads
 // the agent's identity automatically at session start (cached on its side
 // across turns). Individual files are also shipped verbatim so the agent
@@ -322,7 +313,10 @@ export const claudeCodeAdapter: AgentAdapter = {
         allowedTools: useTools ? TASK_TOOLS : [],
         disallowedTools: useTools ? TASK_DENY : CHAT_DENY,
         timeoutMs: input.waitTimeoutMs ?? (useTools ? TASK_TIMEOUT_MS : undefined),
-        maxBudgetUsd: useTools ? TASK_BUDGET_USD : undefined,
+        // No per-run cost cap — spend is bounded by the company's monthly
+        // budget gate at dispatch time, not by truncating a live run. A
+        // run that has started always finishes (bounded only by timeout).
+        maxBudgetUsd: input.maxBudgetUsd,
       },
       onRunEvent,
     );
@@ -404,7 +398,9 @@ export const claudeCodeAdapter: AgentAdapter = {
         allowedTools: TASK_TOOLS,
         disallowedTools: TASK_DENY,
         timeoutMs: TASK_TIMEOUT_MS,
-        maxBudgetUsd: TASK_BUDGET_USD,
+        // No per-run cost cap — see sendPrompt. Bounded by the monthly
+        // budget gate (at dispatch) + the wall-clock timeout, not by
+        // killing a run mid-flight.
       },
       forwardRunEvent(ctx.onEvent),
       ctx.signal,

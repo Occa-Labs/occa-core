@@ -40,6 +40,7 @@ import {
 import { childLogger } from "../../../lib/logger";
 import { getAdapter } from "../../../lib/adapter-registry";
 import { publishTraceEvent } from "../../../services/trace-events-bus";
+import { getCompanyBudgetStatus } from "../../../services/company-budget";
 import { snapshotDeploymentSkills } from "../../../services/trace-skill-snapshot";
 import {
   nextStatusAfterDispatch,
@@ -125,6 +126,24 @@ export async function dispatchTask(
     log.warn(
       { deploymentId: agentRow.id },
       "agent missing externalAgentId, skipping dispatch",
+    );
+    return;
+  }
+
+  // Monthly token-spend gate. Checked at the START of work — a run already
+  // underway is never truncated. Once month-to-date spend reaches the
+  // company pool, no new task starts until next calendar month. The task
+  // stays in its column and dispatches normally once the budget resets.
+  const budget = await getCompanyBudgetStatus(taskRow.companyId);
+  if (!budget.withinBudget) {
+    log.warn(
+      {
+        companyId: taskRow.companyId,
+        taskId,
+        spentCents: budget.spentCents,
+        budgetCents: budget.budgetCents,
+      },
+      "monthly budget reached, skipping task dispatch",
     );
     return;
   }
