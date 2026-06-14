@@ -6,12 +6,12 @@
 //
 // Usage (from apps/server/):
 //
-//   pnpm exec tsx --env-file=../../.env scripts/trigger-payroll-notif.ts
+//   pnpm exec tsx --env-file=../../.env scripts/trigger-disbursement-notif.ts
 //
 // Picks the first active user-kind company + its CEO deployment. If you
 // have multiple companies, pass the deployment id as arg 1:
 //
-//   pnpm exec tsx --env-file=../../.env scripts/trigger-payroll-notif.ts <deploymentId>
+//   pnpm exec tsx --env-file=../../.env scripts/trigger-disbursement-notif.ts <deploymentId>
 
 import { and, eq, isNull } from "drizzle-orm";
 import { companies, deployments } from "@occa/shared/schema";
@@ -85,8 +85,8 @@ async function main(): Promise<void> {
     companyId: target.companyId,
     userId: target.ownerUserId,
     kind: "treasury_readiness",
-    title: "Payroll ready — 3 agents due",
-    body: "0.1250 SOL across 3 agents pending. Open Treasury and run payroll.",
+    title: "Disbursement ready — 3 agents due",
+    body: "0.1250 SOL across 3 agents pending. Open Treasury and run disbursement.",
     payload: { simulated: true },
     link: "chain:treasury",
   });

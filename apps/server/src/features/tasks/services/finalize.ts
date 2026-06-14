@@ -150,7 +150,7 @@ export async function finalizeTaskDone(
   // the webhook round-trip or RPC.
   //
   // The anchor's result_uri is the URL the publish receiver returns (e.g.
-  // crypoch's live article URL), so the on-chain record links straight to
+  // a published article URL), so the on-chain record links straight to
   // the published artifact. Empty when nothing was published (private work).
   //
   // Anchors every completed deliverable for companies opted into anchoring;

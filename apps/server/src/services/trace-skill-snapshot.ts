@@ -6,7 +6,7 @@
 // Lives in `services/` (legacy spine) because it bridges
 // `features/skills` (data) and trace creation in `features/tasks` /
 // `worker/wakeup` (consumers) — CLAUDE.md forbids feature-to-feature
-// imports. Mirrors `record-episode.ts`.
+// imports.
 //
 // Best-effort: any failure resolves to `[]` so trace open never blocks
 // on this metadata. The trace stays openable; the snapshot is lost.

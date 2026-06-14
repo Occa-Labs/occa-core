@@ -26,7 +26,7 @@ export interface DeliveryResult {
   status: string;
   /**
    * Canonical URL of the published resource, when the receiver returns one
-   * in its 2xx JSON body as `{ "url": "..." }` (e.g. crypoch returns the
+   * in its 2xx JSON body as `{ "url": "..." }` (e.g. a publish target returns the
    * live article URL). Null otherwise. Used to populate the on-chain
    * `result_uri` so provenance links back to the published artifact.
    */
@@ -76,7 +76,7 @@ export async function deliverWebhook(
     }
 
     // Capture the receiver's canonical URL when it returns one in the 2xx
-    // JSON body (e.g. crypoch returns `{ url, slug }`). Best-effort: a
+    // JSON body (e.g. a publish target returns `{ url, slug }`). Best-effort: a
     // non-JSON or url-less body just yields null.
     let resultUri: string | null = null;
     const rawBody = await response.text().catch(() => "");

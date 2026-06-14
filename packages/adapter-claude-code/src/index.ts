@@ -75,7 +75,11 @@ const CHAT_DENY = [...TASK_TOOLS, "Task", "Workflow", "Skill"];
 // runaway tool loop can't pin the worker indefinitely. The dispatcher's
 // AbortSignal is the outer cancel; this is the adapter-side backstop, and it
 // maps to a `timed_out` outcome (parity with openclaw's WAIT_TIMEOUT_MS).
-const TASK_TIMEOUT_MS = 600_000;
+// 20 min. Research-heavy work (read several sources, verify each number,
+// write, self-edit) over a slow link routinely passes 10 min, and the old
+// 600s cap was killing real runs mid-task (error_code "timeout"). Still
+// bounded so a runaway tool loop can't pin the worker forever.
+const TASK_TIMEOUT_MS = 1_200_000;
 
 // Assemble OCCA's persona + skills into a CLAUDE.md so Claude Code loads
 // the agent's identity automatically at session start (cached on its side

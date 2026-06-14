@@ -47,7 +47,7 @@ export function CreateCompanyModal({
             autoFocus
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="e.g. Crypoch"
+            placeholder="e.g. Acme"
             className="h-11 w-full rounded-xl bg-white/8 px-4 text-sm text-white outline-none placeholder:text-white/30 focus:bg-white/12"
           />
         </div>

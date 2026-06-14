@@ -259,11 +259,11 @@ router.post(
       kind,
       title:
         kind === "treasury_readiness"
-          ? "Payroll ready — 3 agents due"
+          ? "Disbursement ready — 3 agents due"
           : `Sample ${kind} notification`,
       body:
         kind === "treasury_readiness"
-          ? "0.1250 SOL across 3 agents pending. Open Treasury and run payroll."
+          ? "0.1250 SOL across 3 agents pending. Open Treasury and run disbursement."
           : "This is a sample notification fired for channel testing.",
       payload: { simulated: true },
       link:

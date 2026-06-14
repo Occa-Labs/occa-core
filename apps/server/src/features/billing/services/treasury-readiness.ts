@@ -1,10 +1,10 @@
 // Treasury readiness scanner — fires a `treasury_readiness` notification
 // when a company has pending payable invoices the operator hasn't yet
-// disbursed via "Run Payroll". Cron-driven, dedupe-aware.
+// disbursed via "Run Disbursement". Cron-driven, dedupe-aware.
 //
 // Why not auto-execute? Phase 1 design decision #7 (ratified 2026-05-07)
 // keeps Disbursement signing operator-only by intent. Notifications are
-// the readiness signal; the operator still clicks Run Payroll. See
+// the readiness signal; the operator still clicks Run Disbursement. See
 // [[project_phase1_treasury_design]] for the trust model.
 //
 // Dedupe: at most one treasury_readiness notification per company per
@@ -41,7 +41,7 @@ export async function scanTreasuryReadiness(): Promise<ScanSummary> {
   };
 
   // Anchored user companies (those with on-chain Registry presence). Only
-  // anchored companies can run payroll, so scanning others is wasted.
+  // anchored companies can run disbursement, so scanning others is wasted.
   const rows = await db
     .select({
       id: companies.id,
@@ -113,8 +113,8 @@ async function mostRecentForCompany(companyId: string): Promise<Date | null> {
 }
 
 function titleFor(payable: number, blocked: number): string {
-  if (payable > 0 && blocked === 0) return `Payroll ready — ${payable} agent${payable === 1 ? "" : "s"} due`;
-  if (payable > 0 && blocked > 0) return `Payroll ready — ${payable} due, ${blocked} blocked`;
+  if (payable > 0 && blocked === 0) return `Disbursement ready — ${payable} agent${payable === 1 ? "" : "s"} due`;
+  if (payable > 0 && blocked > 0) return `Disbursement ready — ${payable} due, ${blocked} blocked`;
   return `${blocked} agent${blocked === 1 ? "" : "s"} need a receiving address`;
 }
 
@@ -126,7 +126,7 @@ function bodyFor(
   const sol = (totalLamports / 1_000_000_000).toFixed(4);
   const main =
     payable > 0
-      ? `${sol} SOL across ${payable} agent${payable === 1 ? "" : "s"} pending. Click to open Treasury and run payroll.`
+      ? `${sol} SOL across ${payable} agent${payable === 1 ? "" : "s"} pending. Click to open Treasury and run disbursement.`
       : "";
   const blockedNote =
     blocked > 0

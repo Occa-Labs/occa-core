@@ -197,7 +197,13 @@ export async function dispatchTask(
     },
   });
   const message = renderTaskPrompt(spec);
-  const sessionKey = `agent:${agentRow.externalAgentId}:task:${traceId}`;
+  // Keyed by TASK, not trace. The Claude session id is sha1(sessionKey), and
+  // runClaude resumes that session before falling back to create — so a retry
+  // of the same task lands on the same session and `--resume` continues the
+  // prior transcript instead of re-fetching from scratch. Survives timeouts
+  // and dropped connections: work done before the interruption is preserved.
+  // (Matches the adapter's own fallback key, which already uses taskId.)
+  const sessionKey = `agent:${agentRow.externalAgentId}:task:${taskRow.id}`;
 
   const flushHandle = createTraceEventFlusher({
     companyId: taskRow.companyId,
@@ -495,7 +501,7 @@ export async function dispatchTask(
   });
 
   // Whether this `review` landing is a delegated deliverable awaiting an
-  // editorial verdict from the Head that delegated it. Excluded: a Head
+  // review verdict from the Head that delegated it. Excluded: a Head
   // parked waiting on its own delegated children (`delegationsSpawned`),
   // user-created root tasks (no `createdByDeploymentId`), and the
   // degenerate self-review case.
@@ -508,7 +514,7 @@ export async function dispatchTask(
 
   if (nextStatus === "done") {
     // Full task-completion pipeline — auto-save, billing, webhook
-    // publish, coverage episode, and the parent/dependent cascade.
+    // publish, and the parent/dependent cascade.
     void finalizeTaskDone({
       taskId: taskRow.id,
       deliverable: cleanReply,
@@ -529,7 +535,7 @@ export async function dispatchTask(
       log.error({ err, taskId: taskRow.id }, "cascadeOnTaskDone failed");
     });
     // Auto-reviewer: a delegated deliverable that self-routed to
-    // `review` has a Head waiting to give it an editorial verdict.
+    // `review` has a Head waiting to give it a review verdict.
     // Hand it off so the autonomous loop does not stall here.
     if (awaitsHeadReview) {
       void enqueueReviewDispatch(taskRow.id).catch((err) => {

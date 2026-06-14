@@ -1,5 +1,5 @@
 // Treasury readiness cron — fires `scanTreasuryReadiness()` hourly so
-// the operator gets an up-to-date "payroll ready" signal without manual
+// the operator gets an up-to-date "disbursement ready" signal without manual
 // polling. Mirrors daily-anchor-cron's start/stop pattern; server
 // lifecycle hooks own the timer.
 //

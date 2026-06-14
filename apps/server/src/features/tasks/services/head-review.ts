@@ -1,11 +1,11 @@
 // Auto-reviewer. Resolves a delegated deliverable that landed in
-// `review` — without this, a task a news writer self-routes to review
+// `review` — without this, a task an agent self-routes to review
 // via [[OCCA:REVIEW]] has no resolver and the autonomous loop stalls.
 //
 // Flow: the dispatcher enqueues `review.dispatch` for a delegated task
 // that landed in `review`. This module wakes the Head that delegated it
 // (`task.createdByDeploymentId`), shows it the deliverable, and asks for
-// an editorial verdict via a [[OCCA:REVIEW_VERDICT]] block:
+// a review verdict via a [[OCCA:REVIEW_VERDICT]] block:
 //   - approve → run the full done-path (finalizeTaskDone) → published
 //   - revise  → bounce back to the writer with the Head's feedback
 // Capped at MAX_REVIEW_ROUNDS Head reviews; past the cap the deliverable
@@ -65,7 +65,7 @@ const REVIEW_VERDICT_CONTRACT = [
   "[[OCCA:REVIEW_VERDICT]]",
   "{",
   '  "decision": "approve" | "revise" | "reject",',
-  '  "feedback": "<your editorial note>"',
+  '  "feedback": "<your review note>"',
   "}",
   "[[/OCCA:REVIEW_VERDICT]]",
   "",
@@ -343,7 +343,7 @@ export async function dispatchHeadReview(reviewTaskId: string): Promise<void> {
 }
 
 // Reject handler — extracted so the main flow stays a verdict switch.
-// Archives the task and posts an editorial-killed comment so the trail
+// Archives the task and posts a review-killed comment so the trail
 // of "why didn't this publish?" is on the task itself, not just in
 // task_events. Importantly does NOT call finalizeTaskDone (which fires
 // webhooks) — a rejected piece must never reach downstream subscribers.
@@ -515,7 +515,7 @@ function parseVerdict(reply: string): Verdict {
     // publish. Reject the piece so a deliverable that nobody approved
     // can never reach downstream subscribers. Previously this defaulted
     // to approve, which let badly-formed reviewer replies pass garbage
-    // through to crypoch.com.
+    // through to the publish target.
     log.warn("no REVIEW_VERDICT block in reviewer reply, defaulting to reject");
     return {
       decision: "reject",
@@ -589,7 +589,7 @@ function buildReviewPrompt(args: BuildReviewPromptArgs): string {
   const brief = taskBriefText(task);
   const lines: string[] = [
     `Hello ${reviewerName}. A deliverable from a task you delegated is `,
-    "ready for your editorial review.",
+    "ready for your review.",
     "",
     `Task: ${task.title}`,
   ];
@@ -612,8 +612,8 @@ function buildReviewPrompt(args: BuildReviewPromptArgs): string {
     deliverable,
     "--- END DELIVERABLE ---",
     "",
-    "Judge it as an editor: accuracy, sourcing, clarity, framing, and fit",
-    "with the brief. Hold a weak or unsupported piece; approve a sound one.",
+    "Judge the deliverable against the brief and acceptance criteria:",
+    "accuracy, clarity, completeness, and fit. Hold a weak one; approve a sound one.",
     "",
     REVIEW_VERDICT_CONTRACT,
   );
@@ -627,7 +627,7 @@ function buildReviseComment(
   maxRounds: number,
 ): string {
   return [
-    `Editorial review (round ${round} of ${maxRounds}) by ${reviewerName} — ` +
+    `Review (round ${round} of ${maxRounds}) by ${reviewerName} — ` +
       "revision requested before this can be published:",
     "",
     feedback || "(no specific feedback provided)",

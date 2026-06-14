@@ -23,6 +23,7 @@ export const LIMITS = {
   DESCRIPTION_SHORT: 2_000, // brand voice, audience descriptions, acceptance criteria
   DESCRIPTION: 4_000, // task description, comment body
   DESCRIPTION_LONG: 4_096, // routine description
+  DELEGATE_BRIEF: 16_000, // editor→writer delegate brief; a thorough brief is the system working — never block a delegate over length
   CHAT_MESSAGE: 8_000, // agent chat message
   WORKSPACE_FILE_CONTENT: 100_000, // editable workspace file (AGENTS.md, SOUL.md, etc.)
 

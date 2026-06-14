@@ -169,7 +169,7 @@ function FillStage({
         <input
           value={label}
           onChange={(e) => setLabel(e.target.value)}
-          placeholder={`e.g. ${entry.displayName} (Crypoch)`}
+          placeholder={`e.g. ${entry.displayName}`}
           className="w-full px-3 py-2 rounded-md bg-white/5 border border-white/10 text-[13px] text-white/90 placeholder:text-white/30 focus:outline-none focus:border-white/30"
         />
         <p className="text-[10px] text-white/40 mt-1">

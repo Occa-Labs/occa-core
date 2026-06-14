@@ -37,7 +37,7 @@ export interface DeliverTaskWebhooksInput {
 
 export interface DeliverTaskWebhooksResult {
   /** Canonical URL returned by the first webhook receiver that provided
-   *  one (e.g. crypoch's live article URL). Null when nothing published or
+   *  one (e.g. a published article URL). Null when nothing published or
    *  no receiver returned a URL. Used to populate on-chain result_uri. */
   resultUri: string | null;
 }

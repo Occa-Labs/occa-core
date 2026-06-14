@@ -26,7 +26,10 @@ import {
 const ROLE_WHITELIST_MAX = 32;
 
 const titleField = z.string().trim().min(1).max(LIMITS.TITLE);
-const descriptionField = z.string().trim().min(1).max(LIMITS.DESCRIPTION);
+// A delegate brief is an editor's full handoff to a writer (sources to
+// verify, must-cover points, structure). A thorough brief is the system
+// working — generous cap so a long brief never blocks the delegate.
+const descriptionField = z.string().trim().min(1).max(LIMITS.DELEGATE_BRIEF);
 const acceptanceField = z
   .string()
   .trim()

@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, isNull } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, lt } from "drizzle-orm";
 import { ERROR_CODES } from "@occa/shared/error-codes";
 import { db } from "../../../infra/database/client";
 import { tasks, traces } from "@occa/shared/schema";
@@ -42,38 +42,60 @@ export async function reapOrphans(): Promise<void> {
   }
 }
 
-// Enqueue any task that has an agent assigned but never got picked up by the
-// worker. Covers two cases:
-//   1. Tasks created before pg-boss existed (legacy fire-and-forget could fail
-//      silently — job was never persisted).
-//   2. Tasks reverted by the reaper above — user expects auto-retry on restart.
+// Re-dispatch tasks that have an agent assigned but no live run — reverted to
+// `todo` by the reaper (crash/restart) or never picked up. With `idleMs` set,
+// only tasks untouched that long are swept, so the periodic call never races a
+// task that is about to dispatch normally.
 //
-// Safe to run repeatedly: pg-boss `singletonKey: taskId` dedups against any
-// active/queued job, so this is idempotent.
-export async function enqueuePendingTasks(): Promise<void> {
+// `dedupe: false` is the crux. A crashed run leaves its `task.dispatch` job
+// marked `active` (singletonKey = taskId) until pg-boss expires it ~15 min
+// later, so a plain re-enqueue is silently dropped by the dedup — exactly how
+// a task gets stranded in `todo`. A fresh key sidesteps that; dispatchTask
+// re-checks dispatchability, so a late retry of the stale job is a no-op.
+export async function enqueuePendingTasks(opts?: {
+  idleMs?: number;
+}): Promise<void> {
+  const conditions = [
+    eq(tasks.status, "todo"),
+    isNotNull(tasks.assignedDeploymentId),
+    isNull(tasks.linkedTraceId),
+  ];
+  if (opts?.idleMs != null) {
+    conditions.push(lt(tasks.updatedAt, new Date(Date.now() - opts.idleMs)));
+  }
+
   const pending = await db
     .select({ id: tasks.id })
     .from(tasks)
-    .where(
-      and(
-        eq(tasks.status, "todo"),
-        isNotNull(tasks.assignedDeploymentId),
-        isNull(tasks.linkedTraceId),
-      ),
-    );
+    .where(and(...conditions));
 
   if (pending.length === 0) return;
 
   let enqueued = 0;
   for (const row of pending) {
     try {
-      await enqueueTaskDispatch(row.id);
+      await enqueueTaskDispatch(row.id, { dedupe: false });
       enqueued++;
     } catch (err) {
-      log.error({ err }, `[bootstrap] enqueue failed for ${row.id}`);
+      log.error({ err }, `[recover] enqueue failed for ${row.id}`);
     }
   }
-  log.info(
-    `[bootstrap] enqueued ${enqueued}/${pending.length} pending task(s)`,
-  );
+  log.info(`[recover] re-dispatched ${enqueued}/${pending.length} task(s)`);
+}
+
+// A task normally leaves `todo` within seconds of dispatch. One sitting in
+// `todo` with an agent but no trace for minutes is stuck — boot recovery
+// missed it, or a stale job's dedup ate its re-enqueue. Sweep periodically so
+// no agent is ever silently parked; this is the safety net beyond boot.
+const STUCK_TASK_IDLE_MS = 3 * 60 * 1000;
+const SWEEP_INTERVAL_MS = 2 * 60 * 1000;
+
+export function startStuckTaskSweep(): () => void {
+  const timer = setInterval(() => {
+    void enqueuePendingTasks({ idleMs: STUCK_TASK_IDLE_MS }).catch((err) =>
+      log.error({ err }, "[recover] stuck-task sweep failed"),
+    );
+  }, SWEEP_INTERVAL_MS);
+  log.info("[recover] stuck-task sweep started (every 2m, idle >= 3m)");
+  return () => clearInterval(timer);
 }

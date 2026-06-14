@@ -8,8 +8,7 @@
     "gc-orphans": "tsx scripts/gc-orphan-openclaw-agents.ts",
     "cancel-legacy-hire-approvals": "tsx --env-file=../../.env scripts/cancel-legacy-hire-approvals.ts",
     "smoke:workflows": "tsx --env-file=../../.env scripts/smoke-workflows.ts",
-    "smoke:workflow-engine": "tsx --env-file=../../.env scripts/smoke-workflow-engine.ts",
-    "smoke:verification": "tsx scripts/smoke-verification.ts"
+    "smoke:workflow-engine": "tsx --env-file=../../.env scripts/smoke-workflow-engine.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

@@ -1641,7 +1641,7 @@ export const companyTools = pgTable(
     // "shopify", "mcp". Free text since handlers are code-discovered;
     // FE catalog endpoint enumerates the valid set.
     type: text("type").notNull(),
-    // Operator-facing nickname ("Crypoch X account", "Internal Notion").
+    // Operator-facing nickname ("Company X account", "Internal Notion").
     label: text("label").notNull(),
     // AES-256-GCM encrypted JSON blob. Shape:
     //   { alg, iv, ciphertext, tag, kid }

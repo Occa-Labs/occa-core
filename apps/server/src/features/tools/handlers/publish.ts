@@ -1,11 +1,11 @@
 // Publish handler — ships a finished deliverable to a configured receiver and
 // returns its public URL. The receiver is any OCCA-compatible endpoint that
 // accepts the standard task.completed payload (HMAC-signed) and answers with
-// `{ url }` (e.g. crypoch's /api/publish).
+// `{ url }` (e.g. a company's /api/publish).
 //
 // Two side benefits make this the cleanest publish UX for agents:
-//   1. It resolves the calling agent's role so role-based receivers (crypoch
-//      maps role → section) route correctly with no extra input.
+//   1. It resolves the calling agent's role so role-based receivers (those
+//      that map role → section) route correctly with no extra input.
 //   2. On success it records the returned URL on the agent's current task as
 //      `result_uri`, so the on-chain trace links to the live work — the agent
 //      doesn't need to emit a separate marker.
@@ -213,7 +213,7 @@ export const publishHandler: ToolHandler = {
       },
     },
   },
-  // A test ping: crypoch-style receivers short-circuit task.id === "test" with
+  // A test ping: well-behaved receivers short-circuit task.id === "test" with
   // a 200 before doing any real work, so this confirms reachability + secret.
   testConnection: async ({ credentials }) => {
     const parsed = credentialsSchema.safeParse(credentials);

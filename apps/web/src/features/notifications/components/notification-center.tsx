@@ -195,55 +195,59 @@ function NotificationPanel({
     <div
       className={cn(
         "absolute right-0 top-[calc(100%+8px)] w-90",
-        "flex flex-col gap-2",
         "origin-top-right",
         "animate-in fade-in zoom-in-95 duration-200",
       )}
     >
-      <div className="flex items-center justify-between">
-        <Badge variant="info" size="md" className="normal-case tracking-normal">
-          <Bell className="h-3.5 w-3.5" />
-          Notifications
-        </Badge>
-        {unreadCount > 0 && (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onReadAll}
-            disabled={readAllPending}
-            className="h-7 text-[11px] text-white/60 hover:text-white"
-          >
-            <Check className="h-3 w-3" />
-            Mark all read
-          </Button>
-        )}
-      </div>
-
-      {notifications.length === 0 ? (
-        <Card
-          variant="elevated"
-          padding="sm"
-          className="text-center text-[12px] text-white/40"
-        >
-          No notifications.
-        </Card>
-      ) : (
-        <div
-          className={cn(
-            "flex max-h-[60vh] flex-col gap-2 overflow-y-auto",
-            "mask-[linear-gradient(to_bottom,black_85%,transparent_100%)]",
+      {/* One opaque frosted panel holds every row, so the busy board behind
+          it is blocked once instead of bleeding through each translucent
+          card and the gaps between them. Rows sit on this surface. */}
+      <Card
+        variant="elevated"
+        padding="sm"
+        className="flex max-h-[70vh] flex-col gap-2"
+      >
+        <div className="flex items-center justify-between px-1">
+          <Badge variant="info" size="md" className="normal-case tracking-normal">
+            <Bell className="h-3.5 w-3.5" />
+            Notifications
+          </Badge>
+          {unreadCount > 0 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onReadAll}
+              disabled={readAllPending}
+              className="h-7 text-[11px] text-white/60 hover:text-white"
+            >
+              <Check className="h-3 w-3" />
+              Mark all read
+            </Button>
           )}
-        >
-          {notifications.map((n) => (
-            <NotificationCard
-              key={n.id}
-              notification={n}
-              onClick={onCardClick}
-              onDismiss={onDismiss}
-            />
-          ))}
         </div>
-      )}
+
+        {notifications.length === 0 ? (
+          <div className="py-6 text-center text-[12px] text-white/40">
+            No notifications.
+          </div>
+        ) : (
+          <div
+            className={cn(
+              "flex min-h-0 flex-col gap-0.5 overflow-y-auto",
+              "mask-[linear-gradient(to_bottom,black_92%,transparent_100%)]",
+            )}
+          >
+            {notifications.map((n) => (
+              <NotificationCard
+                key={n.id}
+                notification={n}
+                onClick={onCardClick}
+                onDismiss={onDismiss}
+              />
+            ))}
+          </div>
+        )}
+      </Card>
     </div>
   );
 }
@@ -264,49 +268,47 @@ function NotificationCard({
   const unread = notification.readAt === null;
   const time = relativeTime(notification.createdAt);
   return (
-    <Card
-      variant="elevated"
-      padding="sm"
-      interactive
+    <div
       onClick={() => onClick(notification)}
-      className="select-none group"
+      className={cn(
+        "group flex cursor-pointer select-none items-start gap-3",
+        "rounded-xl p-2.5 transition-colors hover:bg-white/[0.06]",
+      )}
     >
-      <div className="flex items-start gap-3">
-        <span
-          aria-hidden
-          className={cn(
-            "mt-1 h-2 w-2 shrink-0 rounded-full",
-            unread ? "bg-sky-400" : "bg-white/15",
-          )}
-        />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-baseline gap-2">
-            <span className="truncate text-[13px] font-semibold text-white/90">
-              {notification.title}
-            </span>
-            <span className="ml-auto shrink-0 text-[11px] text-white/40">
-              {time}
-            </span>
-          </div>
-          {notification.body && (
-            <div className="mt-0.5 line-clamp-2 text-[12px] text-white/60">
-              {notification.body}
-            </div>
-          )}
+      <span
+        aria-hidden
+        className={cn(
+          "mt-1 h-2 w-2 shrink-0 rounded-full",
+          unread ? "bg-sky-400" : "bg-white/15",
+        )}
+      />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-baseline gap-2">
+          <span className="truncate text-[13px] font-semibold text-white/90">
+            {notification.title}
+          </span>
+          <span className="ml-auto shrink-0 text-[11px] text-white/40">
+            {time}
+          </span>
         </div>
-        <button
-          type="button"
-          aria-label="Dismiss"
-          onClick={(e) => onDismiss(e, notification.id)}
-          className={cn(
-            "shrink-0 rounded p-1 text-white/30 transition-colors cursor-pointer",
-            "opacity-0 group-hover:opacity-100",
-            "hover:bg-white/10 hover:text-white/80",
-          )}
-        >
-          <X className="h-3 w-3" />
-        </button>
+        {notification.body && (
+          <div className="mt-0.5 line-clamp-2 text-[12px] text-white/60">
+            {notification.body}
+          </div>
+        )}
       </div>
-    </Card>
+      <button
+        type="button"
+        aria-label="Dismiss"
+        onClick={(e) => onDismiss(e, notification.id)}
+        className={cn(
+          "shrink-0 rounded p-1 text-white/30 transition-colors cursor-pointer",
+          "opacity-0 group-hover:opacity-100",
+          "hover:bg-white/10 hover:text-white/80",
+        )}
+      >
+        <X className="h-3 w-3" />
+      </button>
+    </div>
   );
 }

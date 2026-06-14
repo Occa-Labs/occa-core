@@ -98,7 +98,7 @@ export function WebhookFormModal({
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="crypoch publish"
+            placeholder="Publish"
             className={inputClass}
           />
         </Field>
@@ -108,7 +108,7 @@ export function WebhookFormModal({
             type="url"
             value={targetUrl}
             onChange={(e) => setTargetUrl(e.target.value)}
-            placeholder="https://crypoch.com/api/publish"
+            placeholder="https://example.com/api/publish"
             className={inputClass}
           />
           {targetUrl.length > 0 && !validUrl && (

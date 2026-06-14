@@ -77,14 +77,23 @@ export function useBoardData(enabled: boolean, includeArchived: boolean): BoardD
   };
   const archivedColumn = toColumnData(archived, counts.data?.archived);
 
-  const allLoaded = [
-    ...columns.todo.tasks,
-    ...columns.in_progress.tasks,
-    ...columns.attention.tasks,
-    ...columns.review.tasks,
-    ...columns.done.tasks,
-    ...archivedColumn.tasks,
-  ];
+  // Dedupe by id: a task mid-status-transition can sit in two column caches
+  // at once (stale source column + fresh destination column), so the raw
+  // concat can repeat an id. The Map keeps the last (freshest) copy per id —
+  // `allLoaded` is a union and must be unique, else `.filter` consumers (e.g.
+  // child-task lists) render two children with the same React key.
+  const allLoaded = Array.from(
+    new Map(
+      [
+        ...columns.todo.tasks,
+        ...columns.in_progress.tasks,
+        ...columns.attention.tasks,
+        ...columns.review.tasks,
+        ...columns.done.tasks,
+        ...archivedColumn.tasks,
+      ].map((t) => [t.id, t]),
+    ).values(),
+  );
 
   // Active total counts every non-archived status (including `blocked`, which
   // has no column) so the subtitle matches reality, not just the 4 columns.

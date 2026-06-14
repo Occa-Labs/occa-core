@@ -10,7 +10,7 @@ const log = childLogger("server");
 import { ensureSchema } from "./infra/database/ensure-schema";
 import { backfillDeploymentSeats } from "./features/agents/services/seat-backfill";
 import { seedOccaDefaultSkills } from "./features/skills/services/seed-occa-defaults";
-import { enqueuePendingTasks, reapOrphans } from "./features/tasks/services/orphan-reaper";
+import { enqueuePendingTasks, reapOrphans, startStuckTaskSweep } from "./features/tasks/services/orphan-reaper";
 import { getBoss, stopBoss } from "./infra/queue/boss";
 import { registerTaskWorker } from "./infra/queue/task-worker";
 import { registerWorkflowWorker } from "./infra/queue/workflow-worker";
@@ -171,13 +171,16 @@ async function main() {
   startDailyAnchorCron();
   // Hourly scan for companies with pending payable invoices → emit a
   // `treasury_readiness` notification (dedupe-aware, at most one per
-  // company per 24h). Operator still clicks Run Payroll — this is just
+  // company per 24h). Operator still clicks Run Disbursement — this is just
   // the signal. See [[project_phase1_treasury_design]] decision #7.
   startTreasuryReadinessCron();
 
   // Auto-enqueue any task with an assigned agent that never got dispatched
   // (created before pg-boss existed, or reverted by the reaper above).
   await enqueuePendingTasks();
+  // ...then keep sweeping at runtime so a task can never sit stranded in
+  // `todo` (missed boot enqueue, stale-job dedup, or a mid-flight restart).
+  startStuckTaskSweep();
 
   // Spawn long-poll loops for any enabled Telegram channels saved in
   // `deployment_channels`. Reload on upsert/delete is handled by the
