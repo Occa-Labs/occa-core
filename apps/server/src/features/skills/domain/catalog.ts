@@ -63,11 +63,11 @@ export const ROLE_DEFAULT_SKILLS: Partial<Record<AgentRole, string[]>> = {
   ciso: [
     "https://github.com/alirezarezvani/claude-skills/tree/main/c-level-advisor/ciso-advisor",
   ],
-  // Crypoch news lane — journalism craft skills for the News Writer. The
-  // five jamditis skills are use-as-is; last30days backs the "what
-  // happened recently" radar. `crypto-news-domain` is the self-authored
-  // crypto-native layer (on-chain literacy, naming, framing) that the
-  // generic journalism skills lack. See glyph-design.md §12.
+  // Generic journalism craft skills for any News Writer role (jamditis
+  // set + last30days recency radar). Company-specific layers (e.g. a
+  // crypto-native domain skill) are NOT baked here — the company assigns
+  // those to its agents via the CEO skill-library flow, keeping core
+  // domain-neutral.
   news_writer: [
     "https://github.com/jamditis/claude-skills-journalism/tree/master/journalism-core/skills/fact-check-workflow",
     "https://github.com/jamditis/claude-skills-journalism/tree/master/journalism-core/skills/ai-writing-detox",
@@ -75,7 +75,6 @@ export const ROLE_DEFAULT_SKILLS: Partial<Record<AgentRole, string[]>> = {
     "https://github.com/jamditis/claude-skills-journalism/tree/master/journalism-core/skills/editorial-workflow",
     "https://github.com/jamditis/claude-skills-journalism/tree/master/journalism-core/skills/social-media-intelligence",
     "https://github.com/mvanhorn/last30days-skill/tree/main/skills/last30days",
-    "https://github.com/Occa-Labs/occa-skills/tree/master/crypto-news-domain",
   ],
 };
 

@@ -65,12 +65,6 @@ import { shouldBypassReport } from "../../../services/delegation/policy";
 import { getTier } from "@occa/shared/role-catalog";
 import { cascadeOnTaskDone } from "./cascade";
 import { finalizeTaskDone } from "./finalize";
-import {
-  roleRequiresVerification,
-  verifyTaskDeliverable,
-  type GateVerdict,
-} from "../../../services/verify-task-deliverable";
-import { bounceTaskToAgent } from "./comments";
 import { appendTaskEventBestEffort } from "./events";
 import { enqueueReviewDispatch } from "../../../infra/queue/review-worker";
 
@@ -441,29 +435,8 @@ export async function dispatchTask(
     computedStatus === "done" &&
     !wasReported;
 
-  // Verification gate: a news writer's deliverable must clear the claims
-  // verifier before it settles. Runs for both `done`- and `review`-bound
-  // deliverables — an agent that self-routes to review via [[OCCA:REVIEW]]
-  // must not bypass the gate. A failure forces `review`; the gate then
-  // either bounces the task back to the agent for another attempt, or —
-  // once the retry budget is spent — parks it for a human.
   const cleanReply = stripOccaMarkers(result.reply);
-  let gateVerdict: GateVerdict | null = null;
-  if (
-    (computedStatus === "done" || computedStatus === "review") &&
-    roleRequiresVerification(agentRow.role)
-  ) {
-    gateVerdict = await verifyTaskDeliverable({
-      companyId: taskRow.companyId,
-      taskId: taskRow.id,
-      traceId,
-      cleanReply,
-    });
-  }
-  const verificationFailed = gateVerdict != null && !gateVerdict.pass;
-
-  const nextStatus =
-    missingRootReport || verificationFailed ? "review" : computedStatus;
+  const nextStatus = missingRootReport ? "review" : computedStatus;
   log.info(
     {
       taskId: taskRow.id,
@@ -476,7 +449,6 @@ export async function dispatchTask(
       computedStatus,
       nextStatus,
       missingRootReport,
-      verificationFailed,
     },
     "dispatch outcome summary",
   );
@@ -522,36 +494,14 @@ export async function dispatchTask(
     createdAt: finishedAt.toISOString(),
   });
 
-  // Verification bounce: re-open the task and re-dispatch it to its
-  // agent with the failure detail. Runs after closeSucceededTrace so the
-  // trace is fully closed before the task transitions back to `todo`.
-  if (gateVerdict?.action === "bounce") {
-    await bounceTaskToAgent({
-      taskId: taskRow.id,
-      companyId: taskRow.companyId,
-      assignedDeploymentId: agentRow.id,
-      body: gateVerdict.failureSummary ?? "Verification failed.",
-    }).catch((err) => {
-      // A failed bounce leaves the task in `review` (the state
-      // closeSucceededTrace already set) — a safe park, not a crash.
-      log.error(
-        { err, taskId: taskRow.id },
-        "verification bounce failed; task left in review",
-      );
-    });
-  }
-
   // Whether this `review` landing is a delegated deliverable awaiting an
-  // editorial verdict from the Head that delegated it. Excluded: a
-  // gate-parked task (`verificationFailed` — a failed automated
-  // verification is a genuine "needs a human" signal, not an editorial
-  // call), a Head parked waiting on its own delegated children
-  // (`delegationsSpawned`), user-created root tasks (no
-  // `createdByDeploymentId`), and the degenerate self-review case.
+  // editorial verdict from the Head that delegated it. Excluded: a Head
+  // parked waiting on its own delegated children (`delegationsSpawned`),
+  // user-created root tasks (no `createdByDeploymentId`), and the
+  // degenerate self-review case.
   const awaitsHeadReview =
     nextStatus === "review" &&
     needsReview &&
-    !verificationFailed &&
     delegationsSpawned === 0 &&
     taskRow.createdByDeploymentId !== null &&
     taskRow.createdByDeploymentId !== agentRow.id;
@@ -570,12 +520,11 @@ export async function dispatchTask(
         "finalizeTaskDone failed (non-fatal)",
       );
     });
-  } else if (nextStatus === "review" && gateVerdict?.action !== "bounce") {
+  } else if (nextStatus === "review") {
     // A review task can't unblock dependents, but it must still bubble:
     // a subordinate that emitted [[OCCA:REVIEW]] is signalling "please
     // look before I close", and for a chat-origin task the cascade
-    // posts a CEO synthesis ("wants review"). A bounced task is being
-    // re-dispatched, not handed up — it is excluded above.
+    // posts a CEO synthesis ("wants review").
     void cascadeOnTaskDone({ taskId: taskRow.id }).catch((err) => {
       log.error({ err, taskId: taskRow.id }, "cascadeOnTaskDone failed");
     });

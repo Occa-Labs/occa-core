@@ -45,10 +45,6 @@ export interface WakeTextContext {
   // Direct reports of the woken agent. Rendered into a routine wake so
   // an orchestrator has the valid `targetAgentId` values to delegate to.
   subordinates?: { id: string; name: string; role: string }[];
-  // Recent episodes of the company's own coverage — date, category,
-  // title. A routine orchestrator reads this to vary the next slate
-  // rather than repeat a topic already covered.
-  recentCoverage?: { date: string; category: string; title: string }[];
 }
 
 // Inlined into every routine wake. A routine-woken orchestrator (CEO,
@@ -97,18 +93,6 @@ export function buildWakeText(
     lines.push("");
     lines.push(`Standing routine: ${ctx.routineTitle}`);
     if (ctx.routineMandate) lines.push(ctx.routineMandate);
-    // The company's own recent coverage — so the orchestrator can vary
-    // the next slate instead of repeating a topic.
-    if (ctx.recentCoverage && ctx.recentCoverage.length > 0) {
-      lines.push("");
-      lines.push(
-        "Recently published — vary the next slate from this, do not " +
-          "repeat a topic or lean on a category already run heavily:",
-      );
-      for (const c of ctx.recentCoverage) {
-        lines.push(`  - ${c.date} [${c.category}] ${c.title}`);
-      }
-    }
     lines.push("");
     lines.push(DELEGATION_CONTRACT);
     if (ctx.subordinates && ctx.subordinates.length > 0) {

@@ -7,7 +7,7 @@
 // because it bridges `features/tasks` (the dispatcher + task events)
 // and `features/webhooks` — CLAUDE.md forbids feature-to-feature
 // imports, so the bridge sits outside both, mirroring
-// `auto-save-document.ts` and `verify-task-deliverable.ts`.
+// `auto-save-document.ts`.
 
 import { eq } from "drizzle-orm";
 import { companies } from "@occa/shared/schema";

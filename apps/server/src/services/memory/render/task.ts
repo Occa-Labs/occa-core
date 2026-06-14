@@ -20,10 +20,6 @@ import {
   renderRootReportBlock,
 } from "../../delegation/policy";
 import { listTaskCommentsByTask } from "../../../features/tasks/repositories/task-comments";
-import {
-  CLAIMS_CONTRACT_PROMPT,
-  roleRequiresVerification,
-} from "../../../features/workflows/verification/domain/contract";
 import type { ContextSpec, SurfacePayload } from "../spec";
 
 // Max chars per completed-child preview surfaced to the parent agent.
@@ -434,14 +430,6 @@ export function renderTaskPrompt(spec: ContextSpec): string {
   const relatedDocsBlock = formatRelevantDocuments(spec);
   const workspaceFilesBlock = formatWorkspaceFiles(spec);
   const commentsBlock = renderCommentsBlock(s.comments);
-  // Verified-role agents (e.g. news_writer) must emit a machine-checked
-  // <!--occa:claims--> block or the deliverable is auto-rejected by the
-  // verification gate. The full contract is inlined into the prompt
-  // because agents do not reliably open workspace files or skills at
-  // task time (proven on the gateway, 2026-05-18).
-  const claimsContractBlock = roleRequiresVerification(spec.agent.role)
-    ? CLAIMS_CONTRACT_PROMPT
-    : null;
   const acceptance = s.acceptanceCriteria
     ? [``, `Acceptance criteria: ${s.acceptanceCriteria}`]
     : [];
@@ -643,7 +631,6 @@ export function renderTaskPrompt(spec: ContextSpec): string {
     ...(s.completedChildren.length > 0
       ? [renderCompletedChildrenBlock(s.completedChildren), ``]
       : []),
-    ...(claimsContractBlock ? [claimsContractBlock, ``] : []),
     ...(commentsBlock ? [commentsBlock, ``] : []),
     `---`,
     ``,

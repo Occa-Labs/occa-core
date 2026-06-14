@@ -297,9 +297,6 @@ export const hermesAdapter: AgentAdapter = {
       subordinates: sessionParams?.subordinates as
         | { id: string; name: string; role: string }[]
         | undefined,
-      recentCoverage: sessionParams?.recentCoverage as
-        | { date: string; category: string; title: string }[]
-        | undefined,
     });
 
     const messages: ChatMessage[] = [

@@ -4,7 +4,7 @@
 //   - autoSaveTaskAsDocument        — persist the deliverable as a document
 //   - ensureInvoiceForCompletedTask — bill the company (idempotent)
 //   - deliverTaskWebhooks           — POST to any matching company webhook
-//   - recordEpisode                 — log a coverage episode (news_writer)
+//   - commit_trace anchor           — on-chain provenance for opted-in companies
 //   - cascadeOnTaskDone             — wake parents / unblock dependents
 //
 // Lives in features/tasks/services alongside the dispatcher; the
@@ -12,13 +12,13 @@
 // cross-feature reach that mirrors the dispatcher's existing (known,
 // pre-existing) exception — kept identical so behaviour does not drift.
 
+import { createHash } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { agentIdentities, deployments, tasks } from "@occa/shared/schema";
 import { db } from "../../../infra/database/client";
 import { childLogger } from "../../../lib/logger";
 import { autoSaveTaskAsDocument } from "../../../services/auto-save-document";
 import { deliverTaskWebhooks } from "../../../services/deliver-task-webhooks";
-import { recordEpisode } from "../../../services/record-episode";
 import { ensureInvoiceForCompletedTask } from "../../billing/services/invoice-on-task-complete";
 // Cross-feature reach into the chain feature — mirrors the pre-existing
 // billing exception above. The on-chain anchor is a done-path side-effect
@@ -26,7 +26,7 @@ import { ensureInvoiceForCompletedTask } from "../../billing/services/invoice-on
 // anchoring → no-op), so this stays best-effort.
 import { commitTraceForTask } from "../../chain/services/commit-trace-engine";
 import { cascadeOnTaskDone } from "./cascade";
-import { appendTaskEventBestEffort, listTaskEvents } from "./events";
+import { appendTaskEventBestEffort } from "./events";
 
 const log = childLogger("services:tasks:finalize");
 
@@ -153,11 +153,11 @@ export async function finalizeTaskDone(
   // crypoch's live article URL), so the on-chain record links straight to
   // the published artifact. Empty when nothing was published (private work).
   //
-  // Anchoring is gated on a VerificationPassed event — only genuinely
-  // verified work is anchored; tasks without the gate (non-news roles) or a
-  // fail-open verifier crash carry no such event and are skipped. The
-  // engine additionally no-ops when the company hasn't opted into anchoring
-  // (no healthy Anchor OperationsAccount).
+  // Anchors every completed deliverable for companies opted into anchoring;
+  // the engine no-ops when the company has no healthy Anchor
+  // OperationsAccount. Evidence is the sha256 of the deliverable itself —
+  // domain-neutral, independent of any company-specific verification. A
+  // company that wants graded quality plugs in its own rubric later.
   void (async () => {
     // The on-chain result_uri comes from the task's own `resultUri` field —
     // set by the agent after it publishes (via a tool) or manually by the
@@ -193,19 +193,9 @@ export async function finalizeTaskDone(
     }
 
     try {
-      const events = await listTaskEvents(task.id);
-      const passed = events
-        .filter(
-          (e) =>
-            (e.payload as Record<string, unknown> | null)?.actionType ===
-            "VerificationPassed",
-        )
-        .pop();
-      if (!passed) return;
-      const p = passed.payload as Record<string, unknown>;
-      const evidenceHashHex =
-        typeof p.evidenceHash === "string" ? p.evidenceHash : null;
-      if (!evidenceHashHex) return;
+      const evidenceHashHex = createHash("sha256")
+        .update(input.deliverable, "utf8")
+        .digest("hex");
       const result = await commitTraceForTask({
         companyId: task.companyId,
         taskId: task.id,
@@ -213,10 +203,8 @@ export async function finalizeTaskDone(
         deliverable: input.deliverable,
         resultUri,
         evidenceHashHex,
-        qualityScore:
-          typeof p.qualityScore === "number" ? p.qualityScore : 100,
-        rubricVersion:
-          typeof p.rubricVersion === "number" ? p.rubricVersion : 1,
+        qualityScore: 100,
+        rubricVersion: 1,
         completedAt: Math.floor(occurredAt.getTime() / 1000),
       });
       if (result.status === "failed") {
@@ -242,26 +230,6 @@ export async function finalizeTaskDone(
       );
     }
   })();
-
-  // Record an episode of the company's coverage — what stops a Head
-  // repeating a topic. Scoped to the news writer: a settled news task is
-  // one published story. Best-effort.
-  if (agent.role === "news_writer") {
-    void recordEpisode({
-      companyId: task.companyId,
-      taskId: task.id,
-      title: task.title,
-      content: input.deliverable,
-      agent: { name: agent.name, role: agent.role },
-      traceId: input.traceId,
-      occurredAt,
-    }).catch((err) => {
-      log.error(
-        { err, taskId: task.id },
-        "recordEpisode failed (non-fatal)",
-      );
-    });
-  }
 
   // Bubble up the task graph — unblock dependents, wake parents, and run
   // chat-origin synthesis where applicable.

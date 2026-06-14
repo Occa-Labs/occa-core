@@ -1,5 +1,5 @@
 import { randomBytes, createHash } from "node:crypto";
-import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   agentIdentities,
   agentRuntimeProfile,
@@ -9,7 +9,6 @@ import {
   deploymentTaskSessions,
   deploymentWorkspaceFiles,
   deployments,
-  episodicMemory,
   tasks,
   traceEvents,
   traces,
@@ -170,40 +169,6 @@ async function loadAgent(deploymentId: string): Promise<LoadedAgent | null> {
 
 // Direct reports of a deployment — the routine-wake delegation roster.
 // `parent_deployment_index` points at the parent's `deployment_index`.
-const COVERAGE_LOOKBACK_DAYS = 14;
-const COVERAGE_LIMIT = 12;
-
-// Recent episodes of the company's own coverage, newest first. Surfaced
-// in a routine wake so an orchestrator can vary the next slate rather
-// than repeat a topic.
-async function loadRecentCoverage(
-  companyId: string,
-): Promise<{ date: string; category: string; title: string }[]> {
-  const since = new Date(
-    Date.now() - COVERAGE_LOOKBACK_DAYS * 24 * 60 * 60 * 1000,
-  );
-  const rows = await db
-    .select({
-      occurredAt: episodicMemory.occurredAt,
-      category: episodicMemory.category,
-      title: episodicMemory.title,
-    })
-    .from(episodicMemory)
-    .where(
-      and(
-        eq(episodicMemory.companyId, companyId),
-        gte(episodicMemory.occurredAt, since),
-      ),
-    )
-    .orderBy(desc(episodicMemory.occurredAt))
-    .limit(COVERAGE_LIMIT);
-  return rows.map((r) => ({
-    date: r.occurredAt.toISOString().slice(0, 10),
-    category: r.category,
-    title: r.title,
-  }));
-}
-
 async function loadSubordinates(
   companyId: string,
   parentDeploymentIndex: number,
@@ -547,11 +512,6 @@ async function executeClaim(trace: ClaimedTrace): Promise<void> {
     trace.companyId,
     agent.deploymentIndex,
   );
-  // Recent coverage — lets a routine-woken orchestrator vary the slate.
-  const recentCoverage = routineTitle
-    ? await loadRecentCoverage(trace.companyId)
-    : [];
-
   const baseSessionParams = existingSession?.sessionParamsJson
     ? ({
         ...(existingSession.sessionParamsJson as Record<string, unknown>),
@@ -561,7 +521,6 @@ async function executeClaim(trace: ClaimedTrace): Promise<void> {
         routineTitle,
         routineMandate,
         subordinates,
-        recentCoverage,
       } as Record<string, unknown>)
     : ({
         agentName: agent.name,
@@ -570,7 +529,6 @@ async function executeClaim(trace: ClaimedTrace): Promise<void> {
         routineTitle,
         routineMandate,
         subordinates,
-        recentCoverage,
         sessionKey: taskKey,
       } as Record<string, unknown>);
 
