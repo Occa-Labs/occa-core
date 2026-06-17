@@ -66,9 +66,19 @@ import { getTier } from "@occa/shared/role-catalog";
 import { cascadeOnTaskDone } from "./cascade";
 import { finalizeTaskDone } from "./finalize";
 import { appendTaskEventBestEffort } from "./events";
+import { bounceTaskToAgent } from "./comments";
+import { listTaskCommentsByTask } from "../repositories/task-comments";
 import { enqueueReviewDispatch } from "../../../infra/queue/review-worker";
 
 const log = childLogger("services:tasks:dispatcher");
+
+// When a DELEGATE/BLOCK marker is rejected because its JSON body didn't parse
+// (`invalid_payload`), the task is bounced back to the same agent with the
+// exact reason so it can re-emit a valid marker — instead of silently parking
+// in review having done nothing. Capped so a persistently-malformed agent
+// can't loop forever; at the cap we let it fall through to normal handling.
+const MAX_MARKER_BOUNCES = 2;
+const MARKER_BOUNCE_PREFIX = "[auto] Marker rejected —";
 
 export interface DispatchTaskDeps extends ActionBlockDeps {
   // Cross-feature port for the REPORT side-effect. Resolves the company's
@@ -416,6 +426,71 @@ export async function dispatchTask(
       error: "subordinates_available_must_delegate",
       createdAt: new Date().toISOString(),
     });
+  }
+
+  // ── Robustness: recover from a rejected actionable marker ──────────
+  // A DELEGATE/BLOCK whose JSON body failed to parse is dropped as
+  // `invalid_payload`. Without feedback the agent never learns and the
+  // task silently parks in review having done nothing (observed: a Head
+  // emitting a malformed DELEGATE then [[OCCA:REVIEW]] stalls the cycle).
+  // Bounce it back to the same agent with the exact reason so it can
+  // re-emit a valid marker. Only when nothing else succeeded this turn,
+  // and capped so a persistently-broken agent can't loop forever.
+  const rejectedActionable = processed.find(
+    (p) =>
+      p.outcome.kind === "ignored" &&
+      p.outcome.reason === "invalid_payload" &&
+      (p.token === "DELEGATE" || p.token === "BLOCK"),
+  );
+  const nothingSucceeded =
+    delegationsSpawned === 0 && blockedBy === null && !wasReported;
+  if (rejectedActionable && nothingSucceeded) {
+    const priorBounces = (
+      await listTaskCommentsByTask(taskRow.id, taskRow.companyId)
+    ).filter((c) => c.body.startsWith(MARKER_BOUNCE_PREFIX)).length;
+    if (priorBounces < MAX_MARKER_BOUNCES) {
+      await closeSucceededTrace({
+        taskRow,
+        agentRow,
+        traceId,
+        finishedAt,
+        cleanReply: stripOccaMarkers(result.reply),
+        nextStatus: "todo",
+        blockedBy: null,
+        blockedReason: undefined,
+        usage: result.usage ?? null,
+      });
+      publishTraceEvent(traceId, {
+        seq: seqRef.current++,
+        eventType: "lifecycle",
+        phase: "completed",
+        taskStatus: "todo",
+        createdAt: finishedAt.toISOString(),
+      });
+      await bounceTaskToAgent({
+        taskId: taskRow.id,
+        companyId: taskRow.companyId,
+        assignedDeploymentId: agentRow.id,
+        body:
+          `${MARKER_BOUNCE_PREFIX} your [[OCCA:${rejectedActionable.token}]] ` +
+          `marker was rejected because its JSON body did not parse. ` +
+          `Re-emit it with RAW JSON between the tags — no prose, no code ` +
+          `fences, no comments, no trailing commas, exactly one block. For ` +
+          `DELEGATE use a "targetAgentId" copied from the "Available reports" ` +
+          `block. If you cannot form a valid marker, do the work yourself ` +
+          `instead of ending with [[OCCA:REVIEW]].`,
+        redispatchDedupe: false,
+      });
+      return;
+    }
+    log.warn(
+      {
+        taskId: taskRow.id,
+        token: rejectedActionable.token,
+        priorBounces,
+      },
+      "marker rejected repeatedly; giving up on auto-bounce, parking task",
+    );
   }
 
   const computedStatus = nextStatusAfterDispatch({

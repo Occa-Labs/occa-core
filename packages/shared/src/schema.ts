@@ -85,6 +85,16 @@ export const companies = pgTable(
     // monthly pool now.
     monthlyBudgetCents: integer("task_budget_cents").notNull().default(20000),
 
+    // How many times a Head may review one delegated deliverable before the
+    // auto-reviewer stops asking and auto-rejects (keeps the writer↔Head loop
+    // bounded). Operator-tunable per company; default 2.
+    maxReviewRounds: integer("max_review_rounds").notNull().default(2),
+
+    // Research depth target injected into every task prompt: roughly this many
+    // web searches AND fetches before the agent must stop gathering and write.
+    // Lower = faster/cheaper runs, thinner sourcing. Operator-tunable; default 6.
+    researchBudget: integer("research_budget").notNull().default(6),
+
     // Kickoff lifecycle — drives the post-onboarding "CEO discovery → bulk
     // deploy" flow. Stays at 'not_started' until the user completes the
     // kickoff dialog; flips through 'provisioning' → 'completed'.

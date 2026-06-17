@@ -7,6 +7,7 @@ import {
   Check,
   Copy,
   DollarSign,
+  ListChecks,
   LogOut,
   PlayCircle,
   Wallet,
@@ -42,7 +43,13 @@ type SeedApprovalState =
   | { kind: "done"; approvalId: string }
   | { kind: "error"; message: string };
 
-type SectionId = "account" | "webhooks" | "budget" | "office" | "devtools";
+type SectionId =
+  | "account"
+  | "webhooks"
+  | "budget"
+  | "tasks"
+  | "office"
+  | "devtools";
 
 interface SectionMeta {
   id: SectionId;
@@ -55,6 +62,12 @@ const ALL_SECTIONS: SectionMeta[] = [
   { id: "account", label: "Account", hint: "Wallet and session", icon: Wallet },
   { id: "webhooks", label: "Webhooks", hint: "Outbound feeds", icon: Webhook },
   { id: "budget", label: "Budget", hint: "Spend ceiling", icon: DollarSign },
+  {
+    id: "tasks",
+    label: "Tasks",
+    hint: "Review rounds",
+    icon: ListChecks,
+  },
   { id: "office", label: "Office", hint: "Room tour", icon: PlayCircle },
   {
     id: "devtools",
@@ -77,7 +90,8 @@ export function SettingsWindow({
   const sections = useMemo(
     () =>
       ALL_SECTIONS.filter((s) => {
-        if (s.id === "webhooks" || s.id === "budget") return Boolean(companyId);
+        if (s.id === "webhooks" || s.id === "budget" || s.id === "tasks")
+          return Boolean(companyId);
         if (s.id === "office" || s.id === "devtools") return isDev;
         return true;
       }),
@@ -129,6 +143,10 @@ export function SettingsWindow({
 
             {activeSection === "budget" && companyId && (
               <BudgetSection companyId={companyId} />
+            )}
+
+            {activeSection === "tasks" && companyId && (
+              <TaskSettingsSection companyId={companyId} />
             )}
 
             {activeSection === "office" && isDev && (
@@ -442,6 +460,174 @@ function BudgetSection({ companyId }: { companyId: string }) {
         month. Runs already underway are never cut off. Operator-domain —
         agents can&apos;t raise their own budget.
       </p>
+    </Pane>
+  );
+}
+
+// ── Task settings ───────────────────────────────────────────────────────────
+
+const numberSettingInputCls =
+  "w-16 rounded-lg bg-white/5 border border-white/10 px-2 py-1 text-[12px] text-white text-right tabular-nums placeholder:text-white/30 focus:outline-none focus:border-white/25 transition-colors [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none";
+
+// One inline-editable integer setting (label + value + edit/save), self
+// contained so a section can stack several without sharing edit state.
+function NumberSettingRow({
+  label,
+  value,
+  min,
+  max,
+  placeholder,
+  hint,
+  paused,
+  loading,
+  onSave,
+}: {
+  label: string;
+  value: number | null;
+  min: number;
+  max: number;
+  placeholder: string;
+  hint: string;
+  paused: boolean;
+  loading: boolean;
+  onSave: (n: number) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const startEdit = () => {
+    setDraft(value != null ? String(value) : "");
+    setErr(null);
+    setEditing(true);
+  };
+  const cancel = () => {
+    setEditing(false);
+    setErr(null);
+  };
+  const save = async () => {
+    const n = Number(draft);
+    if (!Number.isInteger(n) || n < min || n > max) {
+      setErr(`Enter a whole number from ${min} to ${max}.`);
+      return;
+    }
+    setSaving(true);
+    setErr(null);
+    try {
+      await onSave(n);
+      setEditing(false);
+    } catch (e) {
+      setErr(
+        e instanceof ApiError
+          ? `Couldn't save (api_${e.status}).`
+          : "Couldn't save. Try again.",
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="mb-4 last:mb-0">
+      <Card variant="recessed" padding="none">
+        <Row label={label}>
+          {editing ? (
+            <div className="flex items-center gap-1.5">
+              <input
+                type="number"
+                step="1"
+                min={min}
+                max={max}
+                value={draft}
+                autoFocus
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void save();
+                  if (e.key === "Escape") cancel();
+                }}
+                className={numberSettingInputCls}
+                placeholder={placeholder}
+              />
+              <Button variant="ghost" size="sm" onClick={cancel} disabled={saving}>
+                Cancel
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => void save()}
+                disabled={saving}
+              >
+                {saving ? "Saving…" : "Save"}
+              </Button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              <span className="text-[13px] text-white/85 tabular-nums">
+                {loading && value == null ? "…" : (value ?? "—")}
+              </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={startEdit}
+                disabled={paused || value == null}
+                title={paused ? "Company is paused — resume to edit" : undefined}
+              >
+                Edit
+              </Button>
+            </div>
+          )}
+        </Row>
+      </Card>
+      {err && (
+        <Alert variant="error" className="mt-2">
+          {err}
+        </Alert>
+      )}
+      <p className="mt-2 text-[11px] text-white/35 leading-relaxed px-1">{hint}</p>
+    </div>
+  );
+}
+
+function TaskSettingsSection({ companyId }: { companyId: string }) {
+  const { company, loading, error, update } = useCompany(companyId);
+  const paused = Boolean(company?.pausedAt);
+
+  return (
+    <Pane title="Task settings" desc="How agents run delegated work.">
+      {error && (
+        <Alert variant="error" className="mb-3">
+          Couldn&apos;t load task settings.
+        </Alert>
+      )}
+
+      <NumberSettingRow
+        label="Max review rounds"
+        value={company?.maxReviewRounds ?? null}
+        min={1}
+        max={5}
+        placeholder="2"
+        paused={paused}
+        loading={loading}
+        onSave={async (n) => {
+          await update({ maxReviewRounds: n });
+        }}
+        hint="How many times a Head reviews a delegated piece before the auto-reviewer stops and auto-rejects. Higher = more revision passes (slower, more tokens); lower = ships or kills faster."
+      />
+
+      <NumberSettingRow
+        label="Research depth"
+        value={company?.researchBudget ?? null}
+        min={1}
+        max={12}
+        placeholder="6"
+        paused={paused}
+        loading={loading}
+        onSave={async (n) => {
+          await update({ researchBudget: n });
+        }}
+        hint="Roughly how many web searches and fetches an agent runs before it must stop gathering and write. Lower = much faster, cheaper runs with thinner sourcing; higher = deeper research but longer runs."
+      />
     </Pane>
   );
 }

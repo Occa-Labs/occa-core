@@ -48,6 +48,9 @@ export interface ContextCompany {
   id: string;
   name: string;
   profile: ContextCompanyProfile;
+  // Research depth target for task prompts — ~this many searches + fetches
+  // before the agent stops gathering and writes. Operator-tunable; default 6.
+  researchBudget: number;
 }
 
 export interface ContextTeammate {

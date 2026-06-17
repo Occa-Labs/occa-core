@@ -94,17 +94,42 @@ const PROFILE_FIELDS = new Set<keyof UpdateCompanyBody>([
 type UpdateCompanyBody = z.infer<typeof updateCompanyBody>;
 
 function splitCompanyPatch(patch: UpdateCompanyBody): {
-  core: { name?: string; monthlyBudgetCents?: number };
-  profile: Partial<Omit<UpdateCompanyBody, "name" | "monthlyBudgetCents">>;
+  core: {
+    name?: string;
+    monthlyBudgetCents?: number;
+    maxReviewRounds?: number;
+    researchBudget?: number;
+  };
+  profile: Partial<
+    Omit<
+      UpdateCompanyBody,
+      "name" | "monthlyBudgetCents" | "maxReviewRounds" | "researchBudget"
+    >
+  >;
 } {
-  const core: { name?: string; monthlyBudgetCents?: number } = {};
+  const core: {
+    name?: string;
+    monthlyBudgetCents?: number;
+    maxReviewRounds?: number;
+    researchBudget?: number;
+  } = {};
   const profile: Partial<
-    Omit<UpdateCompanyBody, "name" | "monthlyBudgetCents">
+    Omit<
+      UpdateCompanyBody,
+      "name" | "monthlyBudgetCents" | "maxReviewRounds" | "researchBudget"
+    >
   > = {};
   if ("name" in patch && patch.name !== undefined) core.name = patch.name;
-  // monthlyBudgetCents lives on the companies row, not company_profile.
+  // monthlyBudgetCents + maxReviewRounds + researchBudget live on the
+  // companies row, not company_profile.
   if ("monthlyBudgetCents" in patch && patch.monthlyBudgetCents !== undefined) {
     core.monthlyBudgetCents = patch.monthlyBudgetCents;
+  }
+  if ("maxReviewRounds" in patch && patch.maxReviewRounds !== undefined) {
+    core.maxReviewRounds = patch.maxReviewRounds;
+  }
+  if ("researchBudget" in patch && patch.researchBudget !== undefined) {
+    core.researchBudget = patch.researchBudget;
   }
   for (const key of PROFILE_FIELDS) {
     if (key in patch) {

@@ -561,7 +561,7 @@ export function renderTaskPrompt(spec: ContextSpec): string {
     `- Work on the task described below and respond with your findings or result.`,
     `- Research budget — work efficiently, you have a bounded run. If the task`,
     `  needs web research, issue searches/fetches in PARALLEL (batch multiple`,
-    `  tool calls in one turn), aim for roughly 6-8 searches and 6-8 fetches`,
+    `  tool calls in one turn), aim for roughly ${spec.company.researchBudget} searches and ${spec.company.researchBudget} fetches`,
     `  total, then STOP gathering and write. Once you have enough sourced facts`,
     `  to satisfy the brief, do not keep verifying past sufficiency — diminishing`,
     `  returns will exhaust the run before you produce the deliverable. Prefer a`,

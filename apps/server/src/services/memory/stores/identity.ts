@@ -52,6 +52,7 @@ export async function loadIdentity(
       agentRole: deployments.role,
       companyId: deployments.companyId,
       companyName: companies.name,
+      researchBudget: companies.researchBudget,
     })
     .from(deployments)
     .innerJoin(
@@ -101,6 +102,7 @@ export async function loadIdentity(
     id: head.companyId!,
     name: head.companyName,
     profile,
+    researchBudget: head.researchBudget,
   };
 
   return { agent, company };

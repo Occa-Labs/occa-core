@@ -1,0 +1,1 @@
+ALTER TABLE "companies" ADD COLUMN "max_review_rounds" integer DEFAULT 2 NOT NULL;

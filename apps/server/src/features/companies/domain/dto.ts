@@ -51,6 +51,8 @@ export function toCompanyDTO(
     chainsCovered: profile?.chainsCovered ?? [],
 
     monthlyBudgetCents: company.monthlyBudgetCents,
+    maxReviewRounds: company.maxReviewRounds,
+    researchBudget: company.researchBudget,
 
     pausedAt: company.pausedAt ? company.pausedAt.toISOString() : null,
     pausedReason: company.pausedReason,

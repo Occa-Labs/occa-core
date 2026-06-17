@@ -1,0 +1,1 @@
+ALTER TABLE "companies" ADD COLUMN "research_budget" integer DEFAULT 6 NOT NULL;

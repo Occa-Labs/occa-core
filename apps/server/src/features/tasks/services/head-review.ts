@@ -22,6 +22,7 @@ import { and, desc, eq } from "drizzle-orm";
 import {
   agentIdentities,
   agentRuntimeProfile,
+  companies,
   deployments,
   tasks,
   traceEvents,
@@ -40,8 +41,11 @@ import { appendTaskEventBestEffort, listTaskEvents } from "./events";
 
 const log = childLogger("services:tasks:head-review");
 
-// How many times a Head may review one task before the auto-reviewer
-// stops asking and auto-approves. Keeps the writer↔Head loop bounded.
+// Fallback for how many times a Head may review one task before the
+// auto-reviewer stops asking and auto-rejects (keeps the writer↔Head loop
+// bounded). The live value is per-company (`companies.max_review_rounds`,
+// operator-tunable in Settings); this const only applies if that row is
+// somehow missing.
 const MAX_REVIEW_ROUNDS = 2;
 
 type TaskRow = typeof tasks.$inferSelect;
@@ -103,6 +107,15 @@ export async function dispatchHeadReview(reviewTaskId: string): Promise<void> {
     log.warn({ taskId: reviewTaskId }, "review task not found");
     return;
   }
+
+  // Per-company review-round cap (operator-tunable in Settings). Falls back
+  // to the module default if the company row is missing.
+  const [companyRow] = await db
+    .select({ maxReviewRounds: companies.maxReviewRounds })
+    .from(companies)
+    .where(eq(companies.id, task.companyId))
+    .limit(1);
+  const maxReviewRounds = companyRow?.maxReviewRounds ?? MAX_REVIEW_ROUNDS;
   // The task may have been resolved between enqueue and dispatch (a user
   // moved it, a retry already ran). Only act on a task still in review.
   if (task.status !== "review") {
@@ -149,7 +162,7 @@ export async function dispatchHeadReview(reviewTaskId: string): Promise<void> {
   // safer killed than shipped. Auto-APPROVE here was the previous default
   // and meant a flagged piece could ship past the writer's REVIEW intent.
   const priorRounds = await countReviewRounds(reviewTaskId);
-  if (priorRounds >= MAX_REVIEW_ROUNDS) {
+  if (priorRounds >= maxReviewRounds) {
     log.info(
       { taskId: reviewTaskId, priorRounds },
       "review round cap reached, auto-rejecting",
@@ -211,7 +224,7 @@ export async function dispatchHeadReview(reviewTaskId: string): Promise<void> {
     task,
     deliverable: deliverable.text,
     round,
-    maxRounds: MAX_REVIEW_ROUNDS,
+    maxRounds: maxReviewRounds,
   });
   const sessionKey = `agent:${reviewer.externalAgentId}:review:${traceId}`;
 
@@ -329,7 +342,7 @@ export async function dispatchHeadReview(reviewTaskId: string): Promise<void> {
       reviewer.name,
       verdict.feedback,
       round,
-      MAX_REVIEW_ROUNDS,
+      maxReviewRounds,
     ),
     // Bounce runs from the review.dispatch job, not the task's own
     // dispatch — dedupe on taskId so concurrent bounces of different

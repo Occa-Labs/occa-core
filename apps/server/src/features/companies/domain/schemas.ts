@@ -61,6 +61,18 @@ export const updateCompanyBody = z.object({
     .min(LIMITS.MONTHLY_BUDGET_CENTS_MIN)
     .max(LIMITS.MONTHLY_BUDGET_CENTS_MAX)
     .optional(),
+  maxReviewRounds: z
+    .number()
+    .int()
+    .min(LIMITS.MAX_REVIEW_ROUNDS_MIN)
+    .max(LIMITS.MAX_REVIEW_ROUNDS_MAX)
+    .optional(),
+  researchBudget: z
+    .number()
+    .int()
+    .min(LIMITS.RESEARCH_BUDGET_MIN)
+    .max(LIMITS.RESEARCH_BUDGET_MAX)
+    .optional(),
 }) satisfies z.ZodType<UpdateCompanyRequest>;
 
 export const pauseCompanyBody = z.object({

@@ -267,6 +267,20 @@
       "when": 1781500864691,
       "tag": "0037_fixed_exiles",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1781708952919,
+      "tag": "0038_adorable_justice",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1781711138713,
+      "tag": "0039_minor_roulette",
+      "breakpoints": true
     }
   ]
 }

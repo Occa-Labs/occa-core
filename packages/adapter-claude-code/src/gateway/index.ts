@@ -21,6 +21,7 @@ import {
   claudeAvailable,
   sessionUuidFromKey,
   type ClaudeStreamEvent,
+  type RunClaudeResult,
 } from "../claude-cli";
 import { workspacePathFor } from "../workspace";
 import { loadConfig } from "./config";
@@ -137,6 +138,65 @@ async function handleDeprovision(req: IncomingMessage, res: ServerResponse): Pro
   sendJson(res, 200, { ok: true });
 }
 
+// ── Run registry ──────────────────────────────────────────────────────────
+//
+// A run is DECOUPLED from the HTTP connection that started it. Stream events
+// and the final result are buffered per `sessionKey`, so a client whose
+// connection drops mid-run (OCCA server restart, idle proxy timeout, network
+// blip) can RE-POST /v1/run with the same sessionKey and resume from where it
+// left off — the underlying `claude -p` keeps running. Previously any blip
+// fired `res.on("close")` → aborted the process → discarded minutes of work
+// AND surfaced as `gateway_unreachable` on OCCA's side.
+interface RunRecord {
+  events: ClaudeStreamEvent[];
+  result: RunClaudeResult | null;
+  done: boolean;
+  controller: AbortController;
+  subscribers: Set<ServerResponse>;
+  evictTimer: ReturnType<typeof setTimeout> | null;
+}
+
+const runs = new Map<string, RunRecord>();
+
+// Keep a completed run's result available this long for a reconnecting
+// client, then evict so a later re-dispatch on the same sessionKey starts
+// fresh instead of replaying a stale result.
+const COMPLETED_TTL_MS = 60_000;
+
+function writeLine(res: ServerResponse, obj: unknown): void {
+  try {
+    res.write(`${JSON.stringify(obj)}\n`);
+  } catch {
+    /* dead socket — the subscriber dropped; harmless */
+  }
+}
+
+// Attach an HTTP response to a run: replay buffered events from `fromIndex`
+// (what the reconnecting client hasn't seen), then either flush the result
+// (run already finished) or subscribe to live events.
+function attachSubscriber(
+  record: RunRecord,
+  res: ServerResponse,
+  fromIndex: number,
+): void {
+  for (let i = Math.max(0, fromIndex); i < record.events.length; i++) {
+    writeLine(res, { t: "event", event: record.events[i] });
+  }
+  if (record.done) {
+    writeLine(res, { t: "result", result: record.result });
+    try {
+      res.end();
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
+  record.subscribers.add(res);
+  res.on("close", () => {
+    record.subscribers.delete(res);
+  });
+}
+
 async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const body = await readJsonBody(req, config.maxBodyBytes);
   const externalAgentId = asString(body.externalAgentId);
@@ -151,9 +211,33 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
     return;
   }
 
-  // Per-run observability — one line in, one line out, so the gateway log
-  // shows which agent/session is running and how long it took (the prompt
-  // body itself is never logged).
+  res.writeHead(200, { "Content-Type": "application/x-ndjson" });
+
+  const resumeCursor =
+    typeof body.resumeCursor === "number" ? body.resumeCursor : 0;
+
+  // Resume path: a run already exists for this sessionKey (in-flight or just
+  // completed within the TTL) → attach this connection to it instead of
+  // spawning a second claude process. This is what makes a dropped
+  // connection recoverable.
+  const existing = runs.get(sessionKey);
+  if (existing) {
+    attachSubscriber(existing, res, resumeCursor);
+    return;
+  }
+
+  // Fresh run.
+  const record: RunRecord = {
+    events: [],
+    result: null,
+    done: false,
+    controller: new AbortController(),
+    subscribers: new Set(),
+    evictTimer: null,
+  };
+  runs.set(sessionKey, record);
+  attachSubscriber(record, res, 0);
+
   const started = Date.now();
   log(
     "info",
@@ -161,21 +245,10 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
     "run start",
   );
 
-  // Stream NDJSON: one `{t:"event",...}` line per run event, a final
-  // `{t:"result",...}` line carrying the reply + usage.
-  res.writeHead(200, { "Content-Type": "application/x-ndjson" });
-
-  const controller = new AbortController();
-  let finished = false;
-  // Client disconnect mid-run → cancel the underlying claude process.
-  res.on("close", () => {
-    if (!finished) controller.abort();
-  });
-
-  const onEvent = (event: ClaudeStreamEvent): void => {
-    res.write(`${JSON.stringify({ t: "event", event })}\n`);
-  };
-
+  // We deliberately do NOT abort on client disconnect — the run is bounded
+  // by `timeoutMs` (server-side wall clock), so an abandoned run still
+  // terminates, and meanwhile a reconnecting client can resume it.
+  // Cancellation is explicit via POST /v1/cancel.
   const result = await runClaude({
     prompt,
     cwd: workspacePathFor(externalAgentId),
@@ -187,18 +260,45 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
     timeoutMs: typeof body.timeoutMs === "number" ? body.timeoutMs : undefined,
     maxBudgetUsd:
       typeof body.maxBudgetUsd === "number" ? body.maxBudgetUsd : undefined,
-    signal: controller.signal,
-    onEvent,
+    signal: record.controller.signal,
+    onEvent: (event: ClaudeStreamEvent) => {
+      record.events.push(event);
+      for (const sub of record.subscribers) writeLine(sub, { t: "event", event });
+    },
   });
 
-  finished = true;
+  record.result = result;
+  record.done = true;
   log(
     "info",
     { externalAgentId, sessionKey, durationMs: Date.now() - started },
     "run done",
   );
-  res.write(`${JSON.stringify({ t: "result", result })}\n`);
-  res.end();
+  for (const sub of record.subscribers) {
+    writeLine(sub, { t: "result", result });
+    try {
+      sub.end();
+    } catch {
+      /* ignore */
+    }
+  }
+  record.subscribers.clear();
+  record.evictTimer = setTimeout(() => runs.delete(sessionKey), COMPLETED_TTL_MS);
+}
+
+// POST /v1/cancel — explicit cancellation. A dropped connection no longer
+// kills a run (so it can be resumed), so the OCCA side calls this when the
+// dispatcher genuinely aborts (user cancel / shutdown).
+async function handleCancel(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = await readJsonBody(req, config.maxBodyBytes);
+  const sessionKey = asString(body.sessionKey);
+  if (!sessionKey) {
+    sendJson(res, 400, { ok: false, error: "sessionKey required" });
+    return;
+  }
+  const record = runs.get(sessionKey);
+  if (record && !record.done) record.controller.abort();
+  sendJson(res, 200, { ok: true });
 }
 
 // ── Router ──────────────────────────────────────────────────────────────────
@@ -220,9 +320,11 @@ const server = createServer((req, res) => {
         ? () => handleSeed(req, res)
         : route === "POST /v1/run"
           ? () => handleRun(req, res)
-          : route === "POST /v1/deprovision"
-            ? () => handleDeprovision(req, res)
-            : null;
+          : route === "POST /v1/cancel"
+            ? () => handleCancel(req, res)
+            : route === "POST /v1/deprovision"
+              ? () => handleDeprovision(req, res)
+              : null;
 
   if (!handler) {
     sendJson(res, 404, { ok: false, error: "not_found" });

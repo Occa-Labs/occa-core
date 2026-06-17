@@ -229,6 +229,13 @@ export interface CompanyDTO {
   // gates the start of new work once month-to-date spend reaches it.
   monthlyBudgetCents: number;
 
+  // Task settings — how many times a Head reviews a delegated deliverable
+  // before the auto-reviewer auto-rejects. Operator-tunable; default 2.
+  maxReviewRounds: number;
+  // Research depth target in the task prompt — ~this many searches + fetches
+  // before the agent must stop gathering and write. Operator-tunable; default 6.
+  researchBudget: number;
+
   // State
   pausedAt: string | null;
   pausedReason: string | null;
@@ -283,6 +290,8 @@ export interface UpdateCompanyRequest {
   treasuryAddress?: string | null;
   chainsCovered?: string[];
   monthlyBudgetCents?: number;
+  maxReviewRounds?: number;
+  researchBudget?: number;
 }
 
 export interface PauseCompanyRequest {

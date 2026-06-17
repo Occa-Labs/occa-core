@@ -23,6 +23,9 @@ export interface GatewayRunBody {
   disallowedTools?: string[] | null;
   timeoutMs?: number;
   maxBudgetUsd?: number;
+  // Set on a reconnect: tells the gateway to replay buffered events from
+  // this index onward (events the client already processed are skipped).
+  resumeCursor?: number;
 }
 
 function headers(apiKey?: string): Record<string, string> {
@@ -107,74 +110,138 @@ export async function gatewayDeprovision(
   }
 }
 
+// POST /v1/cancel — explicitly abort a run on the gateway. Used when the
+// caller's AbortSignal fires (genuine cancel), since a dropped connection no
+// longer kills the run server-side (it's resumable).
+async function gatewayCancel(
+  target: GatewayTarget,
+  sessionKey: string,
+): Promise<void> {
+  try {
+    await fetch(`${target.gatewayUrl}/v1/cancel`, {
+      method: "POST",
+      headers: headers(target.apiKey),
+      body: JSON.stringify({ sessionKey }),
+    });
+  } catch {
+    /* best-effort */
+  }
+}
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
 // POST /v1/run — run one turn on the remote box, forwarding stream events and
 // returning the final RunClaudeResult. Shape-identical to the local runClaude.
+//
+// Resilient to mid-run connection drops: the run is decoupled from the HTTP
+// connection on the gateway (buffered per sessionKey), so when the stream
+// breaks before the result arrives, we RECONNECT — re-POST with a
+// `resumeCursor` and keep reading where we left off — instead of failing the
+// whole task. Bounded reconnect attempts; a genuine abort still cancels.
 export async function gatewayRun(
   target: GatewayTarget,
   body: GatewayRunBody,
   onEvent?: (event: ClaudeStreamEvent) => void,
   signal?: AbortSignal,
 ): Promise<RunClaudeResult> {
-  let res: Response;
-  try {
-    res = await fetch(`${target.gatewayUrl}/v1/run`, {
-      method: "POST",
-      headers: headers(target.apiKey),
-      body: JSON.stringify(body),
-      signal,
-    });
-  } catch (err) {
-    if (signal?.aborted) return errorResult("cancelled", "run aborted");
-    return errorResult(
-      "gateway_unreachable",
-      err instanceof Error ? err.message : "gateway run fetch failed",
-    );
-  }
+  const MAX_RECONNECTS = 5;
+  let cursor = 0;
+  let attempt = 0;
 
-  if (res.status === 401) return errorResult("gateway_unauthorized", "bad gateway bearer");
-  if (!res.ok || !res.body) {
-    return errorResult("prompt_failed", `gateway HTTP ${res.status}`);
-  }
-
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buf = "";
-  let result: RunClaudeResult | null = null;
-
-  const routeLine = (line: string): void => {
-    const trimmed = line.trim();
-    if (!trimmed) return;
-    let parsed: { t?: string; event?: ClaudeStreamEvent; result?: RunClaudeResult };
+  for (;;) {
+    let res: Response;
+    const reqBody: GatewayRunBody =
+      attempt === 0 ? body : { ...body, resumeCursor: cursor };
     try {
-      parsed = JSON.parse(trimmed);
-    } catch {
-      return;
-    }
-    if (parsed.t === "event" && parsed.event) onEvent?.(parsed.event);
-    else if (parsed.t === "result" && parsed.result) result = parsed.result;
-  };
-
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      let idx: number;
-      while ((idx = buf.indexOf("\n")) >= 0) {
-        routeLine(buf.slice(0, idx));
-        buf = buf.slice(idx + 1);
+      res = await fetch(`${target.gatewayUrl}/v1/run`, {
+        method: "POST",
+        headers: headers(target.apiKey),
+        body: JSON.stringify(reqBody),
+        signal,
+      });
+    } catch (err) {
+      if (signal?.aborted) {
+        await gatewayCancel(target, body.sessionKey);
+        return errorResult("cancelled", "run aborted");
       }
+      if (attempt++ < MAX_RECONNECTS) {
+        await sleep(Math.min(1000 * attempt, 5000));
+        continue;
+      }
+      return errorResult(
+        "gateway_unreachable",
+        err instanceof Error ? err.message : "gateway run fetch failed",
+      );
     }
-    if (buf.trim()) routeLine(buf);
-  } catch (err) {
-    if (signal?.aborted) return errorResult("cancelled", "run aborted");
+
+    if (res.status === 401) return errorResult("gateway_unauthorized", "bad gateway bearer");
+    if (!res.ok || !res.body) {
+      return errorResult("prompt_failed", `gateway HTTP ${res.status}`);
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    let result: RunClaudeResult | null = null;
+
+    const routeLine = (line: string): void => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      let parsed: { t?: string; event?: ClaudeStreamEvent; result?: RunClaudeResult };
+      try {
+        parsed = JSON.parse(trimmed);
+      } catch {
+        return;
+      }
+      // `t === "runid"` lines are ignored — we resume by our own sessionKey.
+      if (parsed.t === "event" && parsed.event) {
+        onEvent?.(parsed.event);
+        cursor += 1;
+      } else if (parsed.t === "result" && parsed.result) {
+        result = parsed.result;
+      }
+    };
+
+    let streamBroke = false;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let idx: number;
+        while ((idx = buf.indexOf("\n")) >= 0) {
+          routeLine(buf.slice(0, idx));
+          buf = buf.slice(idx + 1);
+        }
+      }
+      if (buf.trim()) routeLine(buf);
+    } catch (err) {
+      if (signal?.aborted) {
+        await gatewayCancel(target, body.sessionKey);
+        return errorResult("cancelled", "run aborted");
+      }
+      streamBroke = true;
+      void err;
+    }
+
+    if (result) return result;
+
+    // No result yet. Either the stream broke (connection drop) or it closed
+    // cleanly without a result line. Reconnect + resume from the cursor.
+    if (signal?.aborted) {
+      await gatewayCancel(target, body.sessionKey);
+      return errorResult("cancelled", "run aborted");
+    }
+    if (attempt++ < MAX_RECONNECTS) {
+      await sleep(Math.min(1000 * attempt, 5000));
+      continue;
+    }
     return errorResult(
       "gateway_unreachable",
-      err instanceof Error ? err.message : "gateway stream read failed",
+      streamBroke
+        ? "gateway stream dropped, exhausted reconnects"
+        : "gateway closed without a result line",
     );
   }
-
-  return (
-    result ?? errorResult("prompt_invalid_response", "gateway closed without a result line")
-  );
 }

@@ -39,6 +39,12 @@ export const LIMITS = {
   MONTHLY_BUDGET_CENTS_MIN: 100, // $1 floor — a sub-dollar monthly pool is meaningless
   MONTHLY_BUDGET_CENTS_MAX: 1_000_000, // $10,000/mo ceiling — fat-finger guard, not a billing limit
 
+  // ─── Task settings ─────────────────────────────────────────────────────
+  MAX_REVIEW_ROUNDS_MIN: 1, // at least one Head review before it can publish/reject
+  MAX_REVIEW_ROUNDS_MAX: 5, // ceiling — beyond this the writer↔Head loop is just burning tokens
+  RESEARCH_BUDGET_MIN: 1, // at least one search+fetch pass
+  RESEARCH_BUDGET_MAX: 12, // ceiling — beyond this a single run won't finish
+
   // ─── Array / count limits ──────────────────────────────────────────────
   TRIGGERS_MAX: 8, // routines: max trigger array
   TAGS_MAX: 20, // task: max tag count
