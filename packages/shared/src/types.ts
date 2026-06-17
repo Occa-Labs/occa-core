@@ -1242,6 +1242,9 @@ export interface RoutineDTO {
   status: string;
   concurrencyPolicy: string;
   catchUpPolicy: string;
+  // When set, a fire starts this sequential workflow (by yaml id) instead
+  // of waking the assignee for free-form work. Null = legacy behaviour.
+  workflowYamlId: string | null;
   variables: Record<string, unknown> | null;
   lastTriggeredAt: string | null;
   lastEnqueuedAt: string | null;
@@ -1255,6 +1258,7 @@ export interface CreateRoutineRequest {
   description?: string;
   assigneeAgentId: string;
   priority?: string;
+  workflowYamlId?: string;
   triggers: Array<{
     kind: RoutineTriggerKind;
     label?: string;
@@ -1270,6 +1274,7 @@ export interface UpdateRoutineRequest {
   assigneeAgentId?: string;
   priority?: string;
   status?: string;
+  workflowYamlId?: string;
 }
 
 export interface CreateTriggerRequest {
@@ -1350,6 +1355,8 @@ export const APPROVAL_ACTION_TYPES = [
   "edit_routine",
   "edit_skill_library",
   "edit_tool",
+  "create_workflow",
+  "edit_workflow",
 ] as const;
 export type ApprovalActionType =
   | (typeof APPROVAL_ACTION_TYPES)[number]

@@ -9,6 +9,7 @@ import {
 } from "@occa/shared/schema";
 import type { ContentBlock } from "@occa/shared/types";
 import { db } from "./db";
+import { enqueueWorkflowStart } from "./queue";
 import { wakeup } from "./wakeup";
 
 const TICK_INTERVAL_MS = 30_000;
@@ -174,6 +175,36 @@ async function fireTrigger(trigger: DueTrigger): Promise<void> {
         .returning({ id: tasks.id });
       return row;
     });
+
+    // Workflow-bound routine: the wrapper is a container only. Hand off
+    // to the server's workflow.start queue (which creates the run +
+    // spawns step 0) instead of waking the assignee for free-form work.
+    // The wrapper stays in_progress as the flat parent for all step
+    // children and the cascade close target.
+    if (routine.workflowYamlId) {
+      await enqueueWorkflowStart({
+        parentTaskId: wrapperTask.id,
+        companyId: routine.companyId,
+        workflowYamlId: routine.workflowYamlId,
+      });
+      await db.insert(routineRuns).values({
+        routineId: routine.id,
+        triggerId: trigger.triggerId,
+        source: "cron",
+        status: "enqueued",
+        triggeredAt: firedAt,
+        idempotencyKey,
+        triggerPayload: {
+          workflowYamlId: routine.workflowYamlId,
+          parentTaskId: wrapperTask.id,
+        },
+      });
+      await db
+        .update(routines)
+        .set({ lastEnqueuedAt: firedAt, updatedAt: firedAt })
+        .where(eq(routines.id, routine.id));
+      return;
+    }
 
     const wake = await wakeup({
       agentId: routine.assigneeDeploymentId,

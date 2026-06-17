@@ -12,6 +12,16 @@
 import { PgBoss } from "pg-boss";
 
 const TASK_DISPATCH_QUEUE = "task.dispatch";
+// Sequential workflow start. A routine that names a workflow enqueues
+// here on fire; the SERVER consumes and creates the run + spawns step 0.
+// Queue name + job shape MUST match apps/server/src/infra/queue/boss.ts.
+const WORKFLOW_START_QUEUE = "workflow.start";
+
+interface WorkflowStartJobData {
+  parentTaskId: string;
+  companyId: string;
+  workflowYamlId: string;
+}
 
 let instance: PgBoss | null = null;
 let starting: Promise<PgBoss> | null = null;
@@ -31,10 +41,11 @@ async function getBoss(): Promise<PgBoss> {
       console.error("[worker:queue] pg-boss error:", err);
     });
     await boss.start();
-    // Idempotent — the server creates this queue on its own boot;
+    // Idempotent — the server creates these queues on its own boot;
     // re-creating with the same config is a no-op. Doing it here too
     // keeps the worker independent of process boot order.
     await boss.createQueue(TASK_DISPATCH_QUEUE, { policy: "exclusive" });
+    await boss.createQueue(WORKFLOW_START_QUEUE, { policy: "exclusive" });
     instance = boss;
     return boss;
   })();
@@ -58,4 +69,20 @@ export async function enqueueTaskDispatch(taskId: string): Promise<void> {
       expireInSeconds: 15 * 60,
     },
   );
+}
+
+// Enqueue a sequential workflow start for the server to process.
+// `singletonKey` = wrapper taskId so a single routine fire can't enqueue
+// two starts for the same wrapper.
+export async function enqueueWorkflowStart(
+  data: WorkflowStartJobData,
+): Promise<void> {
+  const boss = await getBoss();
+  await boss.send(WORKFLOW_START_QUEUE, data, {
+    singletonKey: data.parentTaskId,
+    retryLimit: 2,
+    retryDelay: 30,
+    retryBackoff: true,
+    expireInSeconds: 5 * 60,
+  });
 }

@@ -18,6 +18,9 @@ export const createRoutineBody = z.object({
   description: z.string().max(LIMITS.DESCRIPTION_LONG).optional(),
   assigneeAgentId: z.string().uuid(),
   priority: z.string().max(LIMITS.TINY).optional(),
+  // When set, a fire starts this sequential workflow (by yaml id) instead
+  // of waking the assignee for free-form work. Empty string clears it.
+  workflowYamlId: z.string().trim().max(LIMITS.KEY).optional(),
   triggers: z.array(triggerInputBase).min(1).max(LIMITS.TRIGGERS_MAX),
 });
 
@@ -27,6 +30,7 @@ export const updateRoutineBody = z.object({
   assigneeAgentId: z.string().uuid().optional(),
   priority: z.string().max(LIMITS.TINY).optional(),
   status: z.enum(ROUTINE_STATUSES).optional(),
+  workflowYamlId: z.string().trim().max(LIMITS.KEY).optional(),
 });
 
 export const updateTriggerBody = z.object({

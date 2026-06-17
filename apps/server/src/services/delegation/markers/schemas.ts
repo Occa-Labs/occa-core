@@ -294,6 +294,31 @@ export const proposeWorkflowDeleteBlockPayload = z.object({
   workflowYamlId: z.string().trim().min(1).max(LIMITS.KEY),
 });
 
+// PROPOSE_WORKFLOW_CREATE: CEO drafts a brand-new workflow as full YAML
+// (the same YAML the human authors in the Workflows window). With-approval;
+// the marker NEVER writes. The handler parses the YAML to reject obvious
+// garbage early; approve runs the real create (which re-parses + enforces
+// yamlId uniqueness). The workflow's own `id:` inside the YAML becomes its
+// stable yamlId.
+export const proposeWorkflowCreateBlockPayload = z.object({
+  yamlText: z.string().trim().min(1).max(LIMITS.WORKFLOW_YAML),
+});
+
+// PROPOSE_WORKFLOW_EDIT: CEO drafts a change to an existing workflow,
+// addressed by its stable yamlId. Two independent levers, at least one
+// required: replace the definition (`yamlText`) and/or flip enabled. With-
+// approval; the marker NEVER writes. `yamlText` is parse-checked at propose
+// time; the real update re-parses and guards yamlId-rename conflicts.
+export const proposeWorkflowEditBlockPayload = z
+  .object({
+    workflowYamlId: z.string().trim().min(1).max(LIMITS.KEY),
+    yamlText: z.string().trim().min(1).max(LIMITS.WORKFLOW_YAML).optional(),
+    enabled: z.boolean().optional(),
+  })
+  .refine((v) => v.yamlText !== undefined || v.enabled !== undefined, {
+    message: "at least one of yamlText or enabled is required",
+  });
+
 // COMMENT_TASK: CEO posts a comment on a task. Autonomous — runs
 // immediately. Body may carry `@Name` mentions; an mentioned agent who is
 // assigned to this task is re-woken to pick it up (createTaskComment +
@@ -558,6 +583,19 @@ export type ProposeTaskDeleteBlockPayload = z.infer<
 export type WorkflowDeleteProposeRejectReason =
   | "permission_denied"
   | "invalid_body";
+
+// yaml_invalid is caught at propose time (the YAML didn't parse). id_conflict
+// (create) and workflow_not_found (edit) are APPLY-time failures, surfaced
+// via the approval's failureReason on approve.
+export type WorkflowCreateProposeRejectReason =
+  | "permission_denied"
+  | "invalid_body"
+  | "yaml_invalid";
+
+export type WorkflowEditProposeRejectReason =
+  | "permission_denied"
+  | "invalid_body"
+  | "yaml_invalid";
 export type SetTaskStatusBlockPayload = z.infer<
   typeof setTaskStatusBlockPayload
 >;
@@ -809,6 +847,23 @@ export type ActionBlockOutcome =
   | {
       kind: "workflow_delete_propose_rejected";
       reason: WorkflowDeleteProposeRejectReason;
+    }
+  // PROPOSE_WORKFLOW_CREATE / PROPOSE_WORKFLOW_EDIT: a pending proposal row
+  // was created; approve runs the real create/update via the workflows
+  // service (re-parse + uniqueness guard).
+  | { kind: "workflow_create_proposed"; proposalId: string; yamlId: string }
+  | {
+      kind: "workflow_create_propose_rejected";
+      reason: WorkflowCreateProposeRejectReason;
+    }
+  | {
+      kind: "workflow_edit_proposed";
+      proposalId: string;
+      workflowYamlId: string;
+    }
+  | {
+      kind: "workflow_edit_propose_rejected";
+      reason: WorkflowEditProposeRejectReason;
     }
   | { kind: "task_delete_proposed"; proposalId: string; taskId: string }
   | {

@@ -50,6 +50,15 @@ export interface CreateTaskRecordInput {
   // root, firing synthesis at each layer. Replaces originatingUserId
   // (Phase C); both columns are populated during the migration window.
   originatingThreadId?: string | null;
+  // Set when the task is a step inside a sequential workflow run. The
+  // run row owns the step cursor; this back-pointer lets the engine
+  // advance to the next step when the task completes. Null for ad-hoc /
+  // parallel-fan-out / chat-origin tasks.
+  workflowRunId?: string | null;
+  // This step's 0-based index within the workflow definition. Paired
+  // with workflowRunId; lets the engine confirm a completing step is the
+  // run's current step before advancing.
+  workflowStepIndex?: number | null;
 }
 
 async function insertWithCompanyLock(
@@ -82,6 +91,8 @@ async function insertWithCompanyLock(
       acceptanceCriteria: input.acceptanceCriteria,
       originatingUserId: input.originatingUserId ?? null,
       originatingThreadId: input.originatingThreadId ?? null,
+      workflowRunId: input.workflowRunId ?? null,
+      workflowStepIndex: input.workflowStepIndex ?? null,
     })
     .returning();
   return row;

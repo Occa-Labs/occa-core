@@ -668,6 +668,8 @@ export async function sendUserTurn(
         outcome.kind === "skill_library_edit_proposed" ||
         outcome.kind === "tool_edit_proposed" ||
         outcome.kind === "workflow_delete_proposed" ||
+        outcome.kind === "workflow_create_proposed" ||
+        outcome.kind === "workflow_edit_proposed" ||
         outcome.kind === "task_delete_proposed")
     ) {
       linkedApprovalId = outcome.proposalId;
@@ -1041,6 +1043,30 @@ function formatOsMutationReceipt(outcome: ActionBlockOutcome): string {
       switch (outcome.reason) {
         case "invalid_body":
           return `× PROPOSE_WORKFLOW_DELETE payload invalid.`;
+        case "permission_denied":
+          return "";
+      }
+      return "";
+    case "workflow_create_proposed":
+      return `✓ Queued creating the workflow ${outcome.yamlId} for your approval. Open the Approvals window to review and apply it. Nothing changes until you approve.`;
+    case "workflow_create_propose_rejected":
+      switch (outcome.reason) {
+        case "invalid_body":
+          return `× PROPOSE_WORKFLOW_CREATE payload invalid.`;
+        case "yaml_invalid":
+          return `× PROPOSE_WORKFLOW_CREATE rejected — the workflow YAML did not parse. Fix it and try again.`;
+        case "permission_denied":
+          return "";
+      }
+      return "";
+    case "workflow_edit_proposed":
+      return `✓ Queued a workflow change for your approval. Open the Approvals window to review and apply it. Nothing changes until you approve.`;
+    case "workflow_edit_propose_rejected":
+      switch (outcome.reason) {
+        case "invalid_body":
+          return `× PROPOSE_WORKFLOW_EDIT payload invalid.`;
+        case "yaml_invalid":
+          return `× PROPOSE_WORKFLOW_EDIT rejected — the workflow YAML did not parse. Fix it and try again.`;
         case "permission_denied":
           return "";
       }

@@ -42,7 +42,8 @@ export type CascadeReason =
   | "parent_unassigned"
   | "parent_not_found"
   | "woken"
-  | "ceo_synthesis_triggered";
+  | "ceo_synthesis_triggered"
+  | "workflow_run_step";
 
 export interface CascadeOnTaskDoneResult {
   parentWoken: boolean;
@@ -111,6 +112,20 @@ export async function cascadeOnTaskDone(
       log.error({ err, taskId: input.taskId }, "unblockDependents failed");
     });
   }
+
+  // Workflow-run step tasks are advanced by the workflow engine — it
+  // spawns the next step under the same container parent. Waking the
+  // container's assignee here too would double-fire (engine advance +
+  // free-form wake on the same pipeline). The engine owns the cursor;
+  // cascade stays out of sequential runs.
+  if (task.workflowRunId) {
+    return {
+      parentWoken: false,
+      parentTaskId: task.parentTaskId,
+      reason: "workflow_run_step",
+    };
+  }
+
   if (!task.parentTaskId) {
     // Top-level task with no parent. If it originated from a chat
     // thread (user_ceo or agent_dm in Phase C), kick the unified

@@ -13,6 +13,12 @@ export const AGENT_DM_DISPATCH_QUEUE = "agent_dm.dispatch";
 // Auto-reviewer: a delegated task that lands in `review` enqueues one
 // job keyed by taskId so the Head reviews it once per landing.
 export const REVIEW_DISPATCH_QUEUE = "review.dispatch";
+// Sequential workflow start: a routine fire that names a workflow
+// enqueues one job keyed by the wrapper taskId. The server creates the
+// run row and spawns step 0. Kept separate from workflow.evaluate (which
+// advances an in-flight run) so the start trigger is the wrapper's
+// creation, not a done-transition.
+export const WORKFLOW_START_QUEUE = "workflow.start";
 
 export interface TaskDispatchJobData {
   taskId: string;
@@ -28,6 +34,14 @@ export interface AgentDmDispatchJobData {
 
 export interface ReviewDispatchJobData {
   taskId: string;
+}
+
+export interface WorkflowStartJobData {
+  // The routine wrapper task all step children will hang under.
+  parentTaskId: string;
+  companyId: string;
+  // Which workflow to instantiate, by its per-company yaml id.
+  workflowYamlId: string;
 }
 
 let instance: PgBoss | null = null;
@@ -70,6 +84,9 @@ export async function getBoss(): Promise<PgBoss> {
     // Auto-reviewer dispatch. Exclusive per-task so one task can't have
     // two Head reviews running at once.
     await boss.createQueue(REVIEW_DISPATCH_QUEUE, { policy: "exclusive" });
+    // Sequential workflow start. Exclusive per wrapper task so a routine
+    // fire can't spawn two runs for the same wrapper.
+    await boss.createQueue(WORKFLOW_START_QUEUE, { policy: "exclusive" });
 
     instance = boss;
     return boss;

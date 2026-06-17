@@ -15,6 +15,7 @@ import {
   deployments,
   taskEvents,
   tasks,
+  workflowRuns,
   workflows as workflowsTable,
 } from "@occa/shared/schema";
 import type {
@@ -24,6 +25,7 @@ import type {
 } from "@occa/shared/workflows";
 import { db } from "../../../infra/database/client";
 import { createTaskRecord } from "../../../infra/database/task-creation";
+import type { WorkflowStartJobData } from "../../../infra/queue/boss";
 import { enqueueTaskDispatch } from "../../../infra/queue/task-worker";
 import { LIMITS } from "../../../lib/limits";
 import { childLogger } from "../../../lib/logger";
@@ -120,7 +122,14 @@ async function findMatchingWorkflows(
       id: r.id,
       definition: r.parsedDefinition as WorkflowDefinition,
     }))
-    .filter((w) => w.definition.trigger.match.task_type === taskType);
+    .filter(
+      (w) =>
+        // Sequential workflows advance via their own run cursor and are
+        // started explicitly by a routine fire — never by task_type
+        // matching. Only parallel (fan-out) workflows trigger here.
+        w.definition.execution !== "sequential" &&
+        w.definition.trigger.match.task_type === taskType,
+    );
 }
 
 async function alreadyEvaluated(
@@ -142,11 +151,36 @@ async function alreadyEvaluated(
   return row != null;
 }
 
+// Resolve a step's `assigned_to` to a deployment id within the company.
+// Three forms:
+//   • "human"        → null (left unassigned for a teammate to pick up)
+//   • "role:<role>"  → first deployment with that role. Portable across
+//                      environments where agent names differ; the news
+//                      pipeline uses this so one workflow runs in both
+//                      local and prod.
+//   • "<agent name>" → deployment of the named agent (legacy form)
 async function resolveAssignedDeployment(
   companyId: string,
   assignedTo: string,
 ): Promise<string | null> {
   if (assignedTo.toLowerCase() === "human") return null;
+
+  const roleMatch = /^role:(.+)$/i.exec(assignedTo.trim());
+  if (roleMatch) {
+    const role = roleMatch[1].trim();
+    const [row] = await db
+      .select({ id: deployments.id })
+      .from(deployments)
+      .where(
+        and(
+          eq(deployments.companyId, companyId),
+          sql`LOWER(${deployments.role}) = LOWER(${role})`,
+        ),
+      )
+      .limit(1);
+    return row?.id ?? null;
+  }
+
   const [row] = await db
     .select({ id: deployments.id })
     .from(deployments)
@@ -162,6 +196,62 @@ async function resolveAssignedDeployment(
     )
     .limit(1);
   return row?.id ?? null;
+}
+
+// Create one step task and wire it for dispatch — shared by the parallel
+// fan-out path and the sequential advance path. Returns the new task id.
+// Mirrors routes/tasks.ts user-create so the spawned child gets the same
+// lifecycle visibility + auto-dispatch when assigned; without the
+// task_assigned event + dispatch enqueue an assigned child sits in
+// `todo` forever.
+async function spawnChildTask(args: {
+  companyId: string;
+  parentTaskId: string;
+  title: string;
+  acceptanceCriteria: string | null;
+  assignedDeploymentId: string | null;
+  workflowRunId?: string | null;
+  workflowStepIndex?: number | null;
+}): Promise<string> {
+  const newTask = await createTaskRecord({
+    companyId: args.companyId,
+    title: args.title,
+    blocks: args.acceptanceCriteria
+      ? [{ type: "paragraph", text: args.acceptanceCriteria }]
+      : [],
+    status: "todo",
+    priority: "medium",
+    taskType: "other",
+    effortLevel: "m",
+    tags: [],
+    dueDate: null,
+    assignedDeploymentId: args.assignedDeploymentId,
+    parentTaskId: args.parentTaskId,
+    createdByUserId: null,
+    createdByDeploymentId: null,
+    acceptanceCriteria: args.acceptanceCriteria,
+    workflowRunId: args.workflowRunId ?? null,
+    workflowStepIndex: args.workflowStepIndex ?? null,
+  });
+
+  if (args.assignedDeploymentId) {
+    void appendTaskEventBestEffort({
+      companyId: args.companyId,
+      taskId: newTask.id,
+      eventType: "task_assigned",
+      actorType: "system",
+      actorId: "system",
+      payload: { deploymentId: args.assignedDeploymentId },
+    });
+    void enqueueTaskDispatch(newTask.id).catch((err) =>
+      log.error(
+        { err, taskId: newTask.id },
+        "workflow-spawned task dispatch enqueue failed",
+      ),
+    );
+  }
+
+  return newTask.id;
 }
 
 function renderTitle(template: string, parentTitle: string): string {
@@ -240,53 +330,22 @@ async function runOneWorkflow(
       step.assigned_to,
     );
 
-    const newTask = await createTaskRecord({
+    const newTaskId = await spawnChildTask({
       companyId: parent.companyId,
-      title: renderedTitle,
-      blocks: step.acceptance_criteria
-        ? [{ type: "paragraph", text: step.acceptance_criteria }]
-        : [],
-      status: "todo",
-      priority: "medium",
-      taskType: "other",
-      effortLevel: "m",
-      tags: [],
-      dueDate: null,
-      assignedDeploymentId,
       parentTaskId: parent.id,
-      createdByUserId: null,
-      createdByDeploymentId: null,
+      title: renderedTitle,
       acceptanceCriteria: step.acceptance_criteria ?? null,
+      assignedDeploymentId,
     });
 
-    // Mirror routes/tasks.ts user-create path so workflow-spawned tasks
-    // get the same lifecycle visibility + auto-dispatch when assigned.
-    // Without this, agent-assigned children sit in `todo` forever.
-    if (assignedDeploymentId) {
-      void appendTaskEventBestEffort({
-        companyId: parent.companyId,
-        taskId: newTask.id,
-        eventType: "task_assigned",
-        actorType: "system",
-        actorId: "system",
-        payload: { deploymentId: assignedDeploymentId },
-      });
-      void enqueueTaskDispatch(newTask.id).catch((err) =>
-        log.error(
-          { err, taskId: newTask.id },
-          "workflow-spawned task dispatch enqueue failed",
-        ),
-      );
-    }
-
     spawned.push({
-      taskId: newTask.id,
+      taskId: newTaskId,
       title: renderedTitle,
       assignedDeploymentId,
       originalIndex: index,
       renamed: false,
     });
-    spawnedTaskIds.push(newTask.id);
+    spawnedTaskIds.push(newTaskId);
   }
 
   for (let i = 0; i < truncated.length; i++) {
@@ -334,6 +393,262 @@ async function emitWorkflowExecutedEvent(
   });
 }
 
+// ── Sequential workflow runs ─────────────────────────────────────────
+// A sequential workflow advances one step at a time under a shared
+// parent (the routine wrapper). The workflow_runs row owns the cursor;
+// step children carry workflowRunId + workflowStepIndex back-pointers.
+
+interface WorkflowRunRow {
+  id: string;
+  companyId: string;
+  workflowRowId: string;
+  workflowYamlId: string;
+  parentTaskId: string | null;
+  currentStepIndex: number;
+  status: string;
+}
+
+async function loadEnabledWorkflowByYamlId(
+  companyId: string,
+  yamlId: string,
+): Promise<{ id: string; definition: WorkflowDefinition } | null> {
+  const [row] = await db
+    .select({
+      id: workflowsTable.id,
+      parsedDefinition: workflowsTable.parsedDefinition,
+    })
+    .from(workflowsTable)
+    .where(
+      and(
+        eq(workflowsTable.companyId, companyId),
+        eq(workflowsTable.yamlId, yamlId),
+        eq(workflowsTable.enabled, true),
+      ),
+    )
+    .limit(1);
+  if (!row) return null;
+  return { id: row.id, definition: row.parsedDefinition as WorkflowDefinition };
+}
+
+// Spawn the step at `stepIndex` under the run's parent. Phase 1 handles
+// spawn steps only; gate/upload step kinds land in later phases. Returns
+// the new task id, or null if the step is missing / not a spawn step.
+async function spawnSequentialStep(
+  run: WorkflowRunRow,
+  definition: WorkflowDefinition,
+  stepIndex: number,
+  parentTitle: string,
+): Promise<string | null> {
+  const step = definition.steps[stepIndex];
+  if (!step || !isSpawnStep(step) || !run.parentTaskId) return null;
+  const assignedDeploymentId = await resolveAssignedDeployment(
+    run.companyId,
+    step.assigned_to,
+  );
+  if (!assignedDeploymentId) {
+    log.warn(
+      {
+        runId: run.id,
+        stepIndex,
+        assignedTo: step.assigned_to,
+      },
+      "sequential step assignee did not resolve; spawning unassigned",
+    );
+  }
+  return spawnChildTask({
+    companyId: run.companyId,
+    parentTaskId: run.parentTaskId,
+    title: renderTitle(step.title, parentTitle),
+    acceptanceCriteria: step.acceptance_criteria ?? null,
+    assignedDeploymentId,
+    workflowRunId: run.id,
+    workflowStepIndex: stepIndex,
+  });
+}
+
+async function loadTaskTitle(taskId: string): Promise<string> {
+  const [row] = await db
+    .select({ title: tasks.title })
+    .from(tasks)
+    .where(eq(tasks.id, taskId))
+    .limit(1);
+  return row?.title ?? "";
+}
+
+// Start a sequential run: create the run row under the routine wrapper
+// and spawn step 0. Idempotent per wrapper task — a re-fired start job
+// finds the existing run and no-ops.
+export async function startWorkflowRun(
+  job: WorkflowStartJobData,
+): Promise<void> {
+  const { parentTaskId, companyId, workflowYamlId } = job;
+
+  const wf = await loadEnabledWorkflowByYamlId(companyId, workflowYamlId);
+  if (!wf) {
+    log.warn(
+      { companyId, workflowYamlId, parentTaskId },
+      "workflow not found / disabled; cannot start run",
+    );
+    return;
+  }
+  if (wf.definition.execution !== "sequential") {
+    log.warn(
+      { workflowYamlId, parentTaskId },
+      "start requested for non-sequential workflow; ignoring",
+    );
+    return;
+  }
+
+  const [existing] = await db
+    .select({ id: workflowRuns.id })
+    .from(workflowRuns)
+    .where(eq(workflowRuns.parentTaskId, parentTaskId))
+    .limit(1);
+  if (existing) {
+    log.info(
+      { runId: existing.id, parentTaskId },
+      "run already exists for wrapper; skipping start",
+    );
+    return;
+  }
+
+  const [run] = await db
+    .insert(workflowRuns)
+    .values({
+      companyId,
+      workflowRowId: wf.id,
+      workflowYamlId,
+      parentTaskId,
+      currentStepIndex: 0,
+      status: "running",
+    })
+    .returning({ id: workflowRuns.id });
+
+  const runRow: WorkflowRunRow = {
+    id: run.id,
+    companyId,
+    workflowRowId: wf.id,
+    workflowYamlId,
+    parentTaskId,
+    currentStepIndex: 0,
+    status: "running",
+  };
+  const parentTitle = await loadTaskTitle(parentTaskId);
+  const step0 = await spawnSequentialStep(runRow, wf.definition, 0, parentTitle);
+  log.info(
+    { runId: run.id, workflowYamlId, parentTaskId, step0 },
+    "workflow run started",
+  );
+}
+
+// Advance a sequential run when one of its step tasks completes. Spawns
+// the next step, or marks the run done at the end. Idempotent: only the
+// completion whose step index matches the run cursor advances, so a
+// duplicate done-event can't double-spawn.
+async function advanceWorkflowRun(completed: {
+  id: string;
+  workflowRunId: string;
+  workflowStepIndex: number | null;
+}): Promise<{ spawned: number }> {
+  const [run] = await db
+    .select({
+      id: workflowRuns.id,
+      companyId: workflowRuns.companyId,
+      workflowRowId: workflowRuns.workflowRowId,
+      workflowYamlId: workflowRuns.workflowYamlId,
+      parentTaskId: workflowRuns.parentTaskId,
+      currentStepIndex: workflowRuns.currentStepIndex,
+      status: workflowRuns.status,
+    })
+    .from(workflowRuns)
+    .where(eq(workflowRuns.id, completed.workflowRunId))
+    .limit(1);
+  if (!run) {
+    log.warn(
+      { runId: completed.workflowRunId, taskId: completed.id },
+      "workflow run not found for completed step",
+    );
+    return { spawned: 0 };
+  }
+  if (run.status !== "running") {
+    log.info(
+      { runId: run.id, status: run.status },
+      "run not running; skip advance",
+    );
+    return { spawned: 0 };
+  }
+  if (
+    completed.workflowStepIndex == null ||
+    completed.workflowStepIndex !== run.currentStepIndex
+  ) {
+    log.info(
+      {
+        runId: run.id,
+        completedStep: completed.workflowStepIndex,
+        cursor: run.currentStepIndex,
+      },
+      "completed step does not match run cursor; skip (dup or stale)",
+    );
+    return { spawned: 0 };
+  }
+
+  const wf = await loadEnabledWorkflowByYamlId(
+    run.companyId,
+    run.workflowYamlId,
+  );
+  if (!wf) {
+    log.warn(
+      { runId: run.id, workflowYamlId: run.workflowYamlId },
+      "workflow not found / disabled; cannot advance run",
+    );
+    return { spawned: 0 };
+  }
+
+  const nextIndex = run.currentStepIndex + 1;
+  if (nextIndex >= wf.definition.steps.length) {
+    await db
+      .update(workflowRuns)
+      .set({ status: "done", updatedAt: new Date() })
+      .where(eq(workflowRuns.id, run.id));
+    log.info({ runId: run.id }, "workflow run complete");
+    return { spawned: 0 };
+  }
+
+  // Advance the cursor with a compare-and-set on the old value so a
+  // racing duplicate that slipped past the index check above still can't
+  // double-advance.
+  const updated = await db
+    .update(workflowRuns)
+    .set({ currentStepIndex: nextIndex, updatedAt: new Date() })
+    .where(
+      and(
+        eq(workflowRuns.id, run.id),
+        eq(workflowRuns.currentStepIndex, run.currentStepIndex),
+      ),
+    )
+    .returning({ id: workflowRuns.id });
+  if (updated.length === 0) {
+    log.info({ runId: run.id }, "cursor moved concurrently; skip advance");
+    return { spawned: 0 };
+  }
+
+  const runRow: WorkflowRunRow = { ...run };
+  const parentTitle = run.parentTaskId
+    ? await loadTaskTitle(run.parentTaskId)
+    : "";
+  const spawnedId = await spawnSequentialStep(
+    runRow,
+    wf.definition,
+    nextIndex,
+    parentTitle,
+  );
+  log.info(
+    { runId: run.id, stepIndex: nextIndex, spawnedTaskId: spawnedId },
+    "workflow run advanced",
+  );
+  return { spawned: spawnedId ? 1 : 0 };
+}
+
 export interface RunWorkflowsForTaskResult {
   evaluated: number;
   spawnedTotal: number;
@@ -346,6 +661,30 @@ export interface RunWorkflowsForTaskResult {
 export async function runWorkflowsForTask(
   taskId: string,
 ): Promise<RunWorkflowsForTaskResult> {
+  // Sequential advance path: if the completed task is itself a workflow
+  // step, advance its run (spawn the next step / finish) instead of the
+  // task_type fan-out.
+  const [stepRow] = await db
+    .select({
+      workflowRunId: tasks.workflowRunId,
+      workflowStepIndex: tasks.workflowStepIndex,
+    })
+    .from(tasks)
+    .where(eq(tasks.id, taskId))
+    .limit(1);
+  if (stepRow?.workflowRunId) {
+    const adv = await advanceWorkflowRun({
+      id: taskId,
+      workflowRunId: stepRow.workflowRunId,
+      workflowStepIndex: stepRow.workflowStepIndex,
+    });
+    return {
+      evaluated: 1,
+      spawnedTotal: adv.spawned,
+      skippedAlreadyEvaluated: 0,
+    };
+  }
+
   const parent = await loadParentTask(taskId);
   if (!parent) {
     log.warn({ taskId }, "task not found; skipping workflow evaluation");

@@ -666,6 +666,20 @@ export const tasks = pgTable(
     // "server_restart", gateway error code). Drives the card's reason
     // badge. Cleared when a fresh run starts on the task.
     errorCode: text("error_code"),
+    // Set when this task is a step inside a sequential workflow run (the
+    // news pipeline being the first). The run row owns the cursor (which
+    // step is current) and the step children carry this back-pointer so
+    // the engine can advance to the next step on completion. Null for
+    // ad-hoc, chat-origin, or fan-out (parallel) workflow tasks.
+    workflowRunId: uuid("workflow_run_id").references(
+      (): AnyPgColumn => workflowRuns.id,
+      { onDelete: "set null" },
+    ),
+    // This step's 0-based index within the workflow's `steps`. Lets the
+    // engine confirm a completing step matches the run cursor before
+    // advancing, so a duplicate done-event can't double-spawn the next
+    // step. Null when workflowRunId is null.
+    workflowStepIndex: integer("workflow_step_index"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -1054,6 +1068,12 @@ export const routines = pgTable(
       .notNull()
       .default("coalesce_if_active"),
     catchUpPolicy: text("catch_up_policy").notNull().default("skip_missed"),
+    // When set, a fire of this routine starts the named sequential
+    // workflow under the wrapper task (via the workflow.start queue)
+    // instead of waking the assignee for free-form work. Stores the
+    // workflow's per-company yaml id (e.g. "news-pipeline"). Null = the
+    // legacy free-form routine behaviour.
+    workflowYamlId: text("workflow_yaml_id"),
     variables: jsonb("variables"),
     lastTriggeredAt: timestamp("last_triggered_at", { withTimezone: true }),
     lastEnqueuedAt: timestamp("last_enqueued_at", { withTimezone: true }),
@@ -1411,6 +1431,54 @@ export const workflows = pgTable(
   (t) => [
     uniqueIndex("uniq_workflows_company_yaml_id").on(t.companyId, t.yamlId),
     index("idx_workflows_company_enabled").on(t.companyId, t.enabled),
+  ],
+);
+
+// ── Workflow runs — run-state for a sequential workflow ──────────────
+// A linear/parallel workflow fans its steps out statelessly, but a
+// sequential workflow (the news pipeline) advances one step at a time
+// and may loop (gate FAIL → re-draft). That run-state has no home on a
+// stateless trigger, so it lives here: one row per started run, owning
+// the step cursor, lifecycle status, and the revise counter the gate
+// loop reads. Step tasks back-point via `tasks.workflow_run_id`.
+export const workflowRuns = pgTable(
+  "workflow_runs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    // The workflow row this run instantiates. yamlId is denormalised so
+    // the engine can resolve the definition without a second lookup and
+    // audit rows stay readable if the workflow is later edited/renamed.
+    workflowRowId: uuid("workflow_row_id")
+      .notNull()
+      .references(() => workflows.id, { onDelete: "cascade" }),
+    workflowYamlId: text("workflow_yaml_id").notNull(),
+    // The container task all step children hang under (flat). Created by
+    // the routine fire; stays open while the run is in flight.
+    parentTaskId: uuid("parent_task_id").references(
+      (): AnyPgColumn => tasks.id,
+      { onDelete: "cascade" },
+    ),
+    // Index of the step currently in flight (0-based). Advances on each
+    // step completion; the gate loop can move it backward to re-draft.
+    currentStepIndex: integer("current_step_index").notNull().default(0),
+    // running → done (all steps cleared) | killed (gate kill verdict).
+    status: text("status").notNull().default("running"),
+    // How many times the gate has bounced the draft. Drives the
+    // per-run revise cap so a piece can't loop forever (Phase 2).
+    reviseCount: integer("revise_count").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("idx_workflow_runs_company_status").on(t.companyId, t.status),
+    index("idx_workflow_runs_parent_task").on(t.parentTaskId),
   ],
 );
 

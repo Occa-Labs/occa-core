@@ -61,6 +61,7 @@ export function toRoutineDTO(
     status: row.status,
     concurrencyPolicy: row.concurrencyPolicy,
     catchUpPolicy: row.catchUpPolicy,
+    workflowYamlId: row.workflowYamlId ?? null,
     variables: (row.variables as Record<string, unknown> | null) ?? null,
     lastTriggeredAt: row.lastTriggeredAt?.toISOString() ?? null,
     lastEnqueuedAt: row.lastEnqueuedAt?.toISOString() ?? null,

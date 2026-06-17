@@ -25,6 +25,7 @@ export const LIMITS = {
   DESCRIPTION_LONG: 8_000, // routine description (multi-phase cadence prompt)
   DELEGATE_BRIEF: 16_000, // editor→writer delegate brief; a thorough brief is the system working — never block a delegate over length
   CHAT_MESSAGE: 8_000, // agent chat message
+  WORKFLOW_YAML: 20_000, // workflow definition YAML text (create/edit)
   WORKSPACE_FILE_CONTENT: 100_000, // editable workspace file (AGENTS.md, SOUL.md, etc.)
 
   // ─── Tools primitive ───────────────────────────────────────────────────

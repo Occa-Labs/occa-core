@@ -24,6 +24,8 @@ export interface RoutineFormValues {
   assigneeAgentId: string;
   cronExpression: string;
   timezone: string;
+  /** When set, a fire runs this sequential workflow instead of the mandate. */
+  workflowYamlId?: string;
 }
 
 interface RoutineFormProps {
@@ -120,6 +122,9 @@ export function RoutineForm({
   const [assigneeId, setAssigneeId] = useState(
     initial?.assigneeAgentId ?? agents[0]?.id ?? "",
   );
+  const [workflowYamlId, setWorkflowYamlId] = useState(
+    initial?.workflowYamlId ?? "",
+  );
   const [frequency, setFrequency] = useState<Frequency>(sched.frequency);
   const [unit, setUnit] = useState<IntervalUnit>(sched.unit);
   const [intervalValue, setIntervalValue] = useState(sched.intervalValue);
@@ -147,6 +152,7 @@ export function RoutineForm({
       assigneeAgentId: assigneeId,
       cronExpression,
       timezone: initial?.timezone ?? BROWSER_TZ,
+      workflowYamlId: workflowYamlId.trim() || undefined,
     });
   };
 
@@ -192,6 +198,14 @@ export function RoutineForm({
           </option>
         ))}
       </Select>
+
+      <Input
+        label="Workflow (optional)"
+        placeholder="news-pipeline"
+        value={workflowYamlId}
+        onChange={(e) => setWorkflowYamlId(e.target.value)}
+        hint="A workflow yaml id. Set it to run that sequential pipeline on each fire instead of the mandate. The assignee becomes the pipeline owner."
+      />
 
       <Select
         label="Schedule"

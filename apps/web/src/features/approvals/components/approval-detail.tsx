@@ -115,6 +115,14 @@ export function ApprovalDetail({
     );
   }
 
+  // Workflow create / edit — approve runs the workflows-service write.
+  if (
+    approval.actionType === "create_workflow" ||
+    approval.actionType === "edit_workflow"
+  ) {
+    return <WorkflowProposalDetail approval={approval} agentById={agentById} />;
+  }
+
   return (
     <TaskApprovalDetail approval={approval} agentById={agentById} />
   );
@@ -1528,6 +1536,188 @@ function SimpleDeleteDetail({
           >
             <Check className="size-3" />
             {submitting ? "Deleting…" : "Approve delete"}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Workflow create / edit proposal. Shows the proposed YAML in a monospace
+// block plus any enabled toggle, with approve/reject. Approving runs the
+// workflows-service write (create or update) server-side.
+function WorkflowProposalDetail({
+  approval,
+  agentById,
+}: {
+  approval: ApprovalDTO;
+  agentById: Map<string, AgentDTO>;
+}) {
+  const decide = useDecideApproval();
+  const [mode, setMode] = useState<DetailMode>({ kind: "view" });
+  const [rejectReason, setRejectReason] = useState("");
+
+  useEffect(() => {
+    setMode({ kind: "view" });
+    setRejectReason("");
+  }, [approval.id]);
+
+  const submitting = mode.kind === "submitting";
+
+  const handleApprove = useCallback(async () => {
+    setMode({ kind: "submitting" });
+    try {
+      await decide.mutateAsync({ id: approval.id, decision: "approve" });
+    } catch {
+      setMode({ kind: "view" });
+    }
+  }, [approval.id, decide]);
+
+  const handleSendReject = useCallback(async () => {
+    const reason = rejectReason.trim();
+    if (!reason) return;
+    setMode({ kind: "submitting" });
+    try {
+      await decide.mutateAsync({
+        id: approval.id,
+        decision: "reject",
+        rejectionReason: reason,
+      });
+    } catch {
+      setMode({ kind: "rejecting" });
+    }
+  }, [approval.id, decide, rejectReason]);
+
+  const agent = approval.requestedByAgentId
+    ? agentById.get(approval.requestedByAgentId)
+    : null;
+  const agentName = agent?.name ?? "CEO";
+  const agentRole = agent?.role ?? null;
+  const actionLabel = humanizeApprovalAction(
+    approval.actionType,
+    approval.payload,
+    agentById,
+  );
+  const payload = approval.payload as {
+    workflowYamlId?: unknown;
+    yamlText?: unknown;
+    enabled?: unknown;
+  };
+  const workflowYamlId =
+    typeof payload.workflowYamlId === "string" ? payload.workflowYamlId : null;
+  const yamlText = typeof payload.yamlText === "string" ? payload.yamlText : null;
+  const enabled =
+    typeof payload.enabled === "boolean" ? payload.enabled : null;
+
+  return (
+    <div className="flex flex-col gap-4 px-5 py-4">
+      <div className="flex items-start gap-3">
+        <div
+          aria-hidden
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-white/70"
+          style={surface.recessed}
+        >
+          <Bot className="h-4 w-4" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-baseline gap-2">
+            <span className="truncate text-[14px] font-semibold text-white/90">
+              {agentName}
+            </span>
+            {agentRole && (
+              <span className="shrink-0 text-[11px] text-white/40">
+                · {agentRole}
+              </span>
+            )}
+            <span className="ml-auto shrink-0 text-[11px] text-white/40">
+              {relativeTime(approval.requestedAt)}
+            </span>
+          </div>
+          <div className="mt-0.5 text-[12px] text-white/60">{actionLabel}</div>
+        </div>
+      </div>
+
+      <Card variant="recessed" padding="md">
+        <div className="flex flex-col gap-4 text-[12px]">
+          {workflowYamlId && (
+            <ReadOnlyField label="workflowYamlId" value={workflowYamlId} />
+          )}
+          {enabled !== null && (
+            <ReadOnlyField label="enabled" value={enabled} />
+          )}
+          {yamlText && (
+            <div className="flex flex-col gap-1">
+              <span className="text-[10px] uppercase tracking-wide text-white/35">
+                yamlText
+              </span>
+              <pre className="max-h-80 overflow-auto rounded-lg bg-black/30 p-3 text-[11px] leading-relaxed whitespace-pre-wrap text-white/75">
+                {yamlText}
+              </pre>
+            </div>
+          )}
+        </div>
+      </Card>
+
+      <p className="text-[11px] leading-relaxed text-white/45">
+        Approving applies this change to the company&apos;s workflows.
+      </p>
+
+      {mode.kind === "rejecting" ? (
+        <div className="space-y-2">
+          <textarea
+            autoFocus
+            value={rejectReason}
+            onChange={(e) => setRejectReason(e.target.value)}
+            placeholder="Reason for rejection…"
+            rows={3}
+            className={cn(
+              "w-full resize-none rounded-lg border border-white/10",
+              "bg-black/25 px-2.5 py-2 text-[12px] text-white/85",
+              "placeholder:text-white/30 focus:border-white/25 focus:outline-none",
+            )}
+          />
+          <div className="flex items-center justify-end gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setRejectReason("");
+                setMode({ kind: "view" });
+              }}
+              disabled={submitting}
+            >
+              <X className="size-3" />
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              size="sm"
+              disabled={submitting || rejectReason.trim().length === 0}
+              onClick={() => void handleSendReject()}
+            >
+              {submitting ? "Sending…" : "Send"}
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex items-center justify-end gap-2">
+          <DismissButton approvalId={approval.id} disabled={submitting} />
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setMode({ kind: "rejecting" })}
+            disabled={submitting}
+          >
+            Reject
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => void handleApprove()}
+            disabled={submitting}
+          >
+            <Check className="size-3" />
+            {submitting ? "Applying…" : "Approve"}
           </Button>
         </div>
       )}

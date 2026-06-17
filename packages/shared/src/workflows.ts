@@ -55,12 +55,26 @@ const capsSchema = z
   })
   .optional();
 
-// Linear workflow — `steps:` is a flat list, all spawned (or capped)
-// in a single fan-out per parent completion.
+// Execution mode:
+//   • parallel   — steps fan out in a single batch on parent completion
+//                  (the original behaviour, kept as default for back-compat).
+//   • sequential — steps run one at a time under a shared parent; the
+//                  engine advances on each step's completion via a
+//                  workflow_runs cursor. Started explicitly by a routine
+//                  fire, NOT by task_type matching. Required for the
+//                  news pipeline.
+const executionModeSchema = z
+  .enum(["parallel", "sequential"])
+  .default("parallel");
+
+// Linear workflow — `steps:` is a flat list. In `parallel` mode they are
+// all spawned (or capped) in a single fan-out per parent completion; in
+// `sequential` mode they advance one at a time under a shared parent.
 const linearWorkflowSchema = z.object({
   id: yamlId,
   name: z.string().trim().min(1).max(120),
   description: z.string().trim().max(500).optional(),
+  execution: executionModeSchema,
   trigger: triggerSchema,
   steps: z.array(stepSchema).min(1).max(10),
   caps: capsSchema,

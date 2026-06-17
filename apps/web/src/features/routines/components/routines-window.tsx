@@ -103,6 +103,7 @@ function toFormValues(r: RoutineDTO): RoutineFormValues {
     assigneeAgentId: r.assigneeAgentId ?? "",
     cronExpression: cron?.cronExpression ?? "0 * * * *",
     timezone: cron?.timezone ?? "UTC",
+    workflowYamlId: r.workflowYamlId ?? undefined,
   };
 }
 
@@ -160,6 +161,7 @@ export function RoutinesWindow({ agents, onClose }: RoutinesWindowProps) {
         title: v.title,
         description: v.description,
         assigneeAgentId: v.assigneeAgentId,
+        workflowYamlId: v.workflowYamlId,
         triggers: [
           {
             kind: "cron",
@@ -187,6 +189,7 @@ export function RoutinesWindow({ agents, onClose }: RoutinesWindowProps) {
         title: v.title,
         description: v.description,
         assigneeAgentId: v.assigneeAgentId,
+        workflowYamlId: v.workflowYamlId ?? "",
       });
       const cron = editing.triggers.find((t) => t.kind === "cron");
       if (cron) {

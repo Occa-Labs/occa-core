@@ -27,6 +27,7 @@ export interface RoutineInsert {
   description: string | null;
   assigneeDeploymentId: string;
   priority: string;
+  workflowYamlId: string | null;
 }
 
 // Settable subsets for the PATCH endpoints — keeps the route layer free
@@ -37,6 +38,7 @@ export interface RoutinePatch {
   priority?: string;
   status?: string;
   assigneeDeploymentId?: string;
+  workflowYamlId?: string | null;
 }
 
 export interface TriggerPatch {
@@ -96,6 +98,7 @@ export async function createRoutineWithTriggers(
         description: routine.description,
         assigneeDeploymentId: routine.assigneeDeploymentId,
         priority: routine.priority,
+        workflowYamlId: routine.workflowYamlId,
       })
       .returning({ id: routines.id });
     for (const t of triggers) {

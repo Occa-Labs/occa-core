@@ -50,7 +50,9 @@ import {
   proposeSkillLibraryEditBlockPayload,
   proposeTaskDeleteBlockPayload,
   proposeToolEditBlockPayload,
+  proposeWorkflowCreateBlockPayload,
   proposeWorkflowDeleteBlockPayload,
+  proposeWorkflowEditBlockPayload,
   setTaskStatusBlockPayload,
   setResultUrlBlockPayload,
   commentTaskBlockPayload,
@@ -73,7 +75,9 @@ import {
   type TaskCommentRejectReason,
   type TaskEditRejectReason,
   type ToolEditProposeRejectReason,
+  type WorkflowCreateProposeRejectReason,
   type WorkflowDeleteProposeRejectReason,
+  type WorkflowEditProposeRejectReason,
   type RoutineDispatchRejectReason,
   type RoutineToggleRejectReason,
   type SkillInstallRejectReason,
@@ -112,6 +116,11 @@ import {
   deleteWorkflow,
   findWorkflowByYamlId,
 } from "../../../features/workflows/repositories/workflows";
+import {
+  createWorkflow as createWorkflowService,
+  updateWorkflow as updateWorkflowService,
+} from "../../../features/workflows/services/workflows";
+import { parseWorkflowYaml } from "@occa/shared/workflows";
 import {
   deleteTaskInCompany,
   findTaskInCompany,
@@ -2335,6 +2344,174 @@ export async function applyWorkflowDeleteApproval(
     throw new Error(`workflow_not_found: ${parsed.data.workflowYamlId}`);
   }
   await deleteWorkflow(wf.id, approval.companyId);
+  return approval;
+}
+
+// PROPOSE_WORKFLOW_CREATE (with-approval). Drafts a brand-new workflow from
+// full YAML; the marker NEVER writes. The YAML is parse-checked here so the
+// operator never approves garbage. On approve, the workflows service
+// re-parses and enforces yamlId uniqueness (id_conflict surfaces as the
+// approval's failureReason).
+export async function handleProposeWorkflowCreateBlock(
+  args: ActionBlockHandlerArgs,
+): Promise<ActionBlockOutcome> {
+  const reject = (
+    reason: WorkflowCreateProposeRejectReason,
+  ): ActionBlockOutcome => ({
+    kind: "workflow_create_propose_rejected",
+    reason,
+  });
+  if (getTier(args.agentRole) !== "ceo") {
+    log.warn(
+      { agentId: args.agentId, agentRole: args.agentRole },
+      "PROPOSE_WORKFLOW_CREATE block rejected: only CEO tier may emit it",
+    );
+    return reject("permission_denied");
+  }
+  const parsed = proposeWorkflowCreateBlockPayload.safeParse(args.block.body);
+  if (!parsed.success) {
+    log.warn(
+      { detail: parsed.error.flatten() },
+      "PROPOSE_WORKFLOW_CREATE block rejected: invalid payload",
+    );
+    return reject("invalid_body");
+  }
+  const yaml = parseWorkflowYaml(parsed.data.yamlText);
+  if (!yaml.ok) {
+    log.warn(
+      { error: yaml.error },
+      "PROPOSE_WORKFLOW_CREATE block rejected: YAML did not parse",
+    );
+    return reject("yaml_invalid");
+  }
+  const [row] = await db
+    .insert(approvals)
+    .values({
+      companyId: args.companyId,
+      requestedByDeploymentId: args.agentId,
+      actionType: "create_workflow",
+      payload: parsed.data,
+    })
+    .returning();
+  void notifyApprovalCreated(row);
+  log.info(
+    {
+      ceoDeploymentId: args.agentId,
+      proposalId: row.id,
+      yamlId: yaml.value.definition.id,
+      traceId: args.traceId,
+    },
+    "PROPOSE_WORKFLOW_CREATE proposal created",
+  );
+  return {
+    kind: "workflow_create_proposed",
+    proposalId: row.id,
+    yamlId: yaml.value.definition.id,
+  };
+}
+
+export async function applyWorkflowCreateApproval(
+  approval: typeof approvals.$inferSelect,
+): Promise<typeof approvals.$inferSelect> {
+  const parsed = proposeWorkflowCreateBlockPayload.safeParse(approval.payload);
+  if (!parsed.success) {
+    throw new Error("workflow_create_payload_invalid");
+  }
+  const result = await createWorkflowService(approval.companyId, {
+    yamlText: parsed.data.yamlText,
+  });
+  if (!result.ok) {
+    throw new Error(`workflow_create_failed: ${result.failure.kind}`);
+  }
+  return approval;
+}
+
+// PROPOSE_WORKFLOW_EDIT (with-approval). Drafts a change to an existing
+// workflow — replace its YAML and/or flip enabled. The marker NEVER writes;
+// yamlText (if present) is parse-checked here. On approve, resolve the
+// yamlId within the company then run the service update (re-parse +
+// rename-conflict guard). Missing workflow surfaces as failureReason.
+export async function handleProposeWorkflowEditBlock(
+  args: ActionBlockHandlerArgs,
+): Promise<ActionBlockOutcome> {
+  const reject = (
+    reason: WorkflowEditProposeRejectReason,
+  ): ActionBlockOutcome => ({
+    kind: "workflow_edit_propose_rejected",
+    reason,
+  });
+  if (getTier(args.agentRole) !== "ceo") {
+    log.warn(
+      { agentId: args.agentId, agentRole: args.agentRole },
+      "PROPOSE_WORKFLOW_EDIT block rejected: only CEO tier may emit it",
+    );
+    return reject("permission_denied");
+  }
+  const parsed = proposeWorkflowEditBlockPayload.safeParse(args.block.body);
+  if (!parsed.success) {
+    log.warn(
+      { detail: parsed.error.flatten() },
+      "PROPOSE_WORKFLOW_EDIT block rejected: invalid payload",
+    );
+    return reject("invalid_body");
+  }
+  if (parsed.data.yamlText !== undefined) {
+    const yaml = parseWorkflowYaml(parsed.data.yamlText);
+    if (!yaml.ok) {
+      log.warn(
+        { error: yaml.error },
+        "PROPOSE_WORKFLOW_EDIT block rejected: YAML did not parse",
+      );
+      return reject("yaml_invalid");
+    }
+  }
+  const [row] = await db
+    .insert(approvals)
+    .values({
+      companyId: args.companyId,
+      requestedByDeploymentId: args.agentId,
+      actionType: "edit_workflow",
+      payload: parsed.data,
+    })
+    .returning();
+  void notifyApprovalCreated(row);
+  log.info(
+    {
+      ceoDeploymentId: args.agentId,
+      proposalId: row.id,
+      workflowYamlId: parsed.data.workflowYamlId,
+      traceId: args.traceId,
+    },
+    "PROPOSE_WORKFLOW_EDIT proposal created",
+  );
+  return {
+    kind: "workflow_edit_proposed",
+    proposalId: row.id,
+    workflowYamlId: parsed.data.workflowYamlId,
+  };
+}
+
+export async function applyWorkflowEditApproval(
+  approval: typeof approvals.$inferSelect,
+): Promise<typeof approvals.$inferSelect> {
+  const parsed = proposeWorkflowEditBlockPayload.safeParse(approval.payload);
+  if (!parsed.success) {
+    throw new Error("workflow_edit_payload_invalid");
+  }
+  const wf = await findWorkflowByYamlId(
+    parsed.data.workflowYamlId,
+    approval.companyId,
+  );
+  if (!wf) {
+    throw new Error(`workflow_not_found: ${parsed.data.workflowYamlId}`);
+  }
+  const result = await updateWorkflowService(wf.id, approval.companyId, {
+    yamlText: parsed.data.yamlText,
+    enabled: parsed.data.enabled,
+  });
+  if (!result.ok) {
+    throw new Error(`workflow_edit_failed: ${result.failure.kind}`);
+  }
   return approval;
 }
 

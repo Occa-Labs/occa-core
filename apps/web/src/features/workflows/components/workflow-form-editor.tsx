@@ -61,6 +61,9 @@ export function formStateToYaml(state: WorkflowFormState): string {
   const def: LinearWorkflowDefinition = {
     id: state.yamlId.trim(),
     name: state.name.trim(),
+    // Form editor authors fan-out workflows; sequential pipelines are
+    // authored via the YAML editor for now.
+    execution: "parallel",
     ...(state.description.trim()
       ? { description: state.description.trim() }
       : {}),

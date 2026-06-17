@@ -20,6 +20,8 @@ const CHANNEL_DECIDABLE_ACTION_TYPES = new Set<ApprovalActionType>([
   "edit_tool",
   "delete_workflow",
   "delete_task",
+  "create_workflow",
+  "edit_workflow",
 ]);
 
 // Build the interactive approve/reject actions for an approval, or an empty

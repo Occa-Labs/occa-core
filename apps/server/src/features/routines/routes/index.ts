@@ -110,6 +110,9 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
       description: parsed.data.description ?? null,
       assigneeDeploymentId: parsed.data.assigneeAgentId,
       priority: parsed.data.priority ?? "medium",
+      workflowYamlId: parsed.data.workflowYamlId
+        ? parsed.data.workflowYamlId
+        : null,
     },
     parsed.data.triggers.map((t) => ({
       kind: t.kind,
@@ -163,6 +166,11 @@ router.patch("/:id", requireAuth, async (req: Request, res: Response) => {
     patch.description = parsed.data.description;
   if (parsed.data.priority !== undefined) patch.priority = parsed.data.priority;
   if (parsed.data.status !== undefined) patch.status = parsed.data.status;
+  // Empty string clears the binding back to free-form routine behaviour.
+  if (parsed.data.workflowYamlId !== undefined)
+    patch.workflowYamlId = parsed.data.workflowYamlId
+      ? parsed.data.workflowYamlId
+      : null;
   if (parsed.data.assigneeAgentId !== undefined) {
     if (!(await verifyAssignee(companyId, parsed.data.assigneeAgentId))) {
       res

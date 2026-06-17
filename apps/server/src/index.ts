@@ -14,6 +14,7 @@ import { enqueuePendingTasks, reapOrphans, startStuckTaskSweep } from "./feature
 import { getBoss, stopBoss } from "./infra/queue/boss";
 import { registerTaskWorker } from "./infra/queue/task-worker";
 import { registerWorkflowWorker } from "./infra/queue/workflow-worker";
+import { registerWorkflowStartWorker } from "./infra/queue/workflow-start-worker";
 import { registerAgentDmWorker } from "./infra/queue/agent-dm-worker";
 import { registerReviewWorker } from "./infra/queue/review-worker";
 import { startTelegramOrchestrator } from "./features/channels/transport/telegram-orchestrator";
@@ -159,6 +160,7 @@ async function main() {
   await getBoss();
   await registerTaskWorker();
   await registerWorkflowWorker();
+  await registerWorkflowStartWorker();
   await registerAgentDmWorker();
   await registerReviewWorker();
   // Polls task_events for done transitions and enqueues workflow.evaluate

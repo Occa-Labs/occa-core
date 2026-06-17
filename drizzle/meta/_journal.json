@@ -281,6 +281,20 @@
       "when": 1781711138713,
       "tag": "0039_minor_roulette",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1781731198420,
+      "tag": "0040_glossy_lady_bullseye",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1781731842839,
+      "tag": "0041_fair_invisible_woman",
+      "breakpoints": true
     }
   ]
 }

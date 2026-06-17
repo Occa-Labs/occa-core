@@ -97,6 +97,18 @@ export function humanizeApprovalAction(
   if (actionType === "delete_workflow") return "Wants to delete a workflow";
   if (actionType === "delete_task") return "Wants to delete a task";
 
+  if (actionType === "create_workflow") return "Wants to create a workflow";
+
+  if (actionType === "edit_workflow") {
+    const hasYaml = typeof payload.yamlText === "string";
+    const hasEnabled = typeof payload.enabled === "boolean";
+    if (hasYaml && hasEnabled)
+      return `Wants to rewrite a workflow and ${payload.enabled ? "enable" : "disable"} it`;
+    if (hasEnabled)
+      return `Wants to ${payload.enabled ? "enable" : "disable"} a workflow`;
+    return "Wants to rewrite a workflow's steps";
+  }
+
   const summary =
     typeof payload.summary === "string" ? payload.summary.trim() : "";
   if (summary) return summary;
