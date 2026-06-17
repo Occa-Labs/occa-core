@@ -68,6 +68,7 @@ import { finalizeTaskDone } from "./finalize";
 import { appendTaskEventBestEffort } from "./events";
 import { bounceTaskToAgent } from "./comments";
 import { listTaskCommentsByTask } from "../repositories/task-comments";
+import { listPendingSiblings } from "../repositories/tasks";
 import { enqueueReviewDispatch } from "../../../infra/queue/review-worker";
 
 const log = childLogger("services:tasks:dispatcher");
@@ -493,12 +494,23 @@ export async function dispatchTask(
     );
   }
 
-  const computedStatus = nextStatusAfterDispatch({
+  let computedStatus = nextStatusAfterDispatch({
     approvalsRequested,
     delegationsSpawned,
     blockedBy,
     needsReview,
   });
+
+  // A task that finished a turn with no actionable marker defaults to `done`.
+  // But a head whose continuation wake produced no new DELEGATE — e.g. it was
+  // re-woken mid revise-loop and the next phase can't start until a child
+  // returns — is WAITING on its children, not finished. Park it in `review`
+  // so cascade re-wakes it when the children settle; a premature `done` is
+  // terminal (cascade refuses to wake a done parent → the whole cycle dies).
+  if (computedStatus === "done") {
+    const pendingChildren = await listPendingSiblings(taskRow.id);
+    if (pendingChildren.length > 0) computedStatus = "review";
+  }
 
   // Safeguard against the silent-close failure mode — but only for
   // CEO-assigned root tasks. Specialists/Heads holding chat-origin

@@ -18,7 +18,6 @@ import { agentIdentities, deployments, tasks } from "@occa/shared/schema";
 import { db } from "../../../infra/database/client";
 import { childLogger } from "../../../lib/logger";
 import { autoSaveTaskAsDocument } from "../../../services/auto-save-document";
-import { autoPublishOnCompletion } from "../../../services/auto-publish-on-completion";
 import { deliverTaskWebhooks } from "../../../services/deliver-task-webhooks";
 import { ensureInvoiceForCompletedTask } from "../../billing/services/invoice-on-task-complete";
 // Cross-feature reach into the chain feature — mirrors the pre-existing
@@ -160,65 +159,44 @@ export async function finalizeTaskDone(
   // domain-neutral, independent of any company-specific verification. A
   // company that wants graded quality plugs in its own rubric later.
   void (async () => {
-    // The on-chain result_uri is resolved in priority order:
-    //   1. task.resultUri — the agent published explicitly (its own tool
-    //      call), or the operator set it manually.
-    //   2. Auto-publish — if the company has an active Publish tool whose
-    //      role gate this agent passes, the lifecycle ships the deliverable
-    //      through it server-side ("agent on rails": deterministic, no agent
-    //      action needed). Generic across companies; install the tool → get
-    //      publish + on-chain proof for free.
-    //   3. Legacy webhook delivery — kept as a fallback for companies still
-    //      on the old per-task webhook path.
-    // Any empty result just means "nothing published" → the trace anchors
-    // hash-only (the deliverable stays private). All paths are best-effort.
+    // result_uri (the on-chain proof link) comes from one of two places:
+    //   1. task.resultUri — the agent published explicitly via the Publish
+    //      tool (its own action), or the operator set it manually.
+    //   2. A webhook receiver's returned URL, when the agent didn't.
+    // Either way the trace anchors the deliverable; an empty result just
+    // means "nothing published" → hash-only anchor (deliverable stays
+    // private). Both paths are best-effort.
     let resultUri = task.resultUri ?? "";
-    if (!resultUri) {
-      try {
-        const published = await autoPublishOnCompletion({
-          companyId: task.companyId,
-          deploymentId: agent.id,
-          agentRole: agent.role,
-          document: {
-            title: task.title,
-            content: input.deliverable,
-            tags: task.tags,
-          },
-        });
-        resultUri = published.resultUri ?? "";
-      } catch (err) {
-        log.error(
-          { err, taskId: task.id },
-          "auto-publish failed (non-fatal)",
-        );
-      }
-    }
-    if (!resultUri) {
-      try {
-        const delivery = await deliverTaskWebhooks({
-          companyId: task.companyId,
-          task: {
-            id: task.id,
-            title: task.title,
-            tags: task.tags,
-            taskType: task.taskType,
-          },
-          agent: { name: agent.name, role: agent.role },
-          delegatedBy,
-          document: {
-            content: input.deliverable,
-            format: "markdown",
-            tags: task.tags,
-          },
-          traceId: input.traceId,
-        });
-        resultUri = delivery.resultUri ?? "";
-      } catch (err) {
-        log.error(
-          { err, taskId: task.id },
-          "deliverTaskWebhooks failed (non-fatal)",
-        );
-      }
+
+    // Notify company webhooks subscribed to task.completed. Every done task is
+    // sent — OCCA does not gate by role or task kind; the per-webhook filters
+    // (role / tags / task type) and the receiver decide what to keep. A
+    // receiver-returned URL becomes result_uri only when the agent didn't
+    // already publish one explicitly.
+    try {
+      const delivery = await deliverTaskWebhooks({
+        companyId: task.companyId,
+        task: {
+          id: task.id,
+          title: task.title,
+          tags: task.tags,
+          taskType: task.taskType,
+        },
+        agent: { name: agent.name, role: agent.role },
+        delegatedBy,
+        document: {
+          content: input.deliverable,
+          format: "markdown",
+          tags: task.tags,
+        },
+        traceId: input.traceId,
+      });
+      if (!resultUri) resultUri = delivery.resultUri ?? "";
+    } catch (err) {
+      log.error(
+        { err, taskId: task.id },
+        "deliverTaskWebhooks failed (non-fatal)",
+      );
     }
 
     try {

@@ -38,6 +38,7 @@ import { getAdapter } from "../../../lib/adapter-registry";
 import { finalizeTaskDone } from "./finalize";
 import { bounceTaskToAgent } from "./comments";
 import { appendTaskEventBestEffort, listTaskEvents } from "./events";
+import { enqueueReviewDispatch } from "../../../infra/queue/review-worker";
 
 const log = childLogger("services:tasks:head-review");
 
@@ -57,7 +58,7 @@ type TaskRow = typeof tasks.$inferSelect;
 // wedges the loop.
 const reviewVerdictPayload = z.object({
   taskId: z.string().uuid().optional(),
-  decision: z.enum(["approve", "revise", "reject"]),
+  decision: z.enum(["approve", "revise", "reject", "escalate"]),
   feedback: z.string().trim().max(LIMITS.DESCRIPTION).optional(),
 });
 
@@ -68,7 +69,7 @@ const REVIEW_VERDICT_CONTRACT = [
   "",
   "[[OCCA:REVIEW_VERDICT]]",
   "{",
-  '  "decision": "approve" | "revise" | "reject",',
+  '  "decision": "approve" | "revise" | "reject" | "escalate",',
   '  "feedback": "<your review note>"',
   "}",
   "[[/OCCA:REVIEW_VERDICT]]",
@@ -86,13 +87,18 @@ const REVIEW_VERDICT_CONTRACT = [
   "          publication bar, or the piece would mislead readers if",
   "          published. feedback is REQUIRED and must explain why the",
   "          piece cannot ship.",
+  "escalate — hand this UP to your own manager (and ultimately a human) to",
+  "          decide. Use when the call needs authority or judgment above",
+  "          your role, or you genuinely cannot decide. This does NOT count",
+  "          against the revise budget. feedback is REQUIRED: say exactly",
+  "          what you need decided and why it is above you.",
   "",
   "Do NOT rewrite the piece yourself, do NOT delegate, do NOT spawn",
   "sub-agents. Your only job this turn is the verdict.",
 ].join("\n");
 
 interface Verdict {
-  decision: "approve" | "revise" | "reject";
+  decision: "approve" | "revise" | "reject" | "escalate";
   feedback: string;
 }
 
@@ -125,11 +131,33 @@ export async function dispatchHeadReview(reviewTaskId: string): Promise<void> {
     );
     return;
   }
-  const reviewerId = task.createdByDeploymentId;
-  if (!reviewerId || reviewerId === task.assignedDeploymentId) {
+  const delegatorId = task.createdByDeploymentId;
+  if (!delegatorId || delegatorId === task.assignedDeploymentId) {
     log.warn(
       { taskId: reviewTaskId },
       "no distinct reviewer for task, leaving in review",
+    );
+    return;
+  }
+  // Review climbs the org chart. The delegating head reviews first; each
+  // explicit "escalate" verdict hands the review one level up (head → CEO
+  // → …). The active reviewer is the delegator's Nth manager, where N is the
+  // number of escalate verdicts recorded so far.
+  const verdictHistory = await loadVerdictHistory(reviewTaskId);
+  const escalations = verdictHistory.filter((d) => d === "escalate").length;
+  const reviewerId = await resolveReviewerForLevel(
+    delegatorId,
+    escalations,
+    task.companyId,
+  );
+  if (!reviewerId || reviewerId === task.assignedDeploymentId) {
+    // No one above to ask (escalated past the top of the chart, or the only
+    // ancestor is the assignee). Leave the task parked in `review` — the
+    // Review column is the human queue; the last escalate verdict's feedback
+    // explains what needs deciding.
+    log.info(
+      { taskId: reviewTaskId, escalations },
+      "review reached top of chain, awaiting human review",
     );
     return;
   }
@@ -161,7 +189,13 @@ export async function dispatchHeadReview(reviewTaskId: string): Promise<void> {
   // a piece that needed 2+ revisions and still isn't clearing the bar is
   // safer killed than shipped. Auto-APPROVE here was the previous default
   // and meant a flagged piece could ship past the writer's REVIEW intent.
-  const priorRounds = await countReviewRounds(reviewTaskId);
+  // The writer↔reviewer revise loop is bounded PER LEVEL: count revise
+  // verdicts since the last escalation (escalating to a new reviewer resets
+  // their budget). Past the cap, auto-reject so the loop always terminates.
+  const lastEscalateIdx = verdictHistory.lastIndexOf("escalate");
+  const priorRounds = verdictHistory
+    .slice(lastEscalateIdx + 1)
+    .filter((d) => d === "revise").length;
   if (priorRounds >= maxReviewRounds) {
     log.info(
       { taskId: reviewTaskId, priorRounds },
@@ -332,6 +366,28 @@ export async function dispatchHeadReview(reviewTaskId: string): Promise<void> {
     return;
   }
 
+  if (verdict.decision === "escalate") {
+    // Climb one level: hand the review to this reviewer's manager. The
+    // escalate verdict is already recorded above, so the next dispatch
+    // resolves the reviewer one level higher. If there is no manager (top of
+    // the chart), leave the task parked in `review` for a human — the Review
+    // column is the human queue and the verdict feedback is the trail.
+    const managerId = await findManager(reviewerId, task.companyId);
+    if (managerId && managerId !== task.assignedDeploymentId) {
+      await enqueueReviewDispatch(reviewTaskId);
+      log.info(
+        { taskId: reviewTaskId, from: reviewerId, to: managerId },
+        "head review escalated to manager",
+      );
+    } else {
+      log.info(
+        { taskId: reviewTaskId },
+        "head review escalated past top of chain, awaiting human review",
+      );
+    }
+    return;
+  }
+
   // revise — bounce back to the writer with the Head's feedback. Same
   // mechanism the verification gate uses: comment + re-open + re-dispatch.
   await bounceTaskToAgent({
@@ -426,13 +482,63 @@ async function loadDeliverable(
   return { traceId: row.id, text };
 }
 
-async function countReviewRounds(taskId: string): Promise<number> {
+// Ordered list of verdict decisions recorded on a task. Drives both the
+// escalation level (how many "escalate" verdicts) and the per-level revise
+// cap (revise verdicts since the last escalate). Events come back ascending
+// by sequence, so order is chronological.
+async function loadVerdictHistory(taskId: string): Promise<string[]> {
   const events = await listTaskEvents(taskId);
-  return events.filter(
-    (e) =>
-      (e.payload as Record<string, unknown> | null)?.actionType ===
-      "ReviewVerdict",
-  ).length;
+  return events
+    .filter(
+      (e) =>
+        (e.payload as Record<string, unknown> | null)?.actionType ===
+        "ReviewVerdict",
+    )
+    .map((e) => (e.payload as Record<string, unknown>).decision)
+    .filter((d): d is string => typeof d === "string");
+}
+
+// Resolve the active reviewer for an escalation level: walk up `level`
+// managers from the delegating head. Returns null when the chain runs out
+// (top of the org chart reached) → the task is left for a human.
+async function resolveReviewerForLevel(
+  baseDeploymentId: string,
+  level: number,
+  companyId: string,
+): Promise<string | null> {
+  let current: string | null = baseDeploymentId;
+  for (let i = 0; i < level; i++) {
+    current = await findManager(current, companyId);
+    if (!current) return null;
+  }
+  return current;
+}
+
+// The active manager (reporting parent) of a deployment, via
+// parent_deployment_index. Null when top-level or the parent is not an
+// active deployment.
+async function findManager(
+  deploymentId: string,
+  companyId: string,
+): Promise<string | null> {
+  const [self] = await db
+    .select({ parentIndex: deployments.parentDeploymentIndex })
+    .from(deployments)
+    .where(eq(deployments.id, deploymentId))
+    .limit(1);
+  if (!self || self.parentIndex === null) return null;
+  const [manager] = await db
+    .select({ id: deployments.id })
+    .from(deployments)
+    .where(
+      and(
+        eq(deployments.companyId, companyId),
+        eq(deployments.deploymentIndex, self.parentIndex),
+        eq(deployments.status, "active"),
+      ),
+    )
+    .limit(1);
+  return manager?.id ?? null;
 }
 
 async function loadReviewer(deploymentId: string) {
@@ -581,8 +687,9 @@ async function recordVerdict(
 function taskBriefText(task: TaskRow): string {
   const blocks = (task.blocks ?? []) as ContentBlock[];
   return blocks
-    .filter((b): b is Extract<ContentBlock, { type: "paragraph" }> =>
-      b.type === "paragraph",
+    .filter(
+      (b): b is Extract<ContentBlock, { type: "paragraph" }> =>
+        b.type === "paragraph",
     )
     .map((b) => b.text)
     .join("\n\n")
@@ -616,7 +723,8 @@ function buildReviewPrompt(args: BuildReviewPromptArgs): string {
   if (round >= maxRounds) {
     lines.push(
       "This is the final round — if you request revision again, the next " +
-        "turn auto-approves regardless.",
+        "turn auto-rejects regardless. If the call is above your role, " +
+        "escalate instead.",
     );
   }
   lines.push(

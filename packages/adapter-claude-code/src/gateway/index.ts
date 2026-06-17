@@ -154,6 +154,11 @@ interface RunRecord {
   controller: AbortController;
   subscribers: Set<ServerResponse>;
   evictTimer: ReturnType<typeof setTimeout> | null;
+  // Resolves when the underlying `claude` process has exited (run done or
+  // aborted). A superseding turn on the same sessionKey awaits this before
+  // resuming the session, so two processes never hold it at once.
+  finished: Promise<void>;
+  finish: () => void;
 }
 
 const runs = new Map<string, RunRecord>();
@@ -213,20 +218,40 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
 
   res.writeHead(200, { "Content-Type": "application/x-ndjson" });
 
-  const resumeCursor =
-    typeof body.resumeCursor === "number" ? body.resumeCursor : 0;
+  // A reconnect (the client's stream dropped mid-run) carries resumeCursor;
+  // a fresh dispatch from OCCA does not. The distinction is load-bearing: a
+  // reconnect must ATTACH to the existing run, but a fresh dispatch on a
+  // sessionKey that still has a record is a NEW turn (first turn, retry, or a
+  // revise bounce re-dispatching the same task) and must start its own run.
+  // Attaching a new turn to a stale record would replay the prior result, or
+  // collide with a still-live claude process on `--resume` ("Session ID
+  // already in use").
+  const isReconnect = typeof body.resumeCursor === "number";
+  const resumeCursor = isReconnect ? (body.resumeCursor as number) : 0;
 
-  // Resume path: a run already exists for this sessionKey (in-flight or just
-  // completed within the TTL) → attach this connection to it instead of
-  // spawning a second claude process. This is what makes a dropped
-  // connection recoverable.
   const existing = runs.get(sessionKey);
-  if (existing) {
+  if (existing && isReconnect) {
     attachSubscriber(existing, res, resumeCursor);
     return;
   }
+  if (existing) {
+    // Fresh turn superseding a prior run on the same sessionKey. If the prior
+    // run is still in flight, abort it and wait for the claude process to exit
+    // before we resume the session below — otherwise the new `--resume` races
+    // a live process holding the session lock.
+    if (!existing.done) {
+      existing.controller.abort();
+      await existing.finished.catch(() => {});
+    }
+    if (existing.evictTimer) clearTimeout(existing.evictTimer);
+    runs.delete(sessionKey);
+  }
 
   // Fresh run.
+  let finish!: () => void;
+  const finished = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
   const record: RunRecord = {
     events: [],
     result: null,
@@ -234,6 +259,8 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
     controller: new AbortController(),
     subscribers: new Set(),
     evictTimer: null,
+    finished,
+    finish,
   };
   runs.set(sessionKey, record);
   attachSubscriber(record, res, 0);
@@ -283,6 +310,7 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
     }
   }
   record.subscribers.clear();
+  record.finish();
   record.evictTimer = setTimeout(() => runs.delete(sessionKey), COMPLETED_TTL_MS);
 }
 

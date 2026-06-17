@@ -24,11 +24,11 @@ import {
 } from "./routine-form";
 
 // Per-field max-length budget for the create/update routine bodies.
-// Mirrors `LIMITS.DESCRIPTION_LONG` (4096) and `LIMITS.NAME` (200) on
+// Mirrors `LIMITS.DESCRIPTION_LONG` (8000) and `LIMITS.NAME` (200) on
 // the server so the user-facing message can show "X / Y chars" without
 // re-fetching server config.
 const FIELD_LIMITS_HINT: Record<string, string> = {
-  description: "max 4096 characters",
+  description: "max 8000 characters",
   title: "max 200 characters",
 };
 
