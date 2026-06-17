@@ -104,6 +104,7 @@ export async function recordWebhookDelivery(args: {
   webhookId: string;
   status: string;
   error: string | null;
+  response: string | null;
 }): Promise<void> {
   await db
     .update(companyWebhooks)
@@ -111,6 +112,7 @@ export async function recordWebhookDelivery(args: {
       lastDeliveredAt: new Date(),
       lastStatus: args.status,
       lastError: args.error,
+      lastResponse: args.response,
       updatedAt: new Date(),
     })
     .where(eq(companyWebhooks.id, args.webhookId));

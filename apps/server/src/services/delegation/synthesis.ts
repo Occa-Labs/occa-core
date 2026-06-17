@@ -33,7 +33,7 @@ import { roleLabelFor } from "@occa/shared/role-catalog";
 import { db } from "../../infra/database/client";
 import { getAdapter } from "../../lib/adapter-registry";
 import { childLogger } from "../../lib/logger";
-import { AGENT_WAIT_TIMEOUT_MS } from "../../lib/timing";
+import { TASK_DISPATCH_TIMEOUT_MS } from "../../lib/timing";
 import { threadSessionKey } from "../../lib/session-keys";
 import { findByDeploymentId as findRuntimeProfile } from "../../features/agents/repositories/agent-runtime-profile";
 import { insertMessage } from "../../features/chat/repositories/chat-messages";
@@ -431,7 +431,7 @@ export async function synthesizeForThread(
     externalAgentId: speaker.externalAgentId,
     sessionKey,
     message: wakePrompt,
-    waitTimeoutMs: AGENT_WAIT_TIMEOUT_MS,
+    waitTimeoutMs: TASK_DISPATCH_TIMEOUT_MS,
   });
   const finishedAt = new Date();
 

@@ -1,10 +1,13 @@
 // Drizzle access for `routines` and `routine_triggers`. The route layer
 // orchestrates (validation, cron computation); this layer only reads and
-// writes rows.
+// writes rows. The one exception is `rollDueCronTriggersForward`, which
+// uses the pure `computeNextRun` helper so both the HTTP and CEO-marker
+// resume paths share identical roll-forward behaviour.
 
 import { and, eq, inArray } from "drizzle-orm";
 import { deployments, routineTriggers, routines } from "@occa/shared/schema";
 import { db } from "../../../infra/database/client";
+import { computeNextRun } from "../domain/cron";
 
 export type RoutineRow = typeof routines.$inferSelect;
 export type RoutineTriggerRow = typeof routineTriggers.$inferSelect;
@@ -213,6 +216,35 @@ export async function updateTrigger(
     )
     .returning();
   return row;
+}
+
+// Resume cleanup: advance any past-due cron trigger to its next future
+// slot. While a routine is paused the scheduler skips it but leaves
+// next_run_at frozen at a now-elapsed time; without this, the next sweep
+// after resume sees it as overdue and fires an unwanted catch-up run.
+// No-op for interval/manual triggers and for triggers already in the future.
+export async function rollDueCronTriggersForward(
+  routineId: string,
+): Promise<void> {
+  const now = new Date();
+  const triggers = await listTriggersForRoutine(routineId);
+  for (const t of triggers) {
+    if (
+      t.kind === "cron" &&
+      t.enabled &&
+      t.cronExpression &&
+      t.nextRunAt &&
+      t.nextRunAt <= now
+    ) {
+      await db
+        .update(routineTriggers)
+        .set({
+          nextRunAt: computeNextRun(t.cronExpression, t.timezone ?? null),
+          updatedAt: new Date(),
+        })
+        .where(eq(routineTriggers.id, t.id));
+    }
+  }
 }
 
 export async function deleteTrigger(

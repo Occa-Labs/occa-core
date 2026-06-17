@@ -24,6 +24,7 @@ import { useAuth } from "@/features/auth/hooks/use-auth";
 import { Dock } from "@/components/ui/dock";
 import { FEATURES, IS_DEV_MODE } from "@/lib/env-flags";
 import { isAdapterType } from "@occa/shared/types";
+import type { AgentDTO } from "@occa/shared/types";
 import { TaskManager } from "@/features/tasks/components/task-manager";
 import { AgentsWindow } from "@/features/agents/components/agents-window";
 import {
@@ -56,6 +57,10 @@ interface OsShellProps {
    *  pass it down anyway so callbacks like `me.reload` are referentially
    *  stable across the tree.) */
   me: UseMeResult;
+  /** The user's idle agents (owned, company-less) from the raw /api/me list.
+   *  OsShell's `me.agents` is the company roster, so idle agents are passed
+   *  in separately for the AgentsWindow "Add existing" picker. */
+  idleAgents?: AgentDTO[];
   /** When set, OsShell auto-opens AgentsWindow with this agent selected.
    *  Driven by clicks on agents in the 3D office. */
   focusedAgentId?: string | null;
@@ -110,6 +115,7 @@ interface OsShellProps {
 // needs to know about pre-live phases.
 export function OsShell({
   me,
+  idleAgents = [],
   focusedAgentId,
   onClearFocus,
   focusedWorkstationId = null,
@@ -417,8 +423,10 @@ export function OsShell({
       )}
       {activeWindow === "agents" && (
         <AgentsWindow
+          companyId={me.company.id}
           companyName={me.company.name}
           agents={me.agents}
+          idleAgents={idleAgents}
           onReloadMe={me.reload}
           initialAgentId={effectiveAgentFocusId}
           onClose={closeAgentsWindow}
@@ -534,6 +542,7 @@ export function OsShell({
         open={deployProposal !== null}
         prefill={deployPrefill}
         agents={me.agents}
+        companyId={me.company.id}
         onClose={() => setDeployProposal(null)}
         onDeployed={handleProposalDeployed}
       />

@@ -104,7 +104,7 @@ async function publishContent(
     task: { id: taskId ?? "tool", title: input.title, tags },
     document: { title: input.title, content: input.content, format, tags },
     agent,
-    editor: null,
+    delegatedBy: null,
     trace: { id: "tool" },
   };
   const body = JSON.stringify(payload);
@@ -227,7 +227,7 @@ export const publishHandler: ToolHandler = {
       task: { id: "test", title: "OCCA publish test", tags: [] as string[] },
       document: { title: "OCCA publish test", content: "test", format: "markdown", tags: [] as string[] },
       agent: { name: "OCCA", role: "system" },
-      editor: null,
+      delegatedBy: null,
       trace: { id: "test" },
     };
     const body = JSON.stringify(payload);

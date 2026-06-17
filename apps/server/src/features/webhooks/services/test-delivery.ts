@@ -33,7 +33,7 @@ export async function sendTestDelivery(args: {
       tags: ["test"],
     },
     agent: { name: "OCCA", role: "system" },
-    editor: null,
+    delegatedBy: null,
     trace: { id: "test" },
   });
 }

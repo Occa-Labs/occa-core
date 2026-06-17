@@ -28,8 +28,8 @@ export interface DeliverTaskWebhooksInput {
   companyId: string;
   task: { id: string; title: string; tags: string[]; taskType: string };
   agent: { name: string; role: string };
-  /** The editor agent of record. Null when the task had no delegator. */
-  editor: { name: string; role: string } | null;
+  /** The agent that delegated this task. Null when it had no delegator. */
+  delegatedBy: { name: string; role: string } | null;
   /** The clean, markers-stripped agent deliverable. */
   document: { content: string; format: string; tags: string[] };
   traceId: string;
@@ -90,7 +90,7 @@ export async function deliverTaskWebhooks(
       tags: input.document.tags,
     },
     agent: { name: input.agent.name, role: input.agent.role },
-    editor: input.editor,
+    delegatedBy: input.delegatedBy,
     trace: { id: input.traceId },
   };
 

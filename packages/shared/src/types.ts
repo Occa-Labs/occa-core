@@ -687,6 +687,10 @@ export interface CreateAgentRequest {
   adapterType: AdapterType;
   adapterConfig: AdapterConfig;
   companyName?: string;
+  // Placement signal. Set = company-origin deploy (attach to this company
+  // with an index, parent, and seat). Omitted = user-origin deploy (idle
+  // agent, no company). Server authorizes ownership before attaching.
+  companyId?: string | null;
   // Optional explicit parent. When omitted / null, the server falls back
   // to catalog-driven auto-resolve (canonical head per role-catalog →
   // CEO → null). Pass an active deployment id to override that default.
@@ -1660,6 +1664,8 @@ export interface WebhookDTO {
   lastDeliveredAt: string | null;
   lastStatus: string | null;
   lastError: string | null;
+  /** Raw response body from the last delivery, capped. Opaque to OCCA. */
+  lastResponse: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -1677,6 +1683,8 @@ export interface WebhookResponse {
 export interface WebhookTestResponse {
   ok: boolean;
   status: string;
+  /** Raw response body the receiver returned, capped. Null when empty. */
+  response: string | null;
 }
 
 export interface CreateWebhookRequest {

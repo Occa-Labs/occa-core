@@ -153,6 +153,7 @@ router.post(
     const payload: WebhookTestResponse = {
       ok: result.ok,
       status: result.status,
+      response: result.response,
     };
     res.json(payload);
   },

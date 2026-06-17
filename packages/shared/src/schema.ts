@@ -1569,6 +1569,10 @@ export const companyWebhooks = pgTable(
     lastDeliveredAt: timestamp("last_delivered_at", { withTimezone: true }),
     lastStatus: text("last_status"),
     lastError: text("last_error"),
+    // Receiver's raw response body from the last delivery, capped. Opaque
+    // to OCCA — rendered as-is so operators see whatever the receiver
+    // returned, no per-destination parsing.
+    lastResponse: text("last_response"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

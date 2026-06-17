@@ -38,7 +38,10 @@ export function AppWindow({
   children,
   onClose,
   className = "",
-  zIndex = 30,
+  // Default above the OS chrome dock + top bar (z-50) so an open window is
+  // never clipped or overlapped by the dock. Stays below gates (z-100) and
+  // modals (z-150+).
+  zIndex = 60,
   defaultPosition,
   minWidth = 280,
   minHeight = 200,

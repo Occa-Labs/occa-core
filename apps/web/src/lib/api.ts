@@ -5,6 +5,7 @@ import type {
   AgentSkillSyncAction,
   ApprovalDTO,
   ApprovalStatus,
+  AgentDTO,
   AuthUser,
   CancelTraceRequest,
   CompanyResponse,
@@ -1052,6 +1053,15 @@ export const agentsApi = {
         method: "PATCH",
         body: JSON.stringify(input),
       },
+    ),
+  // Move an existing idle agent (owned, company-less) into a company.
+  assignToCompany: (
+    id: string,
+    input: { companyId: string; parentAgentId?: string | null },
+  ) =>
+    request<{ agent: AgentDTO; reparentedCount?: number }>(
+      `/api/agents/${id}/assign-company`,
+      { method: "POST", body: JSON.stringify(input) },
     ),
   createStream: async (
     input: CreateAgentRequest,

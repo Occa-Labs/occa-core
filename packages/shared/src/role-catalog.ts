@@ -152,7 +152,16 @@ export const ROLE_CATALOG: readonly RoleDefinition[] = [
     tier: "head",
     manages: ["market_researcher", "onchain_analyst", "data_analyst", "tokenomics_designer"],
   },
-  { key: "head_editorial", label: "Head of Editorial", description: "Content slate, voice, publishing cadence", category: "leadership", defaultName: "Theo Marsh", seatingZoneOverride: "editorial_content", tier: "head", manages: ["news_writer"] },
+  {
+    key: "head_editorial",
+    label: "Head of Editorial",
+    description: "Content slate, voice, publishing cadence, holds the publish gate",
+    category: "leadership",
+    defaultName: "Theo Marsh",
+    seatingZoneOverride: "editorial_content",
+    tier: "head",
+    manages: ["news_writer", "markets_reporter", "verification_editor", "social_media_editor", "seo_editor"],
+  },
   {
     key: "head_community",
     label: "Head of Community",
@@ -190,6 +199,10 @@ export const ROLE_CATALOG: readonly RoleDefinition[] = [
   { key: "managing_editor", label: "Managing Editor", description: "Editorial calendar, copy review, fact checks", category: "editorial_content", defaultName: "Lior Stern", tier: "specialist", manages: [] },
   { key: "senior_writer", label: "Senior Writer", description: "Long-form, opinion, deep dives", category: "editorial_content", defaultName: "Faye Eriksson", tier: "specialist", manages: [] },
   { key: "news_writer", label: "News Writer", description: "Fast, factual news writing on a daily cadence", category: "editorial_content", defaultName: "Juno Vale", tier: "specialist", manages: [] },
+  { key: "markets_reporter", label: "Markets Reporter", description: "Markets + on-chain data reporting — reports the numbers, not the prediction", category: "editorial_content", defaultName: "Soren Hale", tier: "specialist", manages: [] },
+  { key: "verification_editor", label: "Verification Editor", description: "Re-checks every source and claim against primary sources before publish", category: "editorial_content", defaultName: "Anika Roth", tier: "specialist", manages: [] },
+  { key: "social_media_editor", label: "Social Media Editor", description: "Distributes published pieces across X and channels in the newsroom voice", category: "editorial_content", defaultName: "Kaia Vale", tier: "specialist", manages: [] },
+  { key: "seo_editor", label: "SEO Editor", description: "Shapes each piece for search discovery and ranking — headlines, structure, briefs", category: "editorial_content", defaultName: "Priya Anand", tier: "specialist", manages: [] },
   { key: "copywriter", label: "Copywriter", description: "Short-form copy, landing pages, emails", category: "editorial_content", defaultName: "Owen Hatcher", tier: "specialist", manages: [] },
 
   // ── Operations / Admin ────────────────────────────────────────────────

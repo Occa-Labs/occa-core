@@ -31,6 +31,7 @@ import {
   loadRoutineRow,
   markTriggersDue,
   ownsRoutine,
+  rollDueCronTriggersForward,
   type RoutinePatch,
   type TriggerPatch,
   updateRoutine,
@@ -176,6 +177,14 @@ router.patch("/:id", requireAuth, async (req: Request, res: Response) => {
     res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.NOT_FOUND });
     return;
   }
+
+  // Resuming a routine: roll any past-due cron trigger forward so the next
+  // sweep doesn't immediately fire a catch-up run the operator didn't ask
+  // for. Shared with the CEO TOGGLE_ROUTINE path.
+  if (parsed.data.status === "active") {
+    await rollDueCronTriggersForward(req.params.id);
+  }
+
   const dto = await loadRoutineDTO(companyId, row.id);
   res.json({ routine: dto! } satisfies RoutineResponse);
 });

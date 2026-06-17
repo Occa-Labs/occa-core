@@ -23,11 +23,12 @@ export interface TaskCompletedPayload {
   };
   agent: { name: string; role: string };
   /**
-   * The editor agent of record — the agent that delegated the task and
-   * is editorially responsible for the deliverable. Null when the task
-   * had no delegating agent (e.g. created directly by a user).
+   * The agent that delegated this task and is accountable for the
+   * deliverable. Null when the task had no delegating agent (e.g.
+   * created directly by a user). Destination-neutral: a receiver maps
+   * this to whatever role-of-record it wants (editor, reviewer, owner).
    */
-  editor: { name: string; role: string } | null;
+  delegatedBy: { name: string; role: string } | null;
   trace: { id: string };
 }
 

@@ -18,6 +18,7 @@ export function toWebhookDTO(row: CompanyWebhookRow): WebhookDTO {
       : null,
     lastStatus: row.lastStatus,
     lastError: row.lastError,
+    lastResponse: row.lastResponse,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };

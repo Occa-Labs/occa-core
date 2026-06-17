@@ -260,6 +260,13 @@
       "when": 1781346589885,
       "tag": "0036_wooden_valeria_richards",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1781500864691,
+      "tag": "0037_fixed_exiles",
+      "breakpoints": true
     }
   ]
 }

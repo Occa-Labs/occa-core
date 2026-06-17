@@ -18,6 +18,7 @@ import { agentIdentities, deployments, tasks } from "@occa/shared/schema";
 import { db } from "../../../infra/database/client";
 import { childLogger } from "../../../lib/logger";
 import { autoSaveTaskAsDocument } from "../../../services/auto-save-document";
+import { autoPublishOnCompletion } from "../../../services/auto-publish-on-completion";
 import { deliverTaskWebhooks } from "../../../services/deliver-task-webhooks";
 import { ensureInvoiceForCompletedTask } from "../../billing/services/invoice-on-task-complete";
 // Cross-feature reach into the chain feature — mirrors the pre-existing
@@ -82,10 +83,10 @@ export async function finalizeTaskDone(
     return;
   }
 
-  // Editor of record — the agent that delegated the task. Surfaced in the
-  // webhook payload so a publishing receiver can credit it. Skipped when
-  // the task had no delegator, or delegated to itself.
-  let editor: { name: string; role: string } | null = null;
+  // The agent that delegated the task. Surfaced in the webhook payload so
+  // a receiver can credit a role-of-record. Skipped when the task had no
+  // delegator, or delegated to itself.
+  let delegatedBy: { name: string; role: string } | null = null;
   if (
     task.createdByDeploymentId &&
     task.createdByDeploymentId !== task.assignedDeploymentId
@@ -99,7 +100,7 @@ export async function finalizeTaskDone(
       )
       .where(eq(deployments.id, task.createdByDeploymentId))
       .limit(1);
-    if (row) editor = { name: row.name, role: row.role };
+    if (row) delegatedBy = { name: row.name, role: row.role };
   }
 
   const occurredAt = input.occurredAt ?? new Date();
@@ -159,11 +160,39 @@ export async function finalizeTaskDone(
   // domain-neutral, independent of any company-specific verification. A
   // company that wants graded quality plugs in its own rubric later.
   void (async () => {
-    // The on-chain result_uri comes from the task's own `resultUri` field —
-    // set by the agent after it publishes (via a tool) or manually by the
-    // operator. The legacy webhook delivery is kept only as a fallback for
-    // companies still on that path; it no longer drives anchoring.
+    // The on-chain result_uri is resolved in priority order:
+    //   1. task.resultUri — the agent published explicitly (its own tool
+    //      call), or the operator set it manually.
+    //   2. Auto-publish — if the company has an active Publish tool whose
+    //      role gate this agent passes, the lifecycle ships the deliverable
+    //      through it server-side ("agent on rails": deterministic, no agent
+    //      action needed). Generic across companies; install the tool → get
+    //      publish + on-chain proof for free.
+    //   3. Legacy webhook delivery — kept as a fallback for companies still
+    //      on the old per-task webhook path.
+    // Any empty result just means "nothing published" → the trace anchors
+    // hash-only (the deliverable stays private). All paths are best-effort.
     let resultUri = task.resultUri ?? "";
+    if (!resultUri) {
+      try {
+        const published = await autoPublishOnCompletion({
+          companyId: task.companyId,
+          deploymentId: agent.id,
+          agentRole: agent.role,
+          document: {
+            title: task.title,
+            content: input.deliverable,
+            tags: task.tags,
+          },
+        });
+        resultUri = published.resultUri ?? "";
+      } catch (err) {
+        log.error(
+          { err, taskId: task.id },
+          "auto-publish failed (non-fatal)",
+        );
+      }
+    }
     if (!resultUri) {
       try {
         const delivery = await deliverTaskWebhooks({
@@ -175,7 +204,7 @@ export async function finalizeTaskDone(
             taskType: task.taskType,
           },
           agent: { name: agent.name, role: agent.role },
-          editor,
+          delegatedBy,
           document: {
             content: input.deliverable,
             format: "markdown",

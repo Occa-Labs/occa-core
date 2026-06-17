@@ -19,6 +19,9 @@ const EVENT_HEADER = "X-OCCA-Event";
 const DELIVERY_HEADER = "X-OCCA-Delivery";
 const DELIVERY_TIMEOUT_MS = 10_000;
 const ERROR_DETAIL_MAX = 500;
+// Cap on the receiver's raw response body we persist for the operator to
+// inspect. Opaque to OCCA — stored and rendered as-is.
+const RESPONSE_BODY_MAX = 2_000;
 
 export interface DeliveryResult {
   ok: boolean;
@@ -31,6 +34,12 @@ export interface DeliveryResult {
    * `result_uri` so provenance links back to the published artifact.
    */
   resultUri: string | null;
+  /**
+   * The receiver's raw response body, capped. Opaque to OCCA — surfaced
+   * to the operator as-is, no per-destination parsing. Null when empty or
+   * when the request itself failed before a response.
+   */
+  response: string | null;
 }
 
 export async function deliverWebhook(
@@ -58,11 +67,10 @@ export async function deliverWebhook(
     });
 
     const status = String(response.status);
+    const rawBody = await response.text().catch(() => "");
+    const responseBody = rawBody ? rawBody.slice(0, RESPONSE_BODY_MAX) : null;
+
     if (!response.ok) {
-      const detail = (await response.text().catch(() => "")).slice(
-        0,
-        ERROR_DETAIL_MAX,
-      );
       log.warn(
         { webhookId: webhook.id, status, deliveryId },
         "webhook delivery returned non-2xx",
@@ -70,16 +78,16 @@ export async function deliverWebhook(
       await recordWebhookDelivery({
         webhookId: webhook.id,
         status,
-        error: detail || `HTTP ${status}`,
+        error: rawBody.slice(0, ERROR_DETAIL_MAX) || `HTTP ${status}`,
+        response: responseBody,
       });
-      return { ok: false, status, resultUri: null };
+      return { ok: false, status, resultUri: null, response: responseBody };
     }
 
     // Capture the receiver's canonical URL when it returns one in the 2xx
     // JSON body (e.g. a publish target returns `{ url, slug }`). Best-effort: a
     // non-JSON or url-less body just yields null.
     let resultUri: string | null = null;
-    const rawBody = await response.text().catch(() => "");
     if (rawBody) {
       try {
         const parsed = JSON.parse(rawBody) as { url?: unknown };
@@ -99,8 +107,9 @@ export async function deliverWebhook(
       webhookId: webhook.id,
       status,
       error: null,
+      response: responseBody,
     });
-    return { ok: true, status, resultUri };
+    return { ok: true, status, resultUri, response: responseBody };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     log.error(
@@ -111,7 +120,8 @@ export async function deliverWebhook(
       webhookId: webhook.id,
       status: "error",
       error: message,
+      response: null,
     });
-    return { ok: false, status: "error", resultUri: null };
+    return { ok: false, status: "error", resultUri: null, response: null };
   }
 }

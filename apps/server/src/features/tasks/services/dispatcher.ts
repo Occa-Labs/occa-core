@@ -34,7 +34,7 @@ import type { ContentBlock, TaskStatus, TraceUsage } from "@occa/shared/types";
 import { db } from "../../../infra/database/client";
 import {
   AGENT_KEY_TRACE_TTL_MS,
-  AGENT_WAIT_TIMEOUT_MS,
+  TASK_DISPATCH_TIMEOUT_MS,
   TRACE_EVENT_FLUSH_MS,
 } from "../../../lib/timing";
 import { childLogger } from "../../../lib/logger";
@@ -218,7 +218,7 @@ export async function dispatchTask(
     sessionKey,
     message,
     onEvent: flushHandle.queueEvent,
-    waitTimeoutMs: AGENT_WAIT_TIMEOUT_MS,
+    waitTimeoutMs: TASK_DISPATCH_TIMEOUT_MS,
   });
   await flushHandle.drain();
 

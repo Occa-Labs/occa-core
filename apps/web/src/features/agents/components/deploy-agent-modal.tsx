@@ -74,12 +74,17 @@ export function DeployAgentModal({
   prefill = null,
   showBilling = true,
   showRole = true,
+  companyId = null,
 }: {
   open: boolean;
   onClose: () => void;
   onDeployed: (agentId: string) => void;
   agents: AgentDTO[];
   prefill?: DeployPrefill | null;
+  /** Set for a company-origin deploy (company OS Agents window, CEO
+   *  proposal): the new agent attaches to this company. Omitted for the
+   *  personal Home flow, which creates an idle, company-less agent. */
+  companyId?: string | null;
   /** Hide the per-task billing rate. Task rates are a company concern, so
    *  the personal home's Add-agent flow turns this off. */
   showBilling?: boolean;
@@ -331,6 +336,8 @@ export function DeployAgentModal({
           persona: persona.trim() || null,
           adapterType,
           adapterConfig,
+          // Company-origin deploy attaches to this company; null = idle.
+          companyId: companyId ?? null,
           parentAgentId: parentAgentId || null,
           // SOL → lamports. Empty input = null (no rate set yet).
           taskRateLamports:
@@ -367,6 +374,7 @@ export function DeployAgentModal({
     ccApiKey,
     parentAgentId,
     taskRateSol,
+    companyId,
     handleStreamError,
     onDeployed,
   ]);

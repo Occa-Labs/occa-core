@@ -31,8 +31,13 @@ import { ChannelsSection } from "./channels-section";
 import { buildTree, type TreeNode } from "./hierarchy-tab";
 
 interface AgentsWindowProps {
+  companyId: string;
   companyName: string;
   agents: AgentDTO[];
+  /** The user's idle agents (owned, not in any company). Sourced from the
+   *  raw owner-scoped /api/me list — NOT the company roster — and surfaced
+   *  in the "Add existing" picker so they can be assigned into this company. */
+  idleAgents: AgentDTO[];
   onReloadMe: () => Promise<void> | void;
   /** When set, seeds the selected agent on mount AND re-selects whenever
    *  the value changes (e.g. user clicks a different agent in the 3D
@@ -72,14 +77,21 @@ const TABS: { id: TabId; label: string; disabled?: boolean }[] = [
 ];
 
 export function AgentsWindow({
+  companyId,
   companyName,
   agents,
+  idleAgents,
   onReloadMe,
   initialAgentId = null,
   onClose,
 }: AgentsWindowProps) {
   const [selectedId, setSelectedId] = useState<string | null>(initialAgentId);
   const [deployOpen, setDeployOpen] = useState(false);
+  const [assignOpen, setAssignOpen] = useState(false);
+
+  // `agents` is already the company roster (the OS passes the company-scoped
+  // list). `idleAgents` arrives separately for the "Add existing" picker.
+  const companyAgents = agents;
 
   // External re-selection: theater click on a different agent updates
   // initialAgentId. We force-sync selectedId so the new agent surfaces
@@ -89,18 +101,18 @@ export function AgentsWindow({
   }, [initialAgentId]);
 
   useEffect(() => {
-    if (!selectedId && agents.length > 0) {
-      setSelectedId(agents[0].id);
+    if (!selectedId && companyAgents.length > 0) {
+      setSelectedId(companyAgents[0].id);
       return;
     }
-    if (selectedId && !agents.find((a) => a.id === selectedId)) {
-      setSelectedId(agents[0]?.id ?? null);
+    if (selectedId && !companyAgents.find((a) => a.id === selectedId)) {
+      setSelectedId(companyAgents[0]?.id ?? null);
     }
-  }, [agents, selectedId]);
+  }, [companyAgents, selectedId]);
 
   const selected = useMemo(
-    () => agents.find((a) => a.id === selectedId) ?? null,
-    [agents, selectedId],
+    () => companyAgents.find((a) => a.id === selectedId) ?? null,
+    [companyAgents, selectedId],
   );
 
   const handleDeployed = useCallback(
@@ -112,11 +124,20 @@ export function AgentsWindow({
     [onReloadMe],
   );
 
+  const handleAssigned = useCallback(
+    async (assignedAgentId: string) => {
+      setAssignOpen(false);
+      await onReloadMe();
+      setSelectedId(assignedAgentId);
+    },
+    [onReloadMe],
+  );
+
   return (
     <>
       <AppWindow
         title="Agents"
-        subtitle={`${agents.length} agent${agents.length !== 1 ? "s" : ""}`}
+        subtitle={`${companyAgents.length} agent${companyAgents.length !== 1 ? "s" : ""}`}
         onClose={onClose}
         defaultSize={{
           w: Math.min(1000, Math.round(window.innerWidth * 0.82)),
@@ -128,22 +149,26 @@ export function AgentsWindow({
         <div className="flex h-full overflow-hidden">
           <AgentSidebar
             companyName={companyName}
-            agents={agents}
+            agents={companyAgents}
             selectedId={selectedId}
             onSelect={setSelectedId}
             onDeploy={() => setDeployOpen(true)}
+            idleCount={idleAgents.length}
+            onAddExisting={() => setAssignOpen(true)}
           />
           <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
             {selected ? (
               <AgentDetail
                 agent={selected}
-                agents={agents}
+                agents={companyAgents}
                 onReloadMe={onReloadMe}
               />
             ) : (
               <div className="flex-1 flex items-center justify-center">
                 <p className="text-sm text-white/50">
-                  {agents.length === 0 ? "No agents yet" : "Select an agent"}
+                  {companyAgents.length === 0
+                    ? "No agents yet"
+                    : "Select an agent"}
                 </p>
               </div>
             )}
@@ -154,9 +179,108 @@ export function AgentsWindow({
         open={deployOpen}
         onClose={() => setDeployOpen(false)}
         onDeployed={handleDeployed}
-        agents={agents}
+        agents={companyAgents}
+        companyId={companyId}
+      />
+      <AssignExistingModal
+        open={assignOpen}
+        onClose={() => setAssignOpen(false)}
+        companyId={companyId}
+        companyName={companyName}
+        idleAgents={idleAgents}
+        onAssigned={handleAssigned}
       />
     </>
+  );
+}
+
+// ── Add-existing picker ────────────────────────────────────────────────────
+// Lists the user's idle agents (owned, not in any company) and assigns the
+// chosen one into this company. Server fills in index/parent/seat — no
+// re-provision, since an idle agent is already running on its gateway.
+function AssignExistingModal({
+  open,
+  onClose,
+  companyId,
+  companyName,
+  idleAgents,
+  onAssigned,
+}: {
+  open: boolean;
+  onClose: () => void;
+  companyId: string;
+  companyName: string;
+  idleAgents: AgentDTO[];
+  onAssigned: (agentId: string) => void;
+}) {
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const assign = useCallback(
+    async (agentId: string) => {
+      setBusyId(agentId);
+      setError(null);
+      try {
+        await agentsApi.assignToCompany(agentId, { companyId });
+        onAssigned(agentId);
+      } catch (e) {
+        setError(
+          e instanceof ApiError
+            ? `Couldn't add agent (${e.status})`
+            : "Couldn't add agent",
+        );
+        setBusyId(null);
+      }
+    },
+    [companyId, onAssigned],
+  );
+
+  return (
+    <Modal open={open} onClose={onClose} title="Add existing agent">
+      <div className="px-5 py-4 space-y-3">
+        <p className="text-xs text-white/50">
+          Idle agents you own. Adding one places it in {companyName} under its
+          canonical manager.
+        </p>
+        {error && (
+          <div className="rounded-lg bg-red-500/10 border border-red-500/20 px-3 py-2 text-xs text-red-300">
+            {error}
+          </div>
+        )}
+        {idleAgents.length === 0 ? (
+          <div className="px-3 py-6 text-center text-xs text-white/30">
+            No idle agents available.
+          </div>
+        ) : (
+          <div className="space-y-1 max-h-80 overflow-y-auto">
+            {idleAgents.map((agent) => (
+              <button
+                key={agent.id}
+                type="button"
+                disabled={busyId !== null}
+                onClick={() => assign(agent.id)}
+                className="w-full text-left flex items-center gap-3 rounded-xl px-3 py-2.5 bg-white/5 hover:bg-white/10 border border-white/8 transition-colors cursor-pointer disabled:opacity-50"
+              >
+                <div className="size-8 rounded-full bg-white/8 text-white/70 flex items-center justify-center text-xs font-semibold shrink-0">
+                  {initial(agent.name)}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs font-medium text-white/85 truncate">
+                    {agent.name}
+                  </div>
+                  <div className="text-[10px] text-white/40 truncate">
+                    {formatRoleLabel(agent.role)}
+                  </div>
+                </div>
+                {busyId === agent.id && (
+                  <Loader2 className="size-4 text-white/50 animate-spin shrink-0" />
+                )}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </Modal>
   );
 }
 
@@ -168,12 +292,16 @@ function AgentSidebar({
   selectedId,
   onSelect,
   onDeploy,
+  idleCount,
+  onAddExisting,
 }: {
   companyName: string;
   agents: AgentDTO[];
   selectedId: string | null;
   onSelect: (id: string) => void;
   onDeploy: () => void;
+  idleCount: number;
+  onAddExisting: () => void;
 }) {
   const [query, setQuery] = useState("");
   // Default to tree so the org structure is visible at a glance.
@@ -314,11 +442,11 @@ function AgentSidebar({
         )}
       </div>
 
-      {/* Deploy button */}
-      <div className="shrink-0 p-3 border-t border-white/8">
+      {/* Deploy / add buttons */}
+      <div className="shrink-0 p-3 border-t border-white/8 space-y-2">
         <button
           onClick={onDeploy}
-          className="w-full flex items-center justify-center gap-2 rounded-xl py-2 text-xs font-medium text-white/60 hover:text-white transition-all duration-150"
+          className="w-full flex items-center justify-center gap-2 rounded-xl py-2 text-xs font-medium text-white/60 hover:text-white transition-all duration-150 cursor-pointer"
           style={{
             background: "rgba(255,255,255,0.05)",
             border: "1px solid rgba(255,255,255,0.08)",
@@ -327,6 +455,14 @@ function AgentSidebar({
           <Plus className="size-3.5" />
           Deploy agent
         </button>
+        {idleCount > 0 && (
+          <button
+            onClick={onAddExisting}
+            className="w-full flex items-center justify-center gap-2 rounded-xl py-2 text-xs font-medium text-white/45 hover:text-white/80 transition-all duration-150 cursor-pointer"
+          >
+            Add existing agent ({idleCount})
+          </button>
+        )}
       </div>
     </div>
   );

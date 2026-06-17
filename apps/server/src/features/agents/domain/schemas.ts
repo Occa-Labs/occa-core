@@ -74,6 +74,13 @@ const createAgentSharedFields = {
   // when the user already owns a company — agents always attach to the
   // existing one so we never end up with split companies.
   companyName: z.string().trim().min(1).max(LIMITS.NAME).optional(),
+  // Placement signal. When set, this is a COMPANY-ORIGIN deploy (the
+  // company OS Agents window or a CEO proposal): the new deployment
+  // attaches to this company with a per-company index, parent, and seat.
+  // When omitted, this is a USER-ORIGIN deploy (personal Home): a bare
+  // idle agent with no company. The route authorizes ownership of this
+  // company before attaching.
+  companyId: z.string().uuid().nullable().optional(),
   // Optional explicit parent. When omitted / null the server falls back
   // to catalog-driven auto-resolve. Validated against the requester's
   // company in the route handler before insert.
@@ -134,6 +141,15 @@ export const patchAgentBody = z.object({
     .optional(),
   // Flat per-task invoice rate. `null` clears it (no auto-invoicing).
   taskRateLamports: taskRateLamportsSchema,
+});
+
+// POST /api/agents/:id/assign-company — move an existing idle agent (owned
+// by the user, companyId=NULL) into one of the user's companies. Assigns a
+// per-company index, parent, and seat; no re-provision.
+export const assignCompanyBody = z.object({
+  companyId: z.string().uuid(),
+  // Optional explicit parent; omitted = catalog auto-resolve.
+  parentAgentId: z.string().uuid().nullable().optional(),
 });
 
 // PATCH /api/agents/:id/files/:filename — edit one workspace file.

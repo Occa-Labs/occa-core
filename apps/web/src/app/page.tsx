@@ -104,6 +104,15 @@ export default function HomePage() {
     [me, companyAgents.agents, osReload],
   );
 
+  // Idle agents the user owns (no company), from the owner-scoped /api/me
+  // list. Passed to the OS so the company Agents window can offer them in
+  // its "Add existing" picker. (osMe.agents is the company roster, which
+  // never includes idle agents.)
+  const idleAgents = useMemo(
+    () => me.agents.filter((a) => a.companyId === null),
+    [me.agents],
+  );
+
   // Deploy-agent modal, opened from the home screen's My agents section.
   // Lives here (app level) so features/home never imports features/agents
   // directly — composition happens in the page.
@@ -348,6 +357,7 @@ export default function HomePage() {
             )}
             <OsShell
               me={osMe}
+              idleAgents={idleAgents}
               focusedAgentId={focusedAgentId}
               onClearFocus={handleClearFocus}
               focusedWorkstationId={focusedWorkstationId}

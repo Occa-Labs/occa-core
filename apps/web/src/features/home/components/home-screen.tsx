@@ -340,7 +340,6 @@ export function HomeScreen({
         }
         disableClose
         defaultSize={{ w: 780, h: 540 }}
-        zIndex={30}
         headerRight={
           section === "agents" ? (
             <Button variant="secondary" size="sm" onClick={onAddAgent}>

@@ -32,7 +32,7 @@ import type { ContentBlock } from "@occa/shared/types";
 import { db } from "../../../infra/database/client";
 import { childLogger } from "../../../lib/logger";
 import { LIMITS } from "../../../lib/limits";
-import { AGENT_WAIT_TIMEOUT_MS } from "../../../lib/timing";
+import { TASK_DISPATCH_TIMEOUT_MS } from "../../../lib/timing";
 import { getAdapter } from "../../../lib/adapter-registry";
 import { finalizeTaskDone } from "./finalize";
 import { bounceTaskToAgent } from "./comments";
@@ -242,7 +242,7 @@ export async function dispatchHeadReview(reviewTaskId: string): Promise<void> {
       sessionKey,
       message: prompt,
       onEvent,
-      waitTimeoutMs: AGENT_WAIT_TIMEOUT_MS,
+      waitTimeoutMs: TASK_DISPATCH_TIMEOUT_MS,
     });
   } catch (err) {
     await persistReviewEvents(reviewEvents);

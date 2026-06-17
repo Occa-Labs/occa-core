@@ -80,6 +80,7 @@ import {
   buildWorkspacePath,
 } from "../domain/external-id";
 import {
+  assignCompanyBody,
   createAgentBody,
   patchAgentBody,
   reprovisionAgentBody,
@@ -88,6 +89,7 @@ import {
   updateAgentFileBody,
 } from "../domain/schemas";
 import { switchAdapter } from "../services/switch-adapter";
+import { assignDeploymentToCompany } from "../services/assign-to-company";
 import {
   findByName as findWorkspaceFile,
   updateContent as updateWorkspaceFileContent,
@@ -142,6 +144,47 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
     parsedData: parsed.data,
   });
 });
+
+// POST /api/agents/:id/assign-company — move an existing idle agent into one
+// of the user's companies. Plain JSON (no SSE): the agent is already
+// provisioned, so this only fills in company linkage + re-seeds workspace.
+router.post(
+  "/:id/assign-company",
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const parsed = assignCompanyBody.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(StatusCodes.BAD_REQUEST).json({
+        error: ERROR_CODES.INVALID_BODY,
+        detail: parsed.error.flatten(),
+      });
+      return;
+    }
+    const result = await assignDeploymentToCompany({
+      userId: req.user!.userId,
+      deploymentId: req.params.id,
+      companyId: parsed.data.companyId,
+      parentAgentId: parsed.data.parentAgentId ?? null,
+    });
+    if (!result.ok) {
+      const status =
+        result.code === "forbidden"
+          ? StatusCodes.FORBIDDEN
+          : result.code === "not_found"
+            ? StatusCodes.NOT_FOUND
+            : result.code === "already_assigned" ||
+                result.code === "office_full" ||
+                result.code === "parent_not_found"
+              ? StatusCodes.CONFLICT
+              : StatusCodes.INTERNAL_SERVER_ERROR;
+      res.status(status).json({ error: result.code, detail: result.message });
+      return;
+    }
+    res
+      .status(StatusCodes.OK)
+      .json({ agent: result.agent, reparentedCount: result.reparentedCount });
+  },
+);
 
 // POST /api/agents/:id/reprovision — retry provisioning + seeding from
 // the failed step without touching the DB record. Streams SSE identical

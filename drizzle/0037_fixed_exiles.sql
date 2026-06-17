@@ -1,0 +1,1 @@
+ALTER TABLE "company_webhooks" ADD COLUMN "last_response" text;

@@ -93,6 +93,7 @@ import {
 } from "../../../features/company-brain/repositories/company-brain";
 import {
   deleteRoutine,
+  rollDueCronTriggersForward,
   updateRoutine,
 } from "../../../features/routines/repositories/routines";
 import {
@@ -1159,6 +1160,13 @@ export async function handleToggleRoutineBlock(
     .update(routines)
     .set({ status: desiredStatus, updatedAt: new Date() })
     .where(eq(routines.id, row.id));
+
+  // Resuming: roll past-due cron triggers forward so the routine doesn't
+  // immediately catch-up fire on the next sweep (mirrors the HTTP PATCH
+  // resume path).
+  if (desiredStatus === "active") {
+    await rollDueCronTriggersForward(row.id);
+  }
 
   log.info(
     {

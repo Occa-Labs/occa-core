@@ -148,7 +148,7 @@ function buildStages({
   trace?: TraceAnchorRecord;
   anchorsLoading: boolean;
 }): Stage[] {
-  const verifiedOk = !!verifiedPass;
+  const verifiedOk = !!verifiedPass || !!trace;
   const score =
     typeof verifiedPass?.payload.qualityScore === "number"
       ? (verifiedPass.payload.qualityScore as number)
@@ -166,7 +166,11 @@ function buildStages({
   };
 
   let verified: Stage;
-  if (verifiedPass) {
+  // A trace is proof of a passed verdict — only Passed deliverables anchor
+  // on-chain. So an anchored task reads as verified even when the
+  // VerificationPassed task_event is missing (older task, or a verify path
+  // that didn't record the event).
+  if (verifiedPass || trace) {
     verified = {
       key: "verified",
       label: "Passed verification",

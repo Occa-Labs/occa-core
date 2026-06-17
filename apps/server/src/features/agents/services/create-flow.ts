@@ -24,10 +24,13 @@ import {
 } from "@occa/shared/schema";
 import { CEO_ROLE, getTier } from "@occa/shared/role-catalog";
 import type { CreateAgentResponse } from "@occa/shared/types";
+import { ERROR_CODES } from "@occa/shared/error-codes";
+import { StatusCodes } from "http-status-codes";
 import { db } from "../../../infra/database/client";
 import { getAdapter } from "../../../lib/adapter-registry";
 import { normalizeGatewayUrl } from "../../../lib/gateway-url";
 import { PG_ERROR_CODES } from "../../../lib/pg-errors";
+import { findOwnedById } from "../../companies/repositories/companies";
 import {
   renderWorkspaceFiles,
   DEFAULT_PERSONA,
@@ -58,6 +61,22 @@ function synthPlaceholderKey(tag: string): string {
   return `${tag}_${randomBytes(24).toString("hex")}`;
 }
 
+// Per-company MAX(deployment_index) read inside a tx (uses the tx handle so
+// it sees uncommitted concurrent inserts and serializes via
+// uniq_deployments_company_index). Mirrors deployment-create's helper.
+async function maxDeploymentIndexForCompanyTx(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  companyId: string,
+): Promise<number | undefined> {
+  const rows = await tx
+    .select({ idx: deployments.deploymentIndex })
+    .from(deployments)
+    .where(eq(deployments.companyId, companyId));
+  const idxs = rows.map((r) => r.idx).filter((n): n is number => n !== null);
+  if (idxs.length === 0) return undefined;
+  return Math.max(...idxs);
+}
+
 // userCompanyId — local single-row read used by the create flow's
 // gating (do we need to demand a `companyName` from the caller?).
 async function userCompanyId(userId: string): Promise<string | null> {
@@ -84,8 +103,14 @@ export interface RunCreateFlowArgs {
 
 export async function runCreateFlow(args: RunCreateFlowArgs): Promise<void> {
   const { req, res, userId, parsedData } = args;
-  const { name, role, adapterType, parentAgentId, taskRateLamports } =
-    parsedData;
+  const {
+    name,
+    role,
+    adapterType,
+    parentAgentId,
+    taskRateLamports,
+    companyId: requestedCompanyId,
+  } = parsedData;
   // baseConfig comes off the discriminated union — each adapter's shape
   // is validated by the zod schema upstream. From here on it's just
   // `Record<string, unknown>` so the orchestrator stays agent-agnostic.
@@ -94,16 +119,37 @@ export async function runCreateFlow(args: RunCreateFlowArgs): Promise<void> {
     unknown
   >;
 
-  // Agents are independent: creating one makes a bare IDLE agent (identity
-  // + deployment with companyId=NULL + runtime), NOT tied to any company.
-  // Assigning it to a company is a separate step. No company is created
-  // here — the agent simply exists, available, until deployed somewhere.
+  // Placement is decided by origin:
+  //   • USER-ORIGIN (no companyId) → bare IDLE agent (identity + deployment
+  //     with companyId=NULL + runtime), not tied to any company. Assigning
+  //     it to a company is a separate step.
+  //   • COMPANY-ORIGIN (companyId set) → attach to that company with a
+  //     per-company index, parent, and seat. Used by the company OS Agents
+  //     window and the CEO-proposal deploy.
+  // Authorize the company up front (before switching to SSE) so an
+  // unauthorized attach returns a clean 403 instead of an SSE error frame.
+  let attachCompany: typeof companies.$inferSelect | null = null;
+  if (requestedCompanyId) {
+    attachCompany = await findOwnedById({ userId, companyId: requestedCompanyId });
+    if (!attachCompany) {
+      res
+        .status(StatusCodes.FORBIDDEN)
+        .json({ error: ERROR_CODES.FORBIDDEN });
+      return;
+    }
+  }
+
   const [userRow] = await db
     .select({ wallet: users.walletAddress })
     .from(users)
     .where(eq(users.id, userId))
     .limit(1);
-  const ownerWallet = userRow?.wallet ?? `placeholder:${userId}`;
+  // Identity owner: the company's owner when attaching, else the creator.
+  // owner_wallet is NOT NULL — fall back to a placeholder until chain reg.
+  const ownerUserId = attachCompany ? attachCompany.ownerUserId : userId;
+  const ownerWallet = attachCompany
+    ? (attachCompany.ownerWallet ?? `placeholder:${attachCompany.id}`)
+    : (userRow?.wallet ?? `placeholder:${userId}`);
 
   // Switch to SSE — every error from here is streamed.
   res.setHeader("Content-Type", "text/event-stream");
@@ -178,6 +224,43 @@ export async function runCreateFlow(args: RunCreateFlowArgs): Promise<void> {
     configPatch: prepared.configPatch,
   });
 
+  // For a company-origin deploy, resolve parent + seat before the insert
+  // (mirrors the canonical createDeploymentInternal ordering). Idle
+  // deploys skip all of this and stay company-less.
+  let parentDeploymentIndex: number | null = null;
+  let workstationId: string | null = null;
+  if (attachCompany) {
+    if (parentAgentId) {
+      const [parent] = await db
+        .select({
+          companyId: deployments.companyId,
+          deploymentIndex: deployments.deploymentIndex,
+        })
+        .from(deployments)
+        .where(eq(deployments.id, parentAgentId))
+        .limit(1);
+      if (!parent || parent.companyId !== attachCompany.id) {
+        fail("parent_not_found", "creating_record", { retryable: false });
+        return;
+      }
+      parentDeploymentIndex = parent.deploymentIndex;
+    } else if (role !== CEO_ROLE) {
+      // Catalog-driven: canonical head per role → CEO → null.
+      parentDeploymentIndex = await resolveAutoParentIndex({
+        companyId: attachCompany.id,
+        role,
+      });
+    }
+    workstationId = await assignSeatForCompany({
+      companyId: attachCompany.id,
+      role,
+    });
+    if (!workstationId) {
+      fail("office_full", "creating_record", { retryable: false });
+      return;
+    }
+  }
+
   // ── Step: creating_record ────────────────────────────────────────
   stepStart("creating_record", "Creating deployment record");
   let companyRow: typeof companies.$inferSelect | null = null;
@@ -185,12 +268,10 @@ export async function runCreateFlow(args: RunCreateFlowArgs): Promise<void> {
   let deploymentRow: typeof deployments.$inferSelect;
   try {
     const tx = await db.transaction(async (t) => {
-      // Idle agent: no company, no seat, no per-company index, no parent.
-      // All of those get assigned later when the agent joins a company.
       const [iRow] = await t
         .insert(agentIdentities)
         .values({
-          ownerUserId: userId,
+          ownerUserId,
           agentPubkey: synthPlaceholderKey("ag_pk"),
           identityPda: synthPlaceholderKey("ag_pda"),
           ownerWallet,
@@ -199,34 +280,37 @@ export async function runCreateFlow(args: RunCreateFlowArgs): Promise<void> {
         })
         .returning();
 
+      // Company-origin: assign the next per-company index inside the tx so
+      // it serializes against uniq_deployments_company_index. Idle: null.
+      const deploymentIndex = attachCompany
+        ? ((await maxDeploymentIndexForCompanyTx(t, attachCompany.id)) ?? -1) +
+          1
+        : null;
+
       const [dRow] = await t
         .insert(deployments)
         .values({
-          companyId: null,
+          companyId: attachCompany?.id ?? null,
           agentIdentityId: iRow.id,
           deploymentPda: synthPlaceholderKey("dep_pda"),
-          deploymentIndex: null,
+          deploymentIndex,
           role,
           status: "active",
-          parentDeploymentIndex: null,
+          parentDeploymentIndex,
         })
         .returning();
 
       await t.insert(agentRuntimeProfile).values({
         deploymentId: dRow.id,
-        companyId: null,
+        companyId: attachCompany?.id ?? null,
         adapterType,
         adapterConfig: mergedAdapterConfig,
         provisioningState: "pending",
-        workstationId: null,
+        workstationId,
         taskRateLamports: taskRateLamports ?? null,
       });
 
-      return {
-        iRow,
-        dRow,
-        createdCompanyRow: null as typeof companies.$inferSelect | null,
-      };
+      return { iRow, dRow, createdCompanyRow: attachCompany };
     });
     identityRow = tx.iRow;
     deploymentRow = tx.dRow;
