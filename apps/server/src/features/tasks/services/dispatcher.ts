@@ -512,6 +512,20 @@ export async function dispatchTask(
     if (pendingChildren.length > 0) computedStatus = "review";
   }
 
+  // Workflow-run STEP tasks are sequenced by the engine on the `done`
+  // transition; the pipeline's own later steps (verify, gate) ARE the
+  // review. A step parking in `review` would stall the run — nothing
+  // releases it (head-review is suppressed for engine-spawned tasks). So
+  // a finished step settles to `done` and the engine advances. The
+  // container (stepIndex null) is never dispatched, so it is unaffected.
+  if (
+    taskRow.workflowRunId &&
+    taskRow.workflowStepIndex !== null &&
+    computedStatus === "review"
+  ) {
+    computedStatus = "done";
+  }
+
   // Safeguard against the silent-close failure mode — but only for
   // CEO-assigned root tasks. Specialists/Heads holding chat-origin
   // root tasks (Phase B's chat-mode DELEGATE creates such tasks)

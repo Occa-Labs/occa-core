@@ -15,6 +15,7 @@ import {
   deleteTaskInCompany,
   findTaskInCompany,
   listTasksByCompany,
+  loadWorkflowYamlIdsForRuns,
   taskStatusCounts,
   updateTask,
 } from "../repositories/tasks";
@@ -90,12 +91,23 @@ router.get("/", requireAuth, async (req: Request, res: Response) => {
   const pageRows = paginated && hasMore ? rows.slice(0, limit!) : rows;
 
   const names = await agentNameMap(companyId);
+  // Resolve bound workflow yaml ids for any workflow-run rows on this page
+  // (one batched query; empty when the page has no pipeline tasks).
+  const runIds = [
+    ...new Set(
+      pageRows
+        .map((r) => r.workflowRunId)
+        .filter((id): id is string => id != null),
+    ),
+  ];
+  const runYamlById = await loadWorkflowYamlIdsForRuns(runIds);
   const tasksDto: TaskDTO[] = pageRows.map((r) =>
     toTaskDTO(
       r,
       r.assignedDeploymentId
         ? (names.get(r.assignedDeploymentId) ?? null)
         : null,
+      r.workflowRunId ? (runYamlById.get(r.workflowRunId) ?? null) : null,
     ),
   );
   res.json(paginated ? { tasks: tasksDto, hasMore } : { tasks: tasksDto });

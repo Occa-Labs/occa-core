@@ -475,6 +475,55 @@ export function TaskDetail({
             <ReadOnlyValue>{formatCreatedFull(task.updatedAt)}</ReadOnlyValue>
           </DetailField>
 
+          <DetailField label="Workflow">
+            {task.workflowRunId ? (
+              <ReadOnlyValue>
+                {task.workflowYamlId ? (
+                  <span className="font-mono text-white/85">
+                    {task.workflowYamlId}
+                  </span>
+                ) : (
+                  "Pipeline"
+                )}
+                {task.workflowStepIndex != null ? (
+                  <span className="text-white/40">
+                    {" "}
+                    · step {task.workflowStepIndex + 1}
+                  </span>
+                ) : (
+                  <span className="text-white/40"> · container</span>
+                )}
+              </ReadOnlyValue>
+            ) : (
+              <ReadOnlyValue>
+                <span className="text-white/30">Not part of a workflow</span>
+              </ReadOnlyValue>
+            )}
+          </DetailField>
+
+          <DetailField label="Tags" align="start">
+            {systemTask ? (
+              <div className="flex flex-wrap gap-1.5 py-1">
+                {task.tags.map((tag) => (
+                  <span
+                    key={tag}
+                    className="rounded-full glass-light px-2 py-0.5 text-[10px] text-white/50"
+                  >
+                    {tag}
+                  </span>
+                ))}
+                {task.tags.length === 0 && (
+                  <span className="text-xs text-white/30 py-1">—</span>
+                )}
+              </div>
+            ) : (
+              <TagsEditor
+                tags={task.tags}
+                onChange={(tags) => onUpdate({ tags })}
+              />
+            )}
+          </DetailField>
+
           {parentTask && (
             <div className="col-span-2">
               <DetailField label="Parent">
@@ -511,30 +560,6 @@ export function TaskDetail({
             </div>
           )}
 
-          <div className="col-span-2">
-            <DetailField label="Tags" align="start">
-              {systemTask ? (
-                <div className="flex flex-wrap gap-1.5 py-1">
-                  {task.tags.map((tag) => (
-                    <span
-                      key={tag}
-                      className="rounded-full glass-light px-2 py-0.5 text-[10px] text-white/50"
-                    >
-                      {tag}
-                    </span>
-                  ))}
-                  {task.tags.length === 0 && (
-                    <span className="text-xs text-white/30 py-1">—</span>
-                  )}
-                </div>
-              ) : (
-                <TagsEditor
-                  tags={task.tags}
-                  onChange={(tags) => onUpdate({ tags })}
-                />
-              )}
-            </DetailField>
-          </div>
         </div>
 
         {childTasks && childTasks.length > 0 && (

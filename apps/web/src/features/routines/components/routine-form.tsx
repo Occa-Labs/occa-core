@@ -30,6 +30,8 @@ export interface RoutineFormValues {
 
 interface RoutineFormProps {
   agents: AgentOption[];
+  /** Company workflows for the optional pipeline picker (yaml id + name). */
+  workflows: { yamlId: string; name: string }[];
   /** Present → edit mode (fields prefilled, "Save changes" button). */
   initial?: RoutineFormValues;
   submitting: boolean;
@@ -108,6 +110,7 @@ function parseCron(cron: string): ScheduleState {
 
 export function RoutineForm({
   agents,
+  workflows,
   initial,
   submitting,
   error,
@@ -199,13 +202,19 @@ export function RoutineForm({
         ))}
       </Select>
 
-      <Input
+      <Select
         label="Workflow (optional)"
-        placeholder="news-pipeline"
         value={workflowYamlId}
         onChange={(e) => setWorkflowYamlId(e.target.value)}
-        hint="A workflow yaml id. Set it to run that sequential pipeline on each fire instead of the mandate. The assignee becomes the pipeline owner."
-      />
+        hint="Bind a sequential pipeline. On each fire it runs that workflow instead of the mandate, and the assignee becomes the pipeline owner. Leave as None for a normal routine."
+      >
+        <option value="">None — run the mandate above</option>
+        {workflows.map((w) => (
+          <option key={w.yamlId} value={w.yamlId}>
+            {w.name} ({w.yamlId})
+          </option>
+        ))}
+      </Select>
 
       <Select
         label="Schedule"

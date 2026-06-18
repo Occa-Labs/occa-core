@@ -17,6 +17,7 @@ import { Modal } from "@/components/ui/modal";
 import { SectionLabel } from "@/components/ui/section-label";
 import { ApiError } from "@/lib/api";
 import { useRoutines } from "../api/use-routines";
+import { useWorkflowOptions } from "../api/use-workflow-options";
 import {
   type AgentOption,
   RoutineForm,
@@ -123,6 +124,11 @@ export function RoutinesWindow({ agents, onClose }: RoutinesWindowProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<RoutineDTO | null>(null);
+  // Workflow options for the form's pipeline picker — fetched only while
+  // the create/edit modal is open.
+  const { workflows: workflowOptions } = useWorkflowOptions(
+    creating || editing !== null,
+  );
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   // Per-routine "Run now" state so the button can report progress.
@@ -322,6 +328,7 @@ export function RoutinesWindow({ agents, onClose }: RoutinesWindowProps) {
         <RoutineForm
           key={editing?.id ?? "new"}
           agents={agents}
+          workflows={workflowOptions}
           initial={editing ? toFormValues(editing) : undefined}
           submitting={submitting}
           error={formError}
@@ -437,6 +444,24 @@ function RoutineDetail({
         <p className="text-[12px] text-emerald-300/80">
           Fired — the scheduler picks it up within ~30 seconds.
         </p>
+      )}
+
+      {routine.workflowYamlId && (
+        <div>
+          <SectionLabel>Workflow</SectionLabel>
+          <div className="mt-1.5 flex flex-col gap-1 text-[12px] text-white/55">
+            <span>
+              Runs the pipeline{" "}
+              <code className="font-mono text-white/75">
+                {routine.workflowYamlId}
+              </code>{" "}
+              on each fire.
+            </span>
+            <span className="text-white/35">
+              The mandate below is bypassed while a workflow is bound.
+            </span>
+          </div>
+        </div>
       )}
 
       <div>

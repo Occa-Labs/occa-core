@@ -33,7 +33,11 @@ export async function userCompanyId(userId: string): Promise<string | null> {
   return row?.id ?? null;
 }
 
-export function toTaskDTO(row: TaskRow, agentName: string | null): TaskDTO {
+export function toTaskDTO(
+  row: TaskRow,
+  agentName: string | null,
+  workflowYamlId: string | null = null,
+): TaskDTO {
   return {
     id: row.id,
     companyId: row.companyId,
@@ -58,6 +62,9 @@ export function toTaskDTO(row: TaskRow, agentName: string | null): TaskDTO {
     archivedAt: row.archivedAt ? row.archivedAt.toISOString() : null,
     archiveReason: row.archiveReason ?? null,
     errorCode: row.errorCode ?? null,
+    workflowRunId: row.workflowRunId ?? null,
+    workflowStepIndex: row.workflowStepIndex ?? null,
+    workflowYamlId,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };

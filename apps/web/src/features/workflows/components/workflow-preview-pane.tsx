@@ -49,6 +49,18 @@ function Header() {
 
 function TriggerLine({ state }: { state: WorkflowFormState }) {
   const typeLabel = TASK_TYPE_LABEL[state.taskType] ?? state.taskType;
+  if (state.execution === "sequential") {
+    return (
+      <div className="space-y-1">
+        <div className="text-[10px] text-white/45">Starts when</div>
+        <div className="text-white/80">
+          a routine bound to this workflow fires. Steps then run{" "}
+          <span className="text-white/95 font-medium">in order</span>, one at a
+          time.
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="space-y-1">
       <div className="text-[10px] text-white/45">Fires when</div>
@@ -62,13 +74,19 @@ function TriggerLine({ state }: { state: WorkflowFormState }) {
 
 function LinearPreview({ state }: { state: WorkflowFormState }) {
   const validSteps = state.steps.filter((s) => s.title.trim().length > 0);
-  const overflow = Math.max(0, validSteps.length - MAX_CHILDREN_HINT);
+  const sequential = state.execution === "sequential";
+  // The 3-children-per-run cap is a fan-out (parallel) concern. Sequential
+  // runs advance one step at a time, so the cap warning does not apply.
+  const overflow = sequential
+    ? 0
+    : Math.max(0, validSteps.length - MAX_CHILDREN_HINT);
 
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-1.5 text-[10px] text-white/45">
         <ListOrdered className="size-3" />
-        Then spawns ({validSteps.length} step{validSteps.length === 1 ? "" : "s"})
+        {sequential ? "Then runs" : "Then spawns"} ({validSteps.length} step
+        {validSteps.length === 1 ? "" : "s"})
       </div>
       {validSteps.length === 0 ? (
         <EmptyHint>Add at least one step to see the spawn list.</EmptyHint>
@@ -78,7 +96,7 @@ function LinearPreview({ state }: { state: WorkflowFormState }) {
             <li
               key={i}
               className={`pl-3 border-l ${
-                i < MAX_CHILDREN_HINT
+                sequential || i < MAX_CHILDREN_HINT
                   ? "border-emerald-500/40"
                   : "border-amber-500/30 opacity-60"
               }`}

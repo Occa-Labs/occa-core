@@ -24,13 +24,30 @@ const emitFollowUpPayload = z.object({
   reason: z.string().max(LIMITS.REASON).optional(),
 });
 
-const requestInfoPayload = z.object({
-  questionMarkdown: z.string().trim().min(1).max(LIMITS.DESCRIPTION),
-  // Names of @mentioned humans/agents — passed through to the comment
-  // service which resolves them against the company's deployments.
-  // Resolution semantics live in task-comments.ts; the route does not
-  // pre-resolve to keep validation cheap.
-});
+const requestInfoPayload = z.preprocess(
+  // Accept `question` as an alias for `questionMarkdown` — agents reach for
+  // the shorter name first, and rejecting it sends them into a retry spiral.
+  (v) => {
+    if (
+      v &&
+      typeof v === "object" &&
+      !Array.isArray(v) &&
+      "question" in v &&
+      !("questionMarkdown" in v)
+    ) {
+      const { question, ...rest } = v as Record<string, unknown>;
+      return { ...rest, questionMarkdown: question };
+    }
+    return v;
+  },
+  z.object({
+    questionMarkdown: z.string().trim().min(1).max(LIMITS.DESCRIPTION),
+    // Names of @mentioned humans/agents — passed through to the comment
+    // service which resolves them against the company's deployments.
+    // Resolution semantics live in task-comments.ts; the route does not
+    // pre-resolve to keep validation cheap.
+  }),
+);
 
 export const agentActionRequest = z.discriminatedUnion("type", [
   z.object({

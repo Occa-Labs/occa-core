@@ -896,6 +896,15 @@ export interface TaskDTO {
   // (e.g. "timeout", "server_restart", gateway error code). Drives the
   // reason badge on the card. Cleared when a fresh run starts.
   errorCode: string | null;
+  // Set when this task is a step inside a sequential workflow run. Lets
+  // the detail view show that the task belongs to a pipeline and where in
+  // the sequence it sits. Null for ad-hoc / parallel tasks.
+  workflowRunId: string | null;
+  workflowStepIndex: number | null;
+  // The bound workflow's yaml id, resolved from the run. Only populated on
+  // the single-task detail fetch (the board list skips the lookup). Null
+  // when the task is not part of a workflow run.
+  workflowYamlId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -1357,6 +1366,7 @@ export const APPROVAL_ACTION_TYPES = [
   "edit_tool",
   "create_workflow",
   "edit_workflow",
+  "create_routine",
 ] as const;
 export type ApprovalActionType =
   | (typeof APPROVAL_ACTION_TYPES)[number]

@@ -9,15 +9,17 @@
 // the same workflow on the parent task. The pg-boss queue adds a
 // second layer of dedup via singletonKey.
 
-import { and, eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import {
   agentIdentities,
   deployments,
+  documents,
   taskEvents,
   tasks,
   workflowRuns,
   workflows as workflowsTable,
 } from "@occa/shared/schema";
+import type { ContentBlock } from "@occa/shared/types";
 import type {
   SpawnStep,
   WorkflowDefinition,
@@ -212,13 +214,21 @@ async function spawnChildTask(args: {
   assignedDeploymentId: string | null;
   workflowRunId?: string | null;
   workflowStepIndex?: number | null;
+  // Prepended to the task body — the prior step's output (or the run's
+  // standing mandate for step 0) so each step is born with context, not
+  // a bare title.
+  contextBlocks?: ContentBlock[];
 }): Promise<string> {
+  const blocks: ContentBlock[] = [
+    ...(args.contextBlocks ?? []),
+    ...(args.acceptanceCriteria
+      ? [{ type: "paragraph" as const, text: args.acceptanceCriteria }]
+      : []),
+  ];
   const newTask = await createTaskRecord({
     companyId: args.companyId,
     title: args.title,
-    blocks: args.acceptanceCriteria
-      ? [{ type: "paragraph", text: args.acceptanceCriteria }]
-      : [],
+    blocks,
     status: "todo",
     priority: "medium",
     taskType: "other",
@@ -438,6 +448,7 @@ async function spawnSequentialStep(
   definition: WorkflowDefinition,
   stepIndex: number,
   parentTitle: string,
+  contextBlocks: ContentBlock[],
 ): Promise<string | null> {
   const step = definition.steps[stepIndex];
   if (!step || !isSpawnStep(step) || !run.parentTaskId) return null;
@@ -463,6 +474,7 @@ async function spawnSequentialStep(
     assignedDeploymentId,
     workflowRunId: run.id,
     workflowStepIndex: stepIndex,
+    contextBlocks,
   });
 }
 
@@ -473,6 +485,55 @@ async function loadTaskTitle(taskId: string): Promise<string> {
     .where(eq(tasks.id, taskId))
     .limit(1);
   return row?.title ?? "";
+}
+
+// The standing mandate carried on the run's container task (the routine's
+// description, set when the wrapper was minted). Step 0 inherits it so the
+// first agent knows what the cycle is about without a separately authored
+// brief. Returns "" when the container has no prose blocks.
+async function loadContainerMandateText(parentTaskId: string): Promise<string> {
+  const [row] = await db
+    .select({ blocks: tasks.blocks })
+    .from(tasks)
+    .where(eq(tasks.id, parentTaskId))
+    .limit(1);
+  const blocks = (row?.blocks as ContentBlock[] | undefined) ?? [];
+  return blocks
+    .filter((b): b is { type: "paragraph"; text: string } => b.type === "paragraph")
+    .map((b) => b.text)
+    .join("\n\n")
+    .trim();
+}
+
+// The just-completed step's deliverable, so the next step is born with the
+// prior output in hand. Prefers the auto-saved document (full markdown);
+// falls back to the task's agent_result preview, then "".
+async function loadStepOutputText(taskId: string): Promise<string> {
+  const [doc] = await db
+    .select({ content: documents.content })
+    .from(documents)
+    .where(eq(documents.taskId, taskId))
+    .orderBy(desc(documents.createdAt))
+    .limit(1);
+  if (doc?.content?.trim()) return doc.content.trim();
+
+  const [row] = await db
+    .select({ blocks: tasks.blocks })
+    .from(tasks)
+    .where(eq(tasks.id, taskId))
+    .limit(1);
+  const blocks = (row?.blocks as ContentBlock[] | undefined) ?? [];
+  const result = blocks.find((b) => b.type === "agent_result");
+  return result && result.type === "agent_result"
+    ? (result.preview ?? "").trim()
+    : "";
+}
+
+// Wrap context text as a labelled paragraph block for a step body. Empty
+// text yields no block (the step just gets its acceptance criteria).
+function contextBlock(label: string, text: string): ContentBlock[] {
+  if (!text) return [];
+  return [{ type: "paragraph", text: `${label}\n\n${text}` }];
 }
 
 // Start a sequential run: create the run row under the routine wrapper
@@ -524,6 +585,14 @@ export async function startWorkflowRun(
     })
     .returning({ id: workflowRuns.id });
 
+  // Tag the container itself with the run so its task detail shows the
+  // bound workflow. workflowStepIndex stays null (it is the parent, not a
+  // step), so advanceWorkflowRun never treats its completion as a step.
+  await db
+    .update(tasks)
+    .set({ workflowRunId: run.id, updatedAt: new Date() })
+    .where(eq(tasks.id, parentTaskId));
+
   const runRow: WorkflowRunRow = {
     id: run.id,
     companyId,
@@ -534,7 +603,14 @@ export async function startWorkflowRun(
     status: "running",
   };
   const parentTitle = await loadTaskTitle(parentTaskId);
-  const step0 = await spawnSequentialStep(runRow, wf.definition, 0, parentTitle);
+  const mandate = await loadContainerMandateText(parentTaskId);
+  const step0 = await spawnSequentialStep(
+    runRow,
+    wf.definition,
+    0,
+    parentTitle,
+    contextBlock("Your standing mandate for this cycle:", mandate),
+  );
   log.info(
     { runId: run.id, workflowYamlId, parentTaskId, step0 },
     "workflow run started",
@@ -610,7 +686,33 @@ async function advanceWorkflowRun(completed: {
       .update(workflowRuns)
       .set({ status: "done", updatedAt: new Date() })
       .where(eq(workflowRuns.id, run.id));
-    log.info({ runId: run.id }, "workflow run complete");
+    // Close the container so the run doesn't sit in_progress forever once
+    // every step is done. A raw status update (not the finalize path) so
+    // it does NOT bill — the container is a wrapper, the paid work is the
+    // steps. Guarded to not re-close an already-settled container.
+    if (run.parentTaskId) {
+      await db
+        .update(tasks)
+        .set({ status: "done", updatedAt: new Date() })
+        .where(
+          and(
+            eq(tasks.id, run.parentTaskId),
+            sql`${tasks.status} NOT IN ('done', 'archived')`,
+          ),
+        );
+      void appendTaskEventBestEffort({
+        companyId: run.companyId,
+        taskId: run.parentTaskId,
+        eventType: "task_status_changed",
+        actorType: "system",
+        actorId: "system",
+        payload: { to: "done", reason: "workflow_run_complete" },
+      });
+    }
+    log.info(
+      { runId: run.id, container: run.parentTaskId },
+      "workflow run complete",
+    );
     return { spawned: 0 };
   }
 
@@ -636,11 +738,21 @@ async function advanceWorkflowRun(completed: {
   const parentTitle = run.parentTaskId
     ? await loadTaskTitle(run.parentTaskId)
     : "";
+  // Carry the just-completed step's deliverable into the next step so the
+  // pipeline flows (brief → draft → verify) instead of each step starting
+  // blind.
+  const prevStep = wf.definition.steps[run.currentStepIndex];
+  const prevLabel =
+    prevStep && isSpawnStep(prevStep)
+      ? `Input from the previous step (${renderTitle(prevStep.title, parentTitle)}):`
+      : "Input from the previous step:";
+  const prevOutput = await loadStepOutputText(completed.id);
   const spawnedId = await spawnSequentialStep(
     runRow,
     wf.definition,
     nextIndex,
     parentTitle,
+    contextBlock(prevLabel, prevOutput),
   );
   log.info(
     { runId: run.id, stepIndex: nextIndex, spawnedTaskId: spawnedId },

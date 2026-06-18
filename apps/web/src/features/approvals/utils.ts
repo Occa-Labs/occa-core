@@ -97,6 +97,13 @@ export function humanizeApprovalAction(
   if (actionType === "delete_workflow") return "Wants to delete a workflow";
   if (actionType === "delete_task") return "Wants to delete a task";
 
+  if (actionType === "create_routine") {
+    const title = typeof payload.title === "string" ? payload.title : "";
+    return title
+      ? `Wants to create the routine "${title}"`
+      : "Wants to create a routine";
+  }
+
   if (actionType === "create_workflow") return "Wants to create a workflow";
 
   if (actionType === "edit_workflow") {

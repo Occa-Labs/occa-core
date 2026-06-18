@@ -8,6 +8,7 @@ import {
   deployments,
   tasks,
   traces,
+  workflowRuns,
 } from "@occa/shared/schema";
 import type {
   TaskStatus,
@@ -21,6 +22,20 @@ export type TaskRow = typeof tasks.$inferSelect;
 export async function findTaskById(taskId: string): Promise<TaskRow | null> {
   const [row] = await db.select().from(tasks).where(eq(tasks.id, taskId)).limit(1);
   return row ?? null;
+}
+
+// Map a set of workflow_run ids → their bound workflow yaml id, so a task
+// list can label its workflow-run rows without a per-row lookup. Empty
+// input short-circuits to an empty map.
+export async function loadWorkflowYamlIdsForRuns(
+  runIds: string[],
+): Promise<Map<string, string>> {
+  if (runIds.length === 0) return new Map();
+  const rows = await db
+    .select({ id: workflowRuns.id, yamlId: workflowRuns.workflowYamlId })
+    .from(workflowRuns)
+    .where(inArray(workflowRuns.id, runIds));
+  return new Map(rows.map((r) => [r.id, r.yamlId]));
 }
 
 // Sum token/cost across every trace this task ran. Re-dispatches each open a

@@ -25,6 +25,11 @@ export interface WorkflowFormState {
   yamlId: string;
   name: string;
   description: string;
+  // parallel = fan out every step at once when a matching task completes.
+  // sequential = run steps one at a time under a shared parent, started by
+  // a routine (the news pipeline). Preserved on edit so the form never
+  // silently downgrades a sequential workflow to parallel on save.
+  execution: "parallel" | "sequential";
   taskType: string;
   steps: SpawnStep[];
 }
@@ -42,6 +47,7 @@ export function formStateFromDefinition(
     yamlId: def.id,
     name: def.name,
     description: def.description ?? "",
+    execution: def.execution,
     taskType: def.trigger.match.task_type,
     steps: def.steps.filter(isSpawnStep).map((s) => ({
       title: s.title,
@@ -61,9 +67,7 @@ export function formStateToYaml(state: WorkflowFormState): string {
   const def: LinearWorkflowDefinition = {
     id: state.yamlId.trim(),
     name: state.name.trim(),
-    // Form editor authors fan-out workflows; sequential pipelines are
-    // authored via the YAML editor for now.
-    execution: "parallel",
+    execution: state.execution,
     ...(state.description.trim()
       ? { description: state.description.trim() }
       : {}),
@@ -185,6 +189,28 @@ function BasicsSection({
           className="w-full glass-light rounded-lg px-3 py-2 text-xs text-white/90 placeholder:text-white/30 outline-none focus:ring-1 focus:ring-white/20"
         />
       </Field>
+      <Field label="Mode">
+        <select
+          value={state.execution}
+          onChange={(e) =>
+            onChange({
+              ...state,
+              execution: e.target.value as "parallel" | "sequential",
+            })
+          }
+          className="w-full glass-light rounded-lg px-3 py-2 text-xs text-white/90 outline-none focus:ring-1 focus:ring-white/20 cursor-pointer"
+        >
+          <option value="parallel">Parallel — spawn every step at once</option>
+          <option value="sequential">
+            Sequential — one step at a time (pipeline)
+          </option>
+        </select>
+        <Hint>
+          {state.execution === "sequential"
+            ? "Steps run in order, each waiting for the previous to finish. Started by a routine, not by a task completing."
+            : "All steps spawn together when a matching task completes."}
+        </Hint>
+      </Field>
     </Section>
   );
 }
@@ -196,6 +222,20 @@ function TriggerSection({
   state: WorkflowFormState;
   onChange: (next: WorkflowFormState) => void;
 }) {
+  // Sequential pipelines are started by a routine, so the task_type
+  // trigger never fires them. Show the field but make clear it is unused
+  // rather than letting it imply the pipeline auto-fires on completions.
+  if (state.execution === "sequential") {
+    return (
+      <Section title="Trigger">
+        <div className="glass-light rounded-lg px-3 py-2.5 text-[11px] leading-relaxed text-white/55">
+          Sequential pipelines start from a routine bound to this workflow,
+          not from a task completing. The task type trigger below does not
+          apply.
+        </div>
+      </Section>
+    );
+  }
   return (
     <Section title="Trigger">
       <Field label="When">

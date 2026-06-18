@@ -222,9 +222,35 @@ export const proposeRoutineEditBlockPayload = z.discriminatedUnion("op", [
     title: z.string().trim().min(1).max(LIMITS.KEY).optional(),
     description: z.string().max(LIMITS.DESCRIPTION_LONG).optional(),
     priority: z.string().max(LIMITS.TINY).optional(),
+    // Bind (or clear, with "") a sequential workflow so each fire runs
+    // that pipeline instead of the mandate.
+    workflowYamlId: z.string().trim().max(LIMITS.KEY).optional(),
   }),
   z.object({ op: z.literal("delete"), routineId }),
 ]);
+
+// PROPOSE_ROUTINE_CREATE: CEO drafts a brand-new scheduled routine. With-
+// approval; the marker NEVER writes. On approve, the routine is created
+// with one cron trigger. A routine either carries a `mandate` (free-form
+// instruction the assignee runs each fire) or a `workflowYamlId` (a
+// sequential pipeline that runs instead) — at least one is required. The
+// assignee is addressed by "role:<role>" (portable) or an agent name.
+export const proposeRoutineCreateBlockPayload = z
+  .object({
+    title: z.string().trim().min(1).max(LIMITS.KEY),
+    mandate: z.string().trim().max(LIMITS.DESCRIPTION_LONG).optional(),
+    assignee: z.string().trim().min(1).max(LIMITS.KEY),
+    cron: z.string().trim().min(1).max(LIMITS.LABEL),
+    timezone: z.string().trim().max(LIMITS.TIMEZONE).optional(),
+    workflowYamlId: z.string().trim().max(LIMITS.KEY).optional(),
+    priority: z.string().trim().max(LIMITS.TINY).optional(),
+  })
+  .refine(
+    (v) =>
+      (v.mandate != null && v.mandate.length > 0) ||
+      (v.workflowYamlId != null && v.workflowYamlId.length > 0),
+    { message: "either mandate or workflowYamlId is required" },
+  );
 
 // PROPOSE_SKILL_LIBRARY_EDIT: CEO drafts a change to the company skill
 // library — import a new GitHub-sourced skill, set a skill's allowed-roles
@@ -550,6 +576,18 @@ export type RoutineEditProposeRejectReason =
   | "permission_denied"
   | "invalid_body";
 
+export type ProposeRoutineCreateBlockPayload = z.infer<
+  typeof proposeRoutineCreateBlockPayload
+>;
+
+// invalid_cron is caught at propose time. assignee_not_found and
+// workflow_not_found are APPLY-time failures, surfaced via the approval's
+// failureReason on approve.
+export type RoutineCreateProposeRejectReason =
+  | "permission_denied"
+  | "invalid_body"
+  | "invalid_cron";
+
 export type ProposeSkillLibraryEditBlockPayload = z.infer<
   typeof proposeSkillLibraryEditBlockPayload
 >;
@@ -813,6 +851,13 @@ export type ActionBlockOutcome =
   | {
       kind: "routine_edit_propose_rejected";
       reason: RoutineEditProposeRejectReason;
+    }
+  // PROPOSE_ROUTINE_CREATE: a pending new-routine proposal row was created;
+  // approve creates the routine + its cron trigger.
+  | { kind: "routine_create_proposed"; proposalId: string; title: string }
+  | {
+      kind: "routine_create_propose_rejected";
+      reason: RoutineCreateProposeRejectReason;
     }
   // PROPOSE_SKILL_LIBRARY_EDIT: a pending skill-library proposal row was
   // created. `op` + `skillKey` identify the draft; approve runs the repo

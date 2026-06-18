@@ -46,6 +46,7 @@ import {
   proposeDeploymentBlockPayload,
   proposeKnowledgeEditBlockPayload,
   proposeProfileEditBlockPayload,
+  proposeRoutineCreateBlockPayload,
   proposeRoutineEditBlockPayload,
   proposeSkillLibraryEditBlockPayload,
   proposeTaskDeleteBlockPayload,
@@ -68,6 +69,7 @@ import {
   type KnowledgeEditProposeRejectReason,
   type ProfileEditProposeRejectReason,
   type RoutineAssignRejectReason,
+  type RoutineCreateProposeRejectReason,
   type RoutineEditProposeRejectReason,
   type SkillLibraryEditProposeRejectReason,
   type TaskDeleteProposeRejectReason,
@@ -96,10 +98,15 @@ import {
   updateBrainFileById,
 } from "../../../features/company-brain/repositories/company-brain";
 import {
+  createRoutineWithTriggers,
   deleteRoutine,
   rollDueCronTriggersForward,
   updateRoutine,
 } from "../../../features/routines/repositories/routines";
+import {
+  computeNextRun,
+  isValidCron,
+} from "../../../features/routines/domain/cron";
 import {
   broadcastSkillToEligibleAgents,
   deleteSkillById,
@@ -1971,7 +1978,8 @@ export async function handleProposeRoutineEditBlock(
     edit.op === "update" &&
     edit.title === undefined &&
     edit.description === undefined &&
-    edit.priority === undefined
+    edit.priority === undefined &&
+    edit.workflowYamlId === undefined
   ) {
     return reject("invalid_body");
   }
@@ -2028,12 +2036,170 @@ export async function applyRoutineEditApproval(
   }
 
   // op === "update" — undefined fields are skipped by the repo's .set().
+  // An explicit "" workflowYamlId clears the binding back to mandate mode.
   const row = await updateRoutine(approval.companyId, edit.routineId, {
     title: edit.title,
     description: edit.description,
     priority: edit.priority,
+    workflowYamlId:
+      edit.workflowYamlId === undefined
+        ? undefined
+        : edit.workflowYamlId
+          ? edit.workflowYamlId
+          : null,
   });
   if (!row) throw new Error(`routine_not_found: ${edit.routineId}`);
+  return approval;
+}
+
+// Resolve a CEO-supplied routine assignee ("role:<role>" or an agent name)
+// to a deployment id within the company. Returns null when nothing matches.
+async function resolveRoutineAssignee(
+  companyId: string,
+  assignee: string,
+): Promise<string | null> {
+  const roleMatch = /^role:(.+)$/i.exec(assignee.trim());
+  if (roleMatch) {
+    const role = roleMatch[1].trim();
+    const [row] = await db
+      .select({ id: deployments.id })
+      .from(deployments)
+      .where(
+        and(
+          eq(deployments.companyId, companyId),
+          sql`LOWER(${deployments.role}) = LOWER(${role})`,
+        ),
+      )
+      .limit(1);
+    return row?.id ?? null;
+  }
+  const [row] = await db
+    .select({ id: deployments.id })
+    .from(deployments)
+    .innerJoin(
+      agentIdentities,
+      eq(deployments.agentIdentityId, agentIdentities.id),
+    )
+    .where(
+      and(
+        eq(deployments.companyId, companyId),
+        sql`LOWER(${agentIdentities.name}) = LOWER(${assignee})`,
+      ),
+    )
+    .limit(1);
+  return row?.id ?? null;
+}
+
+// PROPOSE_ROUTINE_CREATE (with-approval). CEO drafts a new scheduled routine;
+// the marker NEVER writes. Cron is validated at propose time. On approve the
+// routine is created with one cron trigger; assignee / workflow resolution
+// failures surface as the approval's failureReason.
+export async function handleProposeRoutineCreateBlock(
+  args: ActionBlockHandlerArgs,
+): Promise<ActionBlockOutcome> {
+  const reject = (
+    reason: RoutineCreateProposeRejectReason,
+  ): ActionBlockOutcome => ({
+    kind: "routine_create_propose_rejected",
+    reason,
+  });
+  if (getTier(args.agentRole) !== "ceo") {
+    log.warn(
+      { agentId: args.agentId, agentRole: args.agentRole },
+      "PROPOSE_ROUTINE_CREATE block rejected: only CEO tier may emit it",
+    );
+    return reject("permission_denied");
+  }
+  const parsed = proposeRoutineCreateBlockPayload.safeParse(args.block.body);
+  if (!parsed.success) {
+    log.warn(
+      { detail: parsed.error.flatten() },
+      "PROPOSE_ROUTINE_CREATE block rejected: invalid payload",
+    );
+    return reject("invalid_body");
+  }
+  if (!isValidCron(parsed.data.cron, parsed.data.timezone ?? null)) {
+    log.warn(
+      { cron: parsed.data.cron },
+      "PROPOSE_ROUTINE_CREATE block rejected: invalid cron",
+    );
+    return reject("invalid_cron");
+  }
+  const [row] = await db
+    .insert(approvals)
+    .values({
+      companyId: args.companyId,
+      requestedByDeploymentId: args.agentId,
+      actionType: "create_routine",
+      payload: parsed.data,
+    })
+    .returning();
+  void notifyApprovalCreated(row);
+  log.info(
+    {
+      ceoDeploymentId: args.agentId,
+      proposalId: row.id,
+      title: parsed.data.title,
+      workflowYamlId: parsed.data.workflowYamlId,
+      traceId: args.traceId,
+    },
+    "PROPOSE_ROUTINE_CREATE proposal created",
+  );
+  return {
+    kind: "routine_create_proposed",
+    proposalId: row.id,
+    title: parsed.data.title,
+  };
+}
+
+export async function applyRoutineCreateApproval(
+  approval: typeof approvals.$inferSelect,
+): Promise<typeof approvals.$inferSelect> {
+  const parsed = proposeRoutineCreateBlockPayload.safeParse(approval.payload);
+  if (!parsed.success) {
+    throw new Error("routine_create_payload_invalid");
+  }
+  const data = parsed.data;
+
+  const assigneeDeploymentId = await resolveRoutineAssignee(
+    approval.companyId,
+    data.assignee,
+  );
+  if (!assigneeDeploymentId) {
+    throw new Error(`assignee_not_found: ${data.assignee}`);
+  }
+
+  if (data.workflowYamlId) {
+    const wf = await findWorkflowByYamlId(
+      data.workflowYamlId,
+      approval.companyId,
+    );
+    if (!wf) throw new Error(`workflow_not_found: ${data.workflowYamlId}`);
+  }
+
+  const timezone = data.timezone ?? null;
+  const nextRunAt = computeNextRun(data.cron, timezone);
+
+  await createRoutineWithTriggers(
+    approval.companyId,
+    {
+      title: data.title,
+      description: data.mandate ?? null,
+      assigneeDeploymentId,
+      priority: data.priority ?? "medium",
+      workflowYamlId: data.workflowYamlId ? data.workflowYamlId : null,
+    },
+    [
+      {
+        kind: "cron",
+        label: null,
+        enabled: true,
+        cronExpression: data.cron,
+        timezone,
+        nextRunAt,
+      },
+    ],
+  );
   return approval;
 }
 

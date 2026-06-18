@@ -670,6 +670,7 @@ export async function sendUserTurn(
         outcome.kind === "workflow_delete_proposed" ||
         outcome.kind === "workflow_create_proposed" ||
         outcome.kind === "workflow_edit_proposed" ||
+        outcome.kind === "routine_create_proposed" ||
         outcome.kind === "task_delete_proposed")
     ) {
       linkedApprovalId = outcome.proposalId;
@@ -1002,6 +1003,18 @@ function formatOsMutationReceipt(outcome: ActionBlockOutcome): string {
       switch (outcome.reason) {
         case "invalid_body":
           return `× PROPOSE_ROUTINE_EDIT payload invalid.`;
+        case "permission_denied":
+          return "";
+      }
+      return "";
+    case "routine_create_proposed":
+      return `✓ Queued creating the routine "${outcome.title}" for your approval. Open the Approvals window to review and apply it. Nothing changes until you approve.`;
+    case "routine_create_propose_rejected":
+      switch (outcome.reason) {
+        case "invalid_body":
+          return `× PROPOSE_ROUTINE_CREATE payload invalid.`;
+        case "invalid_cron":
+          return `× PROPOSE_ROUTINE_CREATE rejected — the cron expression is not valid. Fix it and try again.`;
         case "permission_denied":
           return "";
       }
