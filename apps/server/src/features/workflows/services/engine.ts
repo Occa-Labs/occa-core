@@ -12,6 +12,7 @@
 import { and, desc, eq, sql } from "drizzle-orm";
 import {
   agentIdentities,
+  companyTools,
   deployments,
   documents,
   taskEvents,
@@ -32,8 +33,15 @@ import { enqueueTaskDispatch } from "../../../infra/queue/task-worker";
 import { LIMITS } from "../../../lib/limits";
 import { childLogger } from "../../../lib/logger";
 import { appendTaskEventBestEffort } from "../../tasks/services/events";
+import { invokeTool } from "../../tools/services/invoke";
 
 const log = childLogger("services:workflows:engine");
+
+// How many times a gate FAIL verdict may bounce the run back to the draft
+// step before the engine force-kills it. Used when the workflow definition
+// omits `caps.max_revisions`. Guards against an infinite
+// draft→verify→gate→fail loop.
+const DEFAULT_MAX_REVISIONS = 2;
 
 // Discriminator for what actually happened during a workflow run; the
 // spawn-step / skip / meta detail is folded into a single audit row.
@@ -416,6 +424,10 @@ interface WorkflowRunRow {
   parentTaskId: string | null;
   currentStepIndex: number;
   status: string;
+  // How many gate-fail bounces this run has taken. Used to disambiguate the
+  // titles of re-spawned step tasks: revision rounds get a "· rev N" suffix
+  // so the board doesn't show three identical "Editorial gate" rows.
+  reviseCount: number;
 }
 
 async function loadEnabledWorkflowByYamlId(
@@ -440,9 +452,28 @@ async function loadEnabledWorkflowByYamlId(
   return { id: row.id, definition: row.parsedDefinition as WorkflowDefinition };
 }
 
-// Spawn the step at `stepIndex` under the run's parent. Phase 1 handles
-// spawn steps only; gate/upload step kinds land in later phases. Returns
-// the new task id, or null if the step is missing / not a spawn step.
+// Canonical instruction prepended to a gate step's body. The engine reads
+// the GATE_VERDICT marker deterministically, so the assignee must always
+// know the exact contract regardless of how the step's acceptance criteria
+// are authored. A missing/invalid verdict is treated as fail upstream.
+const GATE_INSTRUCTION =
+  "EDITORIAL GATE. You are the head making the publish decision on this " +
+  "piece. Review it, then END your reply with exactly one verdict marker " +
+  "(raw JSON between the tags, no code fences):\n\n" +
+  "[[OCCA:GATE_VERDICT]]\n" +
+  '{ "verdict": "go", "reason": "<one line>" }\n' +
+  "[[/OCCA:GATE_VERDICT]]\n\n" +
+  "verdict values:\n" +
+  "- go: publishable. The piece advances to the next stage.\n" +
+  "- fail: needs revision. It returns to the writer to redraft — state " +
+  "what must change in your reply so the writer can act on it.\n" +
+  "- kill: must not run at all (unsalvageable or wrong call). The cycle " +
+  "ends here.\n\n" +
+  "A missing or malformed verdict is treated as fail, so always emit one.";
+
+// Spawn the step at `stepIndex` under the run's parent. Handles spawn and
+// gate step kinds; gate steps get the verdict-marker instruction prepended.
+// Returns the new task id, or null if the step is missing / not a spawn step.
 async function spawnSequentialStep(
   run: WorkflowRunRow,
   definition: WorkflowDefinition,
@@ -466,15 +497,31 @@ async function spawnSequentialStep(
       "sequential step assignee did not resolve; spawning unassigned",
     );
   }
+  const blocks: ContentBlock[] =
+    step.kind === "gate"
+      ? [{ type: "paragraph", text: GATE_INSTRUCTION }, ...contextBlocks]
+      : contextBlocks;
+  // Title shape: "<step> [· rev N] - <parent cycle>". The step name leads so
+  // the board stays scannable by step rather than a wall of identical cycle
+  // prefixes; the cycle ref trails so the same step across different cycles
+  // still differs. The parent suffix is skipped when the rendered step already
+  // echoes it (a {{parent.title}} template) so it never doubles.
+  const stepLabel = renderTitle(step.title, parentTitle);
+  const stepPart =
+    run.reviseCount > 0 ? `${stepLabel} · rev ${run.reviseCount}` : stepLabel;
+  const title =
+    parentTitle && !stepLabel.includes(parentTitle)
+      ? `${stepPart} - ${parentTitle}`
+      : stepPart;
   return spawnChildTask({
     companyId: run.companyId,
     parentTaskId: run.parentTaskId,
-    title: renderTitle(step.title, parentTitle),
+    title,
     acceptanceCriteria: step.acceptance_criteria ?? null,
     assignedDeploymentId,
     workflowRunId: run.id,
     workflowStepIndex: stepIndex,
-    contextBlocks,
+    contextBlocks: blocks,
   });
 }
 
@@ -601,6 +648,7 @@ export async function startWorkflowRun(
     parentTaskId,
     currentStepIndex: 0,
     status: "running",
+    reviseCount: 0,
   };
   const parentTitle = await loadTaskTitle(parentTaskId);
   const mandate = await loadContainerMandateText(parentTaskId);
@@ -615,6 +663,454 @@ export async function startWorkflowRun(
     { runId: run.id, workflowYamlId, parentTaskId, step0 },
     "workflow run started",
   );
+}
+
+// Close the run's container task once the run terminates (done or killed).
+// A raw status update, NOT the finalize path, so the wrapper does not bill —
+// the paid work is the steps. Guarded against re-closing a settled container.
+async function closeRunContainer(
+  run: { companyId: string; parentTaskId: string | null },
+  reason: string,
+): Promise<void> {
+  if (!run.parentTaskId) return;
+  await db
+    .update(tasks)
+    .set({ status: "done", updatedAt: new Date() })
+    .where(
+      and(
+        eq(tasks.id, run.parentTaskId),
+        sql`${tasks.status} NOT IN ('done', 'archived')`,
+      ),
+    );
+  void appendTaskEventBestEffort({
+    companyId: run.companyId,
+    taskId: run.parentTaskId,
+    eventType: "task_status_changed",
+    actorType: "system",
+    actorId: "system",
+    payload: { to: "done", reason },
+  });
+}
+
+// Mark the run done (all steps cleared) and close its container.
+async function finishRun(
+  run: { id: string; companyId: string; parentTaskId: string | null },
+  reason: string,
+): Promise<void> {
+  await db
+    .update(workflowRuns)
+    .set({ status: "done", updatedAt: new Date() })
+    .where(eq(workflowRuns.id, run.id));
+  await closeRunContainer(run, reason);
+  log.info({ runId: run.id, container: run.parentTaskId }, "workflow run complete");
+}
+
+// Mark the run killed (gate kill verdict / revise cap) and close its
+// container. Steps already done stay done/paid — done ≠ published, so the
+// company isn't charged again and no unpublished work is undone.
+async function killRun(
+  run: { id: string; companyId: string; parentTaskId: string | null },
+  reason: string,
+): Promise<void> {
+  await db
+    .update(workflowRuns)
+    .set({ status: "killed", updatedAt: new Date() })
+    .where(eq(workflowRuns.id, run.id));
+  await closeRunContainer(run, reason);
+  log.warn(
+    { runId: run.id, container: run.parentTaskId, reason },
+    "workflow run killed by gate",
+  );
+}
+
+// Read the head's verdict for a completed gate task. The dispatcher records
+// it as an `agent_action_emitted` task_event (actionType GATE_VERDICT) with
+// the parsed body under `actionPayload`. Fail-safe: a missing or invalid
+// verdict returns "fail" so an unreviewed piece never advances toward
+// publish (mirrors the head-review parseVerdict default-to-reject).
+async function loadGateVerdict(
+  gateTaskId: string,
+): Promise<"go" | "fail" | "kill"> {
+  const [row] = await db
+    .select({ payload: taskEvents.payload })
+    .from(taskEvents)
+    .where(
+      and(
+        eq(taskEvents.taskId, gateTaskId),
+        eq(taskEvents.eventType, "agent_action_emitted"),
+        sql`${taskEvents.payload}->>'actionType' = 'GATE_VERDICT'`,
+        sql`${taskEvents.payload}->'actionPayload'->>'verdict' IN ('go','fail','kill')`,
+      ),
+    )
+    .orderBy(desc(taskEvents.sequence))
+    .limit(1);
+  const verdict = (
+    row?.payload as { actionPayload?: { verdict?: string } } | undefined
+  )?.actionPayload?.verdict;
+  if (verdict === "go" || verdict === "kill") return verdict;
+  if (verdict !== "fail") {
+    log.warn(
+      { gateTaskId, verdict: verdict ?? null },
+      "gate task has no valid GATE_VERDICT; defaulting to fail",
+    );
+  }
+  return "fail";
+}
+
+// The deliverable of the latest done step task at `stepIndex` for this run.
+// Used to carry the actual article forward on GO (the verified piece the
+// gate reviewed) and back on FAIL (the draft being revised) — the gate's own
+// output is the head's decision prose, not the article.
+async function loadDoneStepOutput(
+  runId: string,
+  stepIndex: number,
+): Promise<string> {
+  if (stepIndex < 0) return "";
+  const [row] = await db
+    .select({ id: tasks.id })
+    .from(tasks)
+    .where(
+      and(
+        eq(tasks.workflowRunId, runId),
+        eq(tasks.workflowStepIndex, stepIndex),
+        eq(tasks.status, "done"),
+      ),
+    )
+    .orderBy(desc(tasks.updatedAt))
+    .limit(1);
+  return row ? loadStepOutputText(row.id) : "";
+}
+
+// Fallback publish title from the article markdown (first heading). The
+// receiver usually lifts its own headline from the body; this is the backstop.
+function derivePublishTitle(content: string, fallback: string): string {
+  const m = content.match(/^#{1,6}[ \t]+(.+?)[ \t#]*$/m);
+  return (m?.[1]?.trim() || fallback || "Untitled").slice(0, 200);
+}
+
+// Build the input payload for a tool step from the carried deliverable. Each
+// tool type maps the content into the shape its action expects; add a branch
+// here when a new deterministic tool step lands. Unknown types get a generic
+// best-effort shape.
+function buildToolInput(
+  toolType: string,
+  content: string,
+  parentTitle: string,
+): Record<string, unknown> {
+  if (toolType === "publish") {
+    return {
+      title: derivePublishTitle(content, parentTitle),
+      content,
+      format: "markdown",
+    };
+  }
+  return { content };
+}
+
+// Deterministic tool step. The engine does NOT spawn a task: it resolves the
+// deployment from `assigned_to`, looks up the company tool by type, and invokes
+// its action AS that role with the carried deliverable. A URL in the result is
+// recorded as the run container's result_uri (Provenance / on-chain anchor read
+// it there). No agent free-improv, no token spend. A "ToolStep" task event
+// captures the outcome either way. Publishing is just `tool: publish`.
+async function executeToolStep(
+  run: WorkflowRunRow,
+  definition: WorkflowDefinition,
+  stepIndex: number,
+  content: string,
+  parentTitle: string,
+): Promise<void> {
+  const step = definition.steps[stepIndex];
+  if (
+    !step ||
+    !isSpawnStep(step) ||
+    step.kind !== "tool" ||
+    !step.tool ||
+    !step.action ||
+    !run.parentTaskId
+  ) {
+    return;
+  }
+  const container = run.parentTaskId;
+  const toolType = step.tool;
+  const actionName = step.action;
+
+  const emit = (payload: Record<string, unknown>): void =>
+    void appendTaskEventBestEffort({
+      companyId: run.companyId,
+      taskId: container,
+      eventType: "agent_action_emitted",
+      actorType: "system",
+      actorId: "system",
+      payload: {
+        actionType: "ToolStep",
+        channel: "system",
+        tool: toolType,
+        action: actionName,
+        ...payload,
+      },
+    });
+
+  const deploymentId = await resolveAssignedDeployment(
+    run.companyId,
+    step.assigned_to,
+  );
+  const [toolRow] = await db
+    .select({ id: companyTools.id })
+    .from(companyTools)
+    .where(
+      and(
+        eq(companyTools.companyId, run.companyId),
+        eq(companyTools.type, toolType),
+        eq(companyTools.status, "active"),
+      ),
+    )
+    .limit(1);
+
+  if (!toolRow) {
+    log.warn({ runId: run.id, toolType }, "tool step: tool not installed/active");
+    emit({ outcome: "failed", reason: "tool_not_installed" });
+    return;
+  }
+  if (!deploymentId) {
+    log.warn(
+      { runId: run.id, assignedTo: step.assigned_to },
+      "tool step: role did not resolve",
+    );
+    emit({ outcome: "failed", reason: "role_unresolved" });
+    return;
+  }
+  if (!content.trim()) {
+    emit({ outcome: "failed", reason: "empty_input" });
+    return;
+  }
+
+  const outcome = await invokeTool({
+    toolId: toolRow.id,
+    actionName,
+    companyId: run.companyId,
+    deploymentId,
+    input: buildToolInput(toolType, content, parentTitle),
+  });
+
+  if (outcome.kind !== "ok") {
+    const reason =
+      outcome.kind === "failed"
+        ? outcome.errorMessage
+        : String(outcome.reason);
+    log.warn(
+      { runId: run.id, toolType, actionName, kind: outcome.kind, reason },
+      "tool step: failed",
+    );
+    emit({ outcome: "failed", reason });
+    return;
+  }
+
+  const url = (outcome.output as { url?: string } | null)?.url ?? "";
+  if (url) {
+    await db
+      .update(tasks)
+      .set({ resultUri: url, updatedAt: new Date() })
+      .where(eq(tasks.id, container));
+  }
+  emit({ outcome: "ok", ...(url ? { url } : {}) });
+  log.info(
+    { runId: run.id, toolType, actionName, url },
+    "tool step executed",
+  );
+}
+
+// Advance into `startIndex` (CAS on the prior cursor) and run every tool step
+// from there inline — a tool step is engine-executed, not spawned, so the
+// pipeline flows through a run of them without waiting. Stops at the first
+// non-tool step (spawns it and returns) or ends the run when the tool run
+// reaches the end. Shared by the normal advance and the gate-GO advance.
+async function runToolStepsFrom(
+  run: WorkflowRunRow,
+  definition: WorkflowDefinition,
+  startIndex: number,
+  fromCursor: number,
+  content: string,
+  parentTitle: string,
+): Promise<{ spawned: number }> {
+  const advanced = await db
+    .update(workflowRuns)
+    .set({ currentStepIndex: startIndex, updatedAt: new Date() })
+    .where(
+      and(
+        eq(workflowRuns.id, run.id),
+        eq(workflowRuns.currentStepIndex, fromCursor),
+      ),
+    )
+    .returning({ id: workflowRuns.id });
+  if (advanced.length === 0) {
+    log.info({ runId: run.id }, "tool step: cursor moved concurrently; skip");
+    return { spawned: 0 };
+  }
+
+  for (let index = startIndex; index < definition.steps.length; index++) {
+    if (index !== startIndex) {
+      await db
+        .update(workflowRuns)
+        .set({ currentStepIndex: index, updatedAt: new Date() })
+        .where(eq(workflowRuns.id, run.id));
+    }
+    const step = definition.steps[index];
+    if (step && isSpawnStep(step) && step.kind === "tool") {
+      await executeToolStep(run, definition, index, content, parentTitle);
+      continue;
+    }
+    // First non-tool step after the tool run — spawn it carrying the same
+    // deliverable, then wait for its completion to drive the next advance.
+    const spawnedId = await spawnSequentialStep(
+      { ...run, currentStepIndex: index },
+      definition,
+      index,
+      parentTitle,
+      contextBlock("Input from the previous step:", content),
+    );
+    log.info(
+      { runId: run.id, stepIndex: index, spawnedTaskId: spawnedId },
+      "tool run: spawned next step",
+    );
+    return { spawned: spawnedId ? 1 : 0 };
+  }
+  await finishRun(run, "workflow_run_complete");
+  return { spawned: 0 };
+}
+
+// Gate completion handler. Reads the head's verdict and either advances past
+// the gate (go), bounces back to the draft step for revision (fail), or kills
+// the run (kill / revise cap reached). The draft sits two steps before the
+// gate in the news pipeline (draft → verify → gate are adjacent), so FAIL
+// rewinds the cursor by two and re-runs draft → verify → gate.
+async function advanceGateStep(
+  run: WorkflowRunRow,
+  definition: WorkflowDefinition,
+  gateTaskId: string,
+): Promise<{ spawned: number }> {
+  const gateIndex = run.currentStepIndex;
+  const verdict = await loadGateVerdict(gateTaskId);
+  const parentTitle = run.parentTaskId
+    ? await loadTaskTitle(run.parentTaskId)
+    : "";
+  const signoff = await loadStepOutputText(gateTaskId);
+
+  if (verdict === "kill") {
+    await killRun(run, "gate_kill");
+    return { spawned: 0 };
+  }
+
+  if (verdict === "go") {
+    const nextIndex = gateIndex + 1;
+    if (nextIndex >= definition.steps.length) {
+      await finishRun(run, "workflow_run_complete");
+      return { spawned: 0 };
+    }
+    const article = await loadDoneStepOutput(run.id, gateIndex - 1);
+
+    // Gate clears straight into a tool step (no content step in between): run
+    // the tool(s) inline as the assigned role.
+    const nextStep = definition.steps[nextIndex];
+    if (nextStep && isSpawnStep(nextStep) && nextStep.kind === "tool") {
+      return runToolStepsFrom(
+        run,
+        definition,
+        nextIndex,
+        gateIndex,
+        article,
+        parentTitle,
+      );
+    }
+
+    const advanced = await db
+      .update(workflowRuns)
+      .set({ currentStepIndex: nextIndex, updatedAt: new Date() })
+      .where(
+        and(
+          eq(workflowRuns.id, run.id),
+          eq(workflowRuns.currentStepIndex, gateIndex),
+        ),
+      )
+      .returning({ id: workflowRuns.id });
+    if (advanced.length === 0) {
+      log.info({ runId: run.id }, "gate go: cursor moved concurrently; skip");
+      return { spawned: 0 };
+    }
+    const spawnedId = await spawnSequentialStep(
+      { ...run, currentStepIndex: nextIndex },
+      definition,
+      nextIndex,
+      parentTitle,
+      [
+        ...contextBlock(
+          "Approved article (cleared the editorial gate):",
+          article,
+        ),
+        ...contextBlock("Head sign-off notes:", signoff),
+      ],
+    );
+    log.info(
+      { runId: run.id, stepIndex: nextIndex, spawnedTaskId: spawnedId },
+      "gate go: advanced",
+    );
+    return { spawned: spawnedId ? 1 : 0 };
+  }
+
+  // verdict === "fail" — bounce to the draft step, capped so a piece can't
+  // loop forever. At the cap the engine force-kills the run.
+  const cap = definition.caps?.max_revisions ?? DEFAULT_MAX_REVISIONS;
+  if (run.reviseCount >= cap) {
+    log.warn(
+      { runId: run.id, reviseCount: run.reviseCount, cap },
+      "gate fail: revise cap reached, killing run",
+    );
+    await killRun(run, "gate_revise_cap");
+    return { spawned: 0 };
+  }
+  const draftIndex = Math.max(0, gateIndex - 2);
+  const updated = await db
+    .update(workflowRuns)
+    .set({
+      currentStepIndex: draftIndex,
+      reviseCount: run.reviseCount + 1,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(workflowRuns.id, run.id),
+        eq(workflowRuns.currentStepIndex, gateIndex),
+      ),
+    )
+    .returning({ id: workflowRuns.id });
+  if (updated.length === 0) {
+    log.info({ runId: run.id }, "gate fail: cursor moved concurrently; skip");
+    return { spawned: 0 };
+  }
+  const priorDraft = await loadDoneStepOutput(run.id, draftIndex);
+  const spawnedId = await spawnSequentialStep(
+    { ...run, currentStepIndex: draftIndex, reviseCount: run.reviseCount + 1 },
+    definition,
+    draftIndex,
+    parentTitle,
+    [
+      ...contextBlock(
+        "Your prior draft (returned by the editorial gate for revision):",
+        priorDraft,
+      ),
+      ...contextBlock("Revision notes from the head — address these:", signoff),
+    ],
+  );
+  log.info(
+    {
+      runId: run.id,
+      draftIndex,
+      reviseCount: run.reviseCount + 1,
+      spawnedTaskId: spawnedId,
+    },
+    "gate fail: bounced to draft",
+  );
+  return { spawned: spawnedId ? 1 : 0 };
 }
 
 // Advance a sequential run when one of its step tasks completes. Spawns
@@ -635,6 +1131,7 @@ async function advanceWorkflowRun(completed: {
       parentTaskId: workflowRuns.parentTaskId,
       currentStepIndex: workflowRuns.currentStepIndex,
       status: workflowRuns.status,
+      reviseCount: workflowRuns.reviseCount,
     })
     .from(workflowRuns)
     .where(eq(workflowRuns.id, completed.workflowRunId))
@@ -680,40 +1177,44 @@ async function advanceWorkflowRun(completed: {
     return { spawned: 0 };
   }
 
+  // Gate step: the head's GATE_VERDICT decides advance / re-draft / kill,
+  // instead of the plain cursor+1. Reads the verdict the dispatcher recorded
+  // on the gate task's completion; never advances toward publish on a
+  // missing/invalid verdict (fail-safe FAIL).
+  const completedStep = wf.definition.steps[run.currentStepIndex];
+  if (
+    completedStep &&
+    isSpawnStep(completedStep) &&
+    completedStep.kind === "gate"
+  ) {
+    return advanceGateStep(run, wf.definition, completed.id);
+  }
+
   const nextIndex = run.currentStepIndex + 1;
   if (nextIndex >= wf.definition.steps.length) {
-    await db
-      .update(workflowRuns)
-      .set({ status: "done", updatedAt: new Date() })
-      .where(eq(workflowRuns.id, run.id));
-    // Close the container so the run doesn't sit in_progress forever once
-    // every step is done. A raw status update (not the finalize path) so
-    // it does NOT bill — the container is a wrapper, the paid work is the
-    // steps. Guarded to not re-close an already-settled container.
-    if (run.parentTaskId) {
-      await db
-        .update(tasks)
-        .set({ status: "done", updatedAt: new Date() })
-        .where(
-          and(
-            eq(tasks.id, run.parentTaskId),
-            sql`${tasks.status} NOT IN ('done', 'archived')`,
-          ),
-        );
-      void appendTaskEventBestEffort({
-        companyId: run.companyId,
-        taskId: run.parentTaskId,
-        eventType: "task_status_changed",
-        actorType: "system",
-        actorId: "system",
-        payload: { to: "done", reason: "workflow_run_complete" },
-      });
-    }
-    log.info(
-      { runId: run.id, container: run.parentTaskId },
-      "workflow run complete",
-    );
+    await finishRun(run, "workflow_run_complete");
     return { spawned: 0 };
+  }
+
+  const parentTitle = run.parentTaskId
+    ? await loadTaskTitle(run.parentTaskId)
+    : "";
+  // The just-completed step's deliverable — carried into the next step, or
+  // published verbatim when the next step is the terminal publish step.
+  const prevOutput = await loadStepOutputText(completed.id);
+
+  // Tool step next: the engine runs it (and any following tool steps) inline
+  // — invokes the tool as the assigned role, no task spawned.
+  const nextStep = wf.definition.steps[nextIndex];
+  if (nextStep && isSpawnStep(nextStep) && nextStep.kind === "tool") {
+    return runToolStepsFrom(
+      run,
+      wf.definition,
+      nextIndex,
+      run.currentStepIndex,
+      prevOutput,
+      parentTitle,
+    );
   }
 
   // Advance the cursor with a compare-and-set on the old value so a
@@ -735,9 +1236,6 @@ async function advanceWorkflowRun(completed: {
   }
 
   const runRow: WorkflowRunRow = { ...run };
-  const parentTitle = run.parentTaskId
-    ? await loadTaskTitle(run.parentTaskId)
-    : "";
   // Carry the just-completed step's deliverable into the next step so the
   // pipeline flows (brief → draft → verify) instead of each step starting
   // blind.
@@ -746,7 +1244,6 @@ async function advanceWorkflowRun(completed: {
     prevStep && isSpawnStep(prevStep)
       ? `Input from the previous step (${renderTitle(prevStep.title, parentTitle)}):`
       : "Input from the previous step:";
-  const prevOutput = await loadStepOutputText(completed.id);
   const spawnedId = await spawnSequentialStep(
     runRow,
     wf.definition,

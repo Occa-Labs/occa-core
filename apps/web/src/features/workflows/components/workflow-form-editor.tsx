@@ -35,6 +35,7 @@ export interface WorkflowFormState {
 }
 
 const EMPTY_STEP: SpawnStep = {
+  kind: "spawn",
   title: "",
   assigned_to: "human",
 };
@@ -50,9 +51,12 @@ export function formStateFromDefinition(
     execution: def.execution,
     taskType: def.trigger.match.task_type,
     steps: def.steps.filter(isSpawnStep).map((s) => ({
+      kind: s.kind,
       title: s.title,
       assigned_to: s.assigned_to,
       acceptance_criteria: s.acceptance_criteria,
+      tool: s.tool,
+      action: s.action,
     })),
   };
 }
@@ -76,11 +80,17 @@ export function formStateToYaml(state: WorkflowFormState): string {
       match: { task_type: state.taskType },
     },
     steps: state.steps.map((s) => ({
+      // Preserve kind + tool wiring on round-trip so editing a gate or tool
+      // workflow via the form never silently strips a step back to a plain
+      // spawn (or drops a tool step's tool/action).
+      kind: s.kind,
       title: s.title,
       assigned_to: s.assigned_to,
       ...(s.acceptance_criteria
         ? { acceptance_criteria: s.acceptance_criteria }
         : {}),
+      ...(s.tool ? { tool: s.tool } : {}),
+      ...(s.action ? { action: s.action } : {}),
     })),
   };
   return serializeWorkflowToYaml(def);

@@ -15,6 +15,7 @@ import {
   handleBlockBlock,
   handleDelegateBlock,
   handleDispatchRoutineBlock,
+  handleGateVerdictBlock,
   handleInstallSkillBlock,
   handleProposeDeploymentBlock,
   handleReportBlock,
@@ -111,6 +112,8 @@ async function routeBlock(
       return handleDelegateBlock(args, deps);
     case "BLOCK":
       return handleBlockBlock(args);
+    case "GATE_VERDICT":
+      return handleGateVerdictBlock(args);
     case "REPORT":
       return handleReportBlock(args);
     case "SET_RESULT_URL":

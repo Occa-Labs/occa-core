@@ -8,10 +8,32 @@ import {
   ROLE_SLUG_PATTERN,
   type AgentRole,
 } from "@occa/shared/types";
-import { AGENT_ROLES } from "@occa/shared/role-catalog";
+import { AGENT_ROLES, roleLabelFor } from "@occa/shared/role-catalog";
 
+// Slug form for storage / creation: lowercase, trimmed, and spaces folded to
+// underscores so a role typed with spaces ("head editorial") still becomes a
+// valid slug ("head_editorial").
 function normalizeRoleSlug(input: string): string {
-  return input.trim().toLowerCase();
+  return input.trim().toLowerCase().replace(/\s+/g, "_");
+}
+
+// Loose key for matching: lowercase with spaces, underscores, and hyphens all
+// flattened to a single space, so a query typed any of those ways hits the
+// same role regardless of separator.
+function searchKey(s: string): string {
+  return s.toLowerCase().replace(/[-_\s]+/g, " ").trim();
+}
+
+// A role matches when the query is a substring of EITHER its slug (id) or its
+// human label (name) — both flattened so separators don't matter. Lets the
+// user search "head editorial", "head_editorial", or "Head of Editorial".
+function roleMatches(slug: string, query: string): boolean {
+  const q = searchKey(query);
+  if (q === "") return true;
+  return (
+    searchKey(slug).includes(q) ||
+    searchKey(roleLabelFor(slug as AgentRole)).includes(q)
+  );
 }
 
 function isValidRoleSlug(input: string): boolean {
@@ -124,15 +146,13 @@ export function RoleMultiSelect({
 
   const suggestions = useMemo(() => {
     const presetPool = AGENT_ROLES.filter(
-      (r) =>
-        !value.includes(r) && (normalized === "" || r.includes(normalized)),
+      (r) => !value.includes(r) && roleMatches(r, query),
     );
     const customPool = customRoles.filter(
-      (r) =>
-        !value.includes(r) && (normalized === "" || r.includes(normalized)),
+      (r) => !value.includes(r) && roleMatches(r, query),
     );
     return { presetPool, customPool };
-  }, [normalized, value, customRoles]);
+  }, [query, value, customRoles]);
 
   const canCreate =
     normalized.length > 0 &&
@@ -171,9 +191,10 @@ export function RoleMultiSelect({
         {value.map((r) => (
           <span
             key={r}
-            className="flex items-center gap-1 bg-white/12 rounded px-2 py-0.5 text-[11px] uppercase tracking-wide text-white/90"
+            title={r}
+            className="flex items-center gap-1 bg-white/12 rounded px-2 py-0.5 text-[11px] text-white/90"
           >
-            {r}
+            {roleLabelFor(r as AgentRole)}
             <button
               type="button"
               onClick={(e) => {
@@ -243,10 +264,13 @@ export function RoleMultiSelect({
                 key={r}
                 type="button"
                 onClick={() => add(r)}
-                className="w-full text-left px-3 py-1.5 text-xs text-white/85 hover:bg-white/8 flex items-center gap-2"
+                className="w-full text-left px-3 py-1.5 text-xs hover:bg-white/8 flex items-center gap-2"
               >
-                <span className="uppercase tracking-wide font-medium">{r}</span>
-                <span className="text-[10px] text-white/30">preset</span>
+                <span className="font-medium text-white/90">
+                  {roleLabelFor(r as AgentRole)}
+                </span>
+                <span className="text-[10px] font-mono text-white/35">{r}</span>
+                <span className="text-[10px] text-white/30 ml-auto">preset</span>
               </button>
             ))}
             {suggestions.customPool.length > 0 && (
@@ -259,12 +283,15 @@ export function RoleMultiSelect({
                     key={r}
                     type="button"
                     onClick={() => add(r)}
-                    className="w-full text-left px-3 py-1.5 text-xs text-white/85 hover:bg-white/8 flex items-center gap-2"
+                    className="w-full text-left px-3 py-1.5 text-xs hover:bg-white/8 flex items-center gap-2"
                   >
-                    <span className="uppercase tracking-wide font-medium">
+                    <span className="font-medium text-white/90">
+                      {roleLabelFor(r as AgentRole)}
+                    </span>
+                    <span className="text-[10px] font-mono text-white/35">
                       {r}
                     </span>
-                    <span className="text-[10px] text-emerald-300/60">
+                    <span className="text-[10px] text-emerald-300/60 ml-auto">
                       in use
                     </span>
                   </button>

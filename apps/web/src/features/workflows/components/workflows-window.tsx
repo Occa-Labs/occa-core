@@ -368,8 +368,10 @@ function WorkflowDetail({
     initialFormState,
   );
   const [yamlText, setYamlText] = useState(workflow.yamlText);
-  const [enabled, setEnabled] = useState(workflow.enabled);
   const [saving, setSaving] = useState(false);
+  // Enable/disable is applied immediately (independent of the YAML save), so it
+  // only needs an in-flight flag, not draft state.
+  const [togglingEnabled, setTogglingEnabled] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [yamlError, setYamlError] = useState<{
     code: string;
@@ -377,15 +379,18 @@ function WorkflowDetail({
     conflictId?: string;
   } | null>(null);
 
-  // Reset local state if user picks a different workflow.
+  // Reset local edit state only when the user switches to a DIFFERENT
+  // workflow — keyed on id, not on every field change of the same row, so an
+  // immediate enable/disable toggle (or a post-save refetch) never wipes an
+  // in-progress YAML edit.
   useEffect(() => {
     const next = tryParseFormState(workflow.yamlText);
     setFormState(next);
     setMode(next ? "form" : "yaml");
     setYamlText(workflow.yamlText);
-    setEnabled(workflow.enabled);
     setYamlError(null);
-  }, [workflow.id, workflow.yamlText, workflow.enabled]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workflow.id]);
 
   // Auto-clear the "Saved" indicator after a short window so it doesn't
   // linger past the moment the user actually cares about it.
@@ -418,16 +423,42 @@ function WorkflowDetail({
     }
     return draftYaml.trim() !== workflow.yamlText.trim();
   })();
-  const dirty = yamlDirty || enabled !== workflow.enabled;
+  const dirty = yamlDirty;
+
+  // Live client-side validation of the current draft. Surfaces *why* the
+  // definition won't parse (e.g. an unknown step kind) right away — instead of
+  // silently dropping to the raw-YAML editor with no explanation — and blocks
+  // Save on an invalid YAML edit before it round-trips to the server. A purely
+  // enable/disable toggle (YAML untouched) is still allowed even if the stored
+  // YAML is stale.
+  const draftValid = draftParsed.ok;
+  const blockInvalidSave = yamlDirty && !draftValid;
+  const displayError: {
+    code: string;
+    detail?: YamlInvalidDetail;
+    conflictId?: string;
+  } | null =
+    yamlError ??
+    (!draftParsed.ok
+      ? {
+          code: "workflow_yaml_invalid",
+          detail:
+            draftParsed.error.kind === "yaml_syntax"
+              ? {
+                  kind: "yaml_syntax",
+                  message: draftParsed.error.message,
+                  line: draftParsed.error.line,
+                  col: draftParsed.error.col,
+                }
+              : { kind: "schema", issues: draftParsed.error.issues },
+        }
+      : null);
 
   const handleSave = async () => {
     setSaving(true);
     setYamlError(null);
     try {
-      const patch: { yamlText?: string; enabled?: boolean } = {};
-      if (yamlDirty) patch.yamlText = draftYaml;
-      if (enabled !== workflow.enabled) patch.enabled = enabled;
-      await onPatch(patch);
+      await onPatch({ yamlText: draftYaml });
       setSavedAt(Date.now());
     } catch (err) {
       setYamlError(extractYamlError(err));
@@ -436,12 +467,43 @@ function WorkflowDetail({
     }
   };
 
+  // Enable/disable is an immediate action, not part of the YAML draft — it
+  // flips the saved state straight away so it never gets stuck behind an
+  // unsaved (or invalid) YAML edit.
+  const toggleEnabled = async () => {
+    setTogglingEnabled(true);
+    try {
+      await onPatch({ enabled: !workflow.enabled });
+    } catch (err) {
+      setYamlError(extractYamlError(err));
+    } finally {
+      setTogglingEnabled(false);
+    }
+  };
+
   return (
     <div className="p-5 space-y-4">
       <div className="flex items-start justify-between gap-3">
         <div className="flex-1 min-w-0 space-y-1">
-          <div className="text-base font-semibold text-white/90 truncate">
-            {workflow.name}
+          <div className="flex items-center gap-2">
+            <div className="text-base font-semibold text-white/90 truncate">
+              {workflow.name}
+            </div>
+            {/* Status — separate from the action button so state is unambiguous. */}
+            <span
+              className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                workflow.enabled
+                  ? "bg-emerald-500/12 text-emerald-300/90"
+                  : "bg-white/8 text-white/45"
+              }`}
+            >
+              <span
+                className={`size-1.5 rounded-full ${
+                  workflow.enabled ? "bg-emerald-400" : "bg-white/35"
+                }`}
+              />
+              {workflow.enabled ? "Enabled" : "Disabled"}
+            </span>
           </div>
           <div className="text-[11px] text-white/40 font-mono truncate">
             {workflow.yamlId}
@@ -452,12 +514,18 @@ function WorkflowDetail({
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          {/* Action — labelled by what the click DOES, not the current state. */}
           <Button
             size="sm"
-            variant={enabled ? "success" : "secondary"}
-            onClick={() => setEnabled((v) => !v)}
+            variant={workflow.enabled ? "secondary" : "success"}
+            onClick={toggleEnabled}
+            disabled={togglingEnabled}
           >
-            {enabled ? "Enabled" : "Disabled"}
+            {togglingEnabled
+              ? "…"
+              : workflow.enabled
+                ? "Disable"
+                : "Enable"}
           </Button>
           <Button size="sm" variant="danger" onClick={onRemove}>
             <Trash2 className="size-3" /> Delete
@@ -521,11 +589,11 @@ function WorkflowDetail({
         )}
       </div>
 
-      {yamlError && (
+      {displayError && (
         <YamlErrorBanner
-          code={yamlError.code}
-          detail={yamlError.detail}
-          conflictId={yamlError.conflictId}
+          code={displayError.code}
+          detail={displayError.detail}
+          conflictId={displayError.conflictId}
         />
       )}
 
@@ -545,7 +613,6 @@ function WorkflowDetail({
               setFormState(reparsed);
               setMode(reparsed ? "form" : "yaml");
               setYamlText(workflow.yamlText);
-              setEnabled(workflow.enabled);
               setYamlError(null);
             }}
           >
@@ -556,7 +623,10 @@ function WorkflowDetail({
           size="sm"
           variant="success"
           onClick={handleSave}
-          disabled={!dirty || saving}
+          disabled={!dirty || saving || blockInvalidSave}
+          title={
+            blockInvalidSave ? "Fix the definition errors before saving" : undefined
+          }
         >
           {saving ? "Saving…" : "Save"}
         </Button>

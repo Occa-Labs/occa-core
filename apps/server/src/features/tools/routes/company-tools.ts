@@ -407,6 +407,54 @@ router.post(
   },
 );
 
+// GET /:toolId/credentials — owner views the stored credentials for their
+// own tool (endpoint URL, secret, etc.). Returns decrypted values keyed by
+// field name; the client merges them with the catalog's credentialFields to
+// label each and mask the secret-flagged ones. Scoped to the owner via
+// resolveOwnedCompanyId — agents authenticate on a different router and never
+// reach this route.
+router.get(
+  "/:toolId/credentials",
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const companyId = await resolveOwnedCompanyId(req);
+    if (!companyId) {
+      res
+        .status(StatusCodes.NOT_FOUND)
+        .json({ error: ERROR_CODES.COMPANY_NOT_FOUND });
+      return;
+    }
+    const existing = await findOwnedToolById({
+      id: req.params.toolId,
+      companyId,
+    });
+    if (!existing) {
+      res
+        .status(StatusCodes.NOT_FOUND)
+        .json({ error: ERROR_CODES.TOOL_NOT_FOUND });
+      return;
+    }
+    let creds: Record<string, unknown>;
+    try {
+      const { decryptCredentials } = await import("../../../lib/tool-crypto");
+      creds = decryptCredentials<Record<string, unknown>>(
+        existing.credentialsEncrypted as EncryptedBlob,
+      );
+    } catch (err) {
+      log.error({ err, toolId: existing.id }, "tool credentials: decrypt failed");
+      res
+        .status(StatusCodes.INTERNAL_SERVER_ERROR)
+        .json({ error: ERROR_CODES.INTERNAL_ERROR });
+      return;
+    }
+    const values: Record<string, string> = {};
+    for (const [k, v] of Object.entries(creds)) {
+      if (typeof v === "string") values[k] = v;
+    }
+    res.json({ values });
+  },
+);
+
 // GET /:toolId/logs
 router.get(
   "/:toolId/logs",

@@ -1,6 +1,7 @@
 "use client";
 
 import type { ContentBlock } from "@occa/shared/types";
+import { MarkdownViewer } from "@/components/ui/markdown-viewer";
 import { AgentResultCard } from "./agent-result-card";
 
 // Read-only block renderer used by system tasks (which can't be edited
@@ -95,10 +96,21 @@ export function ReadOnlyBlocks({ blocks }: { blocks: ContentBlock[] }) {
               </pre>
             </div>
           );
+        // Paragraph blocks frequently carry full markdown — the workflow
+        // content-passing dumps a complete markdown deliverable (headings,
+        // lists, bold, tables) into a single block, and routine mandates are
+        // long prose with manual line breaks. Render through the markdown
+        // viewer so structure reads cleanly. Markdown collapses single
+        // newlines, so convert each lone newline to a hard break first to
+        // keep the author's line breaks (paragraph breaks already survive).
+        if (!block.text.trim()) return null;
         return (
-          <p key={idx} className="text-sm text-white/80">
-            {block.text}
-          </p>
+          <MarkdownViewer
+            key={idx}
+            content={block.text.replace(/(?<!\n)\n(?!\n)/g, "  \n")}
+            hideToolbar
+            viewMode="preview"
+          />
         );
       })}
     </div>

@@ -40,6 +40,7 @@ import {
   assignRoutineBlockPayload,
   bindToolBlockPayload,
   blockBlockPayload,
+  gateVerdictBlockPayload,
   delegateBlockPayload,
   dispatchRoutineBlockPayload,
   installSkillBlockPayload,
@@ -298,6 +299,30 @@ export async function handleDelegateBlock(
     );
   });
   return { kind: "delegated", childTaskId: childTask.id };
+}
+
+// GATE_VERDICT carries no side effect — validate the verdict shape and pass
+// it through. The dispatcher persists it as an `agent_action_emitted` event;
+// the workflow engine reads that event when the gate task completes. An
+// unparseable body is `ignored:invalid_payload`; the engine treats a missing
+// or invalid verdict as a fail-safe FAIL so an unreviewed piece never
+// advances toward publish.
+export function handleGateVerdictBlock(
+  args: ActionBlockHandlerArgs,
+): ActionBlockOutcome {
+  const parsed = gateVerdictBlockPayload.safeParse(args.block.body);
+  if (!parsed.success) {
+    log.warn(
+      { detail: parsed.error.flatten() },
+      "GATE_VERDICT block rejected: invalid payload",
+    );
+    return { kind: "ignored", reason: "invalid_payload" };
+  }
+  return {
+    kind: "gate_verdict",
+    verdict: parsed.data.verdict,
+    reason: parsed.data.reason,
+  };
 }
 
 export async function handleBlockBlock(

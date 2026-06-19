@@ -164,7 +164,11 @@ async function fireTrigger(trigger: DueTrigger): Promise<void> {
         .values({
           companyId: routine.companyId,
           taskNumber,
-          title: routine.title,
+          // Stamp the cycle number into the title so repeated fires of the
+          // same routine are distinguishable on the board ("News cycle
+          // #1065") instead of an identical "News cycle" wall. Step children
+          // reference this title back, tying each step to its cycle.
+          title: `${routine.title} #${taskNumber}`,
           blocks,
           status: "in_progress",
           assignedDeploymentId: routine.assigneeDeploymentId,

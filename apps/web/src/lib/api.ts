@@ -1492,6 +1492,10 @@ export const toolsApi = {
       `/api/companies/${companyId}/tools/${toolId}/test`,
       { method: "POST" },
     ),
+  credentials: (companyId: string, toolId: string) =>
+    request<{ values: Record<string, string> }>(
+      `/api/companies/${companyId}/tools/${toolId}/credentials`,
+    ),
   logs: (
     companyId: string,
     toolId: string,

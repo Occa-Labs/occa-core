@@ -27,6 +27,13 @@
 //                                                verdict (approve/revise) on a
 //                                                delegated deliverable that
 //                                                landed in `review`
+//   [[OCCA:GATE_VERDICT]] {...} [[/OCCA:GATE_VERDICT]] — the head's go/fail/kill
+//                                                decision on a sequential
+//                                                workflow's gate step. The engine
+//                                                reads it on the gate task's
+//                                                completion: go advances, fail
+//                                                bounces back to the draft step,
+//                                                kill ends the run.
 
 export const OCCA_MARKER_REGEX = /\[\[OCCA:[A-Z_]+\]\]/g;
 

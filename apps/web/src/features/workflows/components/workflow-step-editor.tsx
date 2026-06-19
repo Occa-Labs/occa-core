@@ -63,11 +63,41 @@ export function WorkflowStepEditor({
     });
   };
 
+  const isGate = step.kind === "gate";
+  const setKind = (kind: "spawn" | "gate") => {
+    if (kind === step.kind) return;
+    onChange({
+      ...step,
+      kind,
+      // A gate is the head's decision point. Default its assignee to the
+      // editorial head role when switching in, unless the author already
+      // chose a role tag.
+      assigned_to:
+        kind === "gate" && !step.assigned_to.toLowerCase().startsWith("role:")
+          ? "role:head_editorial"
+          : step.assigned_to,
+    });
+  };
+
   return (
-    <div className="glass-light rounded-xl p-3 space-y-2.5">
+    <div
+      className={`glass-light rounded-xl p-3 space-y-2.5 ${
+        isGate ? "ring-1 ring-amber-300/25" : ""
+      }`}
+    >
       <div className="flex items-start justify-between gap-2">
-        <div className="text-[10px] uppercase tracking-wider text-white/40">
-          Step {index + 1}
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] uppercase tracking-wider text-white/40">
+            Step {index + 1}
+          </span>
+          <div className="flex items-center gap-0.5 rounded-lg bg-white/5 p-0.5">
+            <KindButton active={!isGate} onClick={() => setKind("spawn")}>
+              Work
+            </KindButton>
+            <KindButton active={isGate} onClick={() => setKind("gate")}>
+              Gate
+            </KindButton>
+          </div>
         </div>
         <div className="flex items-center gap-0.5">
           <IconButton
@@ -94,6 +124,15 @@ export function WorkflowStepEditor({
           </IconButton>
         </div>
       </div>
+
+      {isGate && (
+        <p className="text-[10px] leading-relaxed text-amber-200/65">
+          The assignee reviews the piece and emits a go / fail / kill verdict.
+          Fail returns it to the draft step to revise; the run caps at 2
+          revisions before it auto-kills (set <code>max_revisions</code> in YAML
+          to change).
+        </p>
+      )}
 
       <div className="space-y-1">
         <label className="text-[10px] text-white/45">Title</label>
@@ -144,6 +183,30 @@ export function WorkflowStepEditor({
         />
       </div>
     </div>
+  );
+}
+
+function KindButton({
+  children,
+  active,
+  onClick,
+}: {
+  children: React.ReactNode;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`cursor-pointer rounded-md px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider transition-colors ${
+        active
+          ? "bg-white/15 text-white/90"
+          : "text-white/45 hover:text-white/70"
+      }`}
+    >
+      {children}
+    </button>
   );
 }
 

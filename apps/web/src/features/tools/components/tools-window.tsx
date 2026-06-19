@@ -27,6 +27,7 @@ import { useCompanyTools, useToolCatalog } from "@/features/tools/api/use-tools"
 import { AddToolModal } from "./add-tool-modal";
 import { EditToolModal } from "./edit-tool-modal";
 import { ToolLogs } from "./tool-logs";
+import { ToolConnection } from "./tool-connection";
 
 interface ToolsWindowProps {
   companyId: string;
@@ -429,6 +430,19 @@ function DetailPane({
             </span>
           )}
         </section>
+
+        {catalog && catalog.credentialFields.length > 0 && (
+          <section>
+            <h3 className="text-[11px] uppercase tracking-wider text-white/40 mb-2">
+              Connection
+            </h3>
+            <ToolConnection
+              companyId={companyId}
+              toolId={tool.id}
+              fields={catalog.credentialFields}
+            />
+          </section>
+        )}
 
         {catalog && catalog.actions.length > 0 && (
           <section>

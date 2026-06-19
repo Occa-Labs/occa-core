@@ -140,6 +140,9 @@ function eventLabel(
       if (actionType === "ReviewVerdict") {
         return reviewVerdictLabel(event, agentName);
       }
+      if (actionType === "GATE_VERDICT") {
+        return gateVerdictLabel(event, agentName);
+      }
       const reason = typeof p.reason === "string" ? p.reason : null;
       const title = typeof p.title === "string" ? p.title : null;
       return {
@@ -198,6 +201,35 @@ function reviewVerdictLabel(
   return {
     label,
     detail: feedback ? truncate(feedback, 160) : undefined,
+  };
+}
+
+// GATE_VERDICT is an agent_action_emitted row written when the head emits a
+// go/fail/kill decision on a sequential workflow's gate step. The verdict +
+// reason sit under `actionPayload` (the dispatcher's generic marker-event
+// shape). Surface WHO decided and WHAT, so the timeline reads as an editorial
+// decision, not a bare "Emitted GATE_VERDICT".
+function gateVerdictLabel(
+  event: TaskEventDTO,
+  agentName: (id: string | null | undefined) => string,
+): { label: string; detail?: string } {
+  const ap = event.payload.actionPayload;
+  const payload =
+    ap && typeof ap === "object" ? (ap as Record<string, unknown>) : {};
+  const verdict =
+    typeof payload.verdict === "string" ? payload.verdict : "verdict";
+  const reason = typeof payload.reason === "string" ? payload.reason : null;
+  const phrase =
+    verdict === "go"
+      ? "go — advances"
+      : verdict === "fail"
+        ? "fail — back to draft"
+        : verdict === "kill"
+          ? "kill — run ends"
+          : verdict;
+  return {
+    label: `Editorial gate by ${agentName(event.actorId)} — ${phrase}`,
+    detail: reason ? truncate(reason, 160) : undefined,
   };
 }
 

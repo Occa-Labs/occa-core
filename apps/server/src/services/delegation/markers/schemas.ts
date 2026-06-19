@@ -48,6 +48,15 @@ export const blockBlockPayload = z.object({
   reason: z.string().trim().max(LIMITS.REASON).optional(),
 });
 
+// GATE_VERDICT: the head's decision on a sequential workflow's gate step.
+// Carries no side effect at parse time — the dispatcher records it as an
+// `agent_action_emitted` task_event, and the workflow engine reads the
+// latest such event when the gate task completes to decide go/fail/kill.
+export const gateVerdictBlockPayload = z.object({
+  verdict: z.enum(["go", "fail", "kill"]),
+  reason: z.string().trim().max(LIMITS.REASON).optional(),
+});
+
 // INSTALL_SKILL: CEO appends a skill key to a target deployment's
 // desiredSkills array. companyId is derived from the emitter, not
 // declared in the payload, so the marker cannot mutate skills across
@@ -957,4 +966,8 @@ export type ActionBlockOutcome =
   | {
       kind: "task_edit_rejected";
       reason: TaskEditRejectReason;
-    };
+    }
+  // GATE_VERDICT recorded: no side effect here. The dispatcher persists the
+  // verdict in the task_event; the workflow engine reads it on the gate
+  // task's completion to advance / re-draft / kill the run.
+  | { kind: "gate_verdict"; verdict: "go" | "fail" | "kill"; reason?: string };
