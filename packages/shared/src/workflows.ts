@@ -51,16 +51,49 @@ const triggerSchema = z.object({
 //             ends the run; otherwise the pipeline continues.
 //
 // `tool` + `action` are required when (and only when) kind is "tool".
+const stepIdSlug = z
+  .string()
+  .trim()
+  .min(1)
+  .max(64)
+  .regex(/^[a-z0-9][a-z0-9_-]*$/i, {
+    message: "id must be slug-shaped (alnum, hyphen, underscore)",
+  });
+
 const spawnStepSchema = z
   .object({
     kind: z.enum(["spawn", "gate", "tool"]).default("spawn"),
+    // Optional stable handle for this step — referenced by a gate's
+    // `on_fail_goto`. Only steps that are a bounce target need one.
+    id: stepIdSlug.optional(),
     title: z.string().trim().min(1).max(200),
     assigned_to: z.string().trim().min(1).max(64),
+    // Only for `kind: gate` — the `id` of the step to rewind the cursor to on a
+    // FAIL verdict (re-runs the pipeline from there). Omit to use the default
+    // (two steps back, for the legacy draft→verify→gate adjacency).
+    on_fail_goto: stepIdSlug.optional(),
+    // The step's instruction to the agent — prepended to the task body so it
+    // leads, before the prior step's output. This is where authors shape what a
+    // step does and what its output must look like (e.g. "output only the final
+    // article, no meta" on the step before a publish step). The engine injects
+    // it verbatim and never reads it; mechanism-critical contracts (the gate
+    // verdict marker) are injected separately by the engine.
+    prompt: z.string().trim().max(4000).optional(),
     acceptance_criteria: z.string().trim().max(2000).optional(),
     // Only meaningful for `kind: tool` — the company tool type to invoke and
     // the action name on it (e.g. publish/post).
     tool: z.string().trim().min(1).max(64).optional(),
     action: z.string().trim().min(1).max(64).optional(),
+    // Only for `kind: tool` — explicit input mapping for the tool action,
+    // moving input-shaping out of the engine and into the (reviewable) YAML.
+    // Each value is a literal string, or a template referencing a prior step's
+    // output:
+    //   {{<id>.output}}        — that step's full deliverable text
+    //   {{<id>.output.<field>}} — a field of a prior TOOL step's JSON output
+    //                             (e.g. {{cover_image.output.url}})
+    // When omitted, the engine falls back to its default mapping (carry the
+    // immediately-prior step's output as `content`, derive a title from it).
+    input: z.record(z.string(), z.string()).optional(),
   })
   .refine((s) => s.kind !== "tool" || (!!s.tool && !!s.action), {
     message: "tool steps require `tool` and `action`",
@@ -75,6 +108,36 @@ const metaActionStepSchema = z.object({
 });
 
 const stepSchema = z.union([spawnStepSchema, metaActionStepSchema]);
+
+// Matches a step-output reference inside a tool step's `input` value:
+//   {{draft.output}}            → { id: "draft", field: undefined }
+//   {{cover_image.output.url}}  → { id: "cover_image", field: "url" }
+// Exported so the engine resolves references with the exact same grammar
+// the schema validates against.
+const OUTPUT_REF = /\{\{\s*([a-z0-9_-]+)\.output(?:\.([a-z0-9_]+))?\s*\}\}/gi;
+
+export function extractOutputRefs(
+  value: string,
+): Array<{ id: string; field?: string }> {
+  const refs: Array<{ id: string; field?: string }> = [];
+  for (const m of value.matchAll(OUTPUT_REF)) {
+    refs.push({ id: m[1]!, field: m[2] });
+  }
+  return refs;
+}
+
+// Replace every `{{id.output(.field)?}}` in `value` with whatever `lookup`
+// returns for that reference. The engine supplies a lookup over the run's
+// stored step outputs; keeping the substitution here means the schema's
+// validation grammar and the engine's resolution grammar can never drift.
+export function resolveOutputRefs(
+  value: string,
+  lookup: (id: string, field?: string) => string,
+): string {
+  return value.replace(OUTPUT_REF, (_m, id: string, field?: string) =>
+    lookup(id, field),
+  );
+}
 
 const capsSchema = z
   .object({
@@ -113,7 +176,52 @@ const linearWorkflowSchema = z.object({
   caps: capsSchema,
 });
 
-export const workflowDefinitionSchema = linearWorkflowSchema.strict();
+export const workflowDefinitionSchema = linearWorkflowSchema
+  .strict()
+  .superRefine((def, ctx) => {
+    // Step ids must be unique, and every `on_fail_goto` must point at one — so a
+    // gate can't be authored to bounce to a step that doesn't exist.
+    const seen = new Set<string>();
+    const ids = new Set<string>();
+    def.steps.forEach((s) => {
+      if ("id" in s && s.id) ids.add(s.id);
+    });
+    def.steps.forEach((s, i) => {
+      if (!("title" in s)) return; // meta steps have no id/on_fail_goto
+      // Tool `input` may only reference the output of a STRICTLY EARLIER step
+      // (`seen` holds prior steps' ids — current id is added after this check).
+      if (s.input) {
+        for (const [key, value] of Object.entries(s.input)) {
+          for (const ref of extractOutputRefs(value)) {
+            if (!seen.has(ref.id)) {
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                path: ["steps", i, "input", key],
+                message: `input references "${ref.id}.output" but no earlier step has id "${ref.id}"`,
+              });
+            }
+          }
+        }
+      }
+      if (s.id) {
+        if (seen.has(s.id)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["steps", i, "id"],
+            message: `duplicate step id "${s.id}"`,
+          });
+        }
+        seen.add(s.id);
+      }
+      if (s.on_fail_goto && !ids.has(s.on_fail_goto)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["steps", i, "on_fail_goto"],
+          message: `on_fail_goto "${s.on_fail_goto}" matches no step id`,
+        });
+      }
+    });
+  });
 
 export type SpawnStep = z.infer<typeof spawnStepSchema>;
 export type MetaActionStep = z.infer<typeof metaActionStepSchema>;

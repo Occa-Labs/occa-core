@@ -26,6 +26,9 @@ interface WorkflowStepEditorProps {
   // Suggestions for the assignee autocomplete. "human" is always
   // prepended so it appears at the top regardless of API state.
   assigneeOptions?: DeploymentOption[];
+  // Ids of every step in the workflow — populates a gate's "on fail, go to"
+  // target picker.
+  stepIds?: string[];
   onChange: (next: SpawnStep) => void;
   onMoveUp: () => void;
   onMoveDown: () => void;
@@ -39,6 +42,7 @@ export function WorkflowStepEditor({
   canMoveDown,
   canRemove,
   assigneeOptions = [],
+  stepIds = [],
   onChange,
   onMoveUp,
   onMoveDown,
@@ -125,13 +129,50 @@ export function WorkflowStepEditor({
         </div>
       </div>
 
+      <div className="space-y-1">
+        <label className="text-[10px] text-white/45">
+          ID{" "}
+          <span className="text-white/30">
+            (optional — a gate&apos;s &quot;on fail&quot; target points at this)
+          </span>
+        </label>
+        <input
+          value={step.id ?? ""}
+          onChange={(e) =>
+            onChange({ ...step, id: e.target.value || undefined })
+          }
+          placeholder="e.g. draft"
+          className="w-full glass-light rounded-lg px-3 py-2 text-xs font-mono text-white/90 placeholder:text-white/30 outline-none focus:ring-1 focus:ring-white/20"
+        />
+      </div>
+
       {isGate && (
-        <p className="text-[10px] leading-relaxed text-amber-200/65">
-          The assignee reviews the piece and emits a go / fail / kill verdict.
-          Fail returns it to the draft step to revise; the run caps at 2
-          revisions before it auto-kills (set <code>max_revisions</code> in YAML
-          to change).
-        </p>
+        <div className="space-y-1.5">
+          <p className="text-[10px] leading-relaxed text-amber-200/65">
+            The assignee reviews the piece and emits a go / fail / kill verdict.
+            Fail rewinds to the step below to revise; the run caps at 2 revisions
+            before it auto-kills (set <code>max_revisions</code> in YAML).
+          </p>
+          <div className="space-y-1">
+            <label className="text-[10px] text-white/45">On fail, go to</label>
+            <select
+              value={step.on_fail_goto ?? ""}
+              onChange={(e) =>
+                onChange({ ...step, on_fail_goto: e.target.value || undefined })
+              }
+              className="w-full glass-light rounded-lg px-3 py-2 text-xs text-white/90 outline-none focus:ring-1 focus:ring-white/20 cursor-pointer"
+            >
+              <option value="">Default (two steps back)</option>
+              {stepIds
+                .filter((id) => id !== step.id)
+                .map((id) => (
+                  <option key={id} value={id}>
+                    {id}
+                  </option>
+                ))}
+            </select>
+          </div>
+        </div>
       )}
 
       <div className="space-y-1">
@@ -162,6 +203,21 @@ export function WorkflowStepEditor({
           onChange={(v) => onChange({ ...step, assigned_to: v })}
           options={options}
           placeholder="human, or an agent name (e.g. ResearchBot)"
+        />
+      </div>
+
+      <div className="space-y-1">
+        <label className="text-[10px] text-white/45">
+          Prompt <span className="text-white/30">(optional)</span>
+        </label>
+        <textarea
+          value={step.prompt ?? ""}
+          onChange={(e) =>
+            onChange({ ...step, prompt: e.target.value || undefined })
+          }
+          placeholder="Instructions for this step — what to do and what the output must look like. Leads the task body."
+          rows={3}
+          className="w-full glass-light rounded-lg px-3 py-2 text-xs text-white/90 leading-relaxed placeholder:text-white/30 outline-none focus:ring-1 focus:ring-white/20 resize-none"
         />
       </div>
 

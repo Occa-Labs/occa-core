@@ -76,6 +76,10 @@ export function TaskDetail({
   const systemTask = isSystemTask(task);
   const isArchived = task.archivedAt !== null;
   const isLocked = task.status === "in_progress" && !!task.linkedTraceId;
+  // Workflow-run tasks (the routine container + every step) are engine-driven,
+  // not user-authored — their body carries markdown deliverables / mandates, so
+  // render it read-only through the markdown viewer rather than the raw editor.
+  const isWorkflowTask = task.workflowRunId !== null;
   // Read-only when archived OR when agent is currently running. Both
   // gate the same set of edit interactions in the body.
   const isReadOnly = isLocked || isArchived;
@@ -603,7 +607,7 @@ export function TaskDetail({
 
         <hr className="border-white/8" />
 
-        {systemTask || isReadOnly ? (
+        {systemTask || isReadOnly || isWorkflowTask ? (
           <ReadOnlyBlocks blocks={blocks} />
         ) : (
           <BlockEditor

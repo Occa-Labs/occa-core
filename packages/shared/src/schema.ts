@@ -1469,6 +1469,13 @@ export const workflowRuns = pgTable(
     // How many times the gate has bounced the draft. Drives the
     // per-run revise cap so a piece can't loop forever (Phase 2).
     reviseCount: integer("revise_count").notNull().default(0),
+    // Per-step output, keyed by step `id` (steps without an id are not
+    // referenceable and are not stored). Spawn steps store their deliverable
+    // text as a string; tool steps store their action's JSON output object
+    // (e.g. { url }). Lets a later tool step's `input` map pull a prior step's
+    // output via `{{<id>.output}}` / `{{<id>.output.<field>}}`. Engine-managed,
+    // ephemeral run state — not chain truth.
+    stepOutputs: jsonb("step_outputs").notNull().default({}),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

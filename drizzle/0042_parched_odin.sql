@@ -1,0 +1,1 @@
+ALTER TABLE "workflow_runs" ADD COLUMN "step_outputs" jsonb DEFAULT '{}'::jsonb NOT NULL;

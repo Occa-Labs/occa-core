@@ -21,10 +21,11 @@ import {
   workflows as workflowsTable,
 } from "@occa/shared/schema";
 import type { ContentBlock } from "@occa/shared/types";
-import type {
-  SpawnStep,
-  WorkflowDefinition,
-  WorkflowStep,
+import {
+  resolveOutputRefs,
+  type SpawnStep,
+  type WorkflowDefinition,
+  type WorkflowStep,
 } from "@occa/shared/workflows";
 import { db } from "../../../infra/database/client";
 import { createTaskRecord } from "../../../infra/database/task-creation";
@@ -471,9 +472,10 @@ const GATE_INSTRUCTION =
   "ends here.\n\n" +
   "A missing or malformed verdict is treated as fail, so always emit one.";
 
-// Spawn the step at `stepIndex` under the run's parent. Handles spawn and
-// gate step kinds; gate steps get the verdict-marker instruction prepended.
-// Returns the new task id, or null if the step is missing / not a spawn step.
+// Spawn the step at `stepIndex` under the run's parent. The step's authored
+// `prompt` leads the task body, then (for a gate) the verdict-marker contract,
+// then the prior step's output. Returns the new task id, or null if the step is
+// missing / not a spawn step.
 async function spawnSequentialStep(
   run: WorkflowRunRow,
   definition: WorkflowDefinition,
@@ -497,10 +499,18 @@ async function spawnSequentialStep(
       "sequential step assignee did not resolve; spawning unassigned",
     );
   }
-  const blocks: ContentBlock[] =
-    step.kind === "gate"
-      ? [{ type: "paragraph", text: GATE_INSTRUCTION }, ...contextBlocks]
-      : contextBlocks;
+  // Body lead: the author's per-step prompt (what to do / what the output must
+  // look like), then the gate's verdict-marker contract for gate steps (a
+  // mechanism the engine owns), then the carried context. The engine injects
+  // the prompt verbatim — it never reads or interprets it.
+  const leadBlocks: ContentBlock[] = [];
+  if (step.prompt) {
+    leadBlocks.push({ type: "paragraph", text: step.prompt });
+  }
+  if (step.kind === "gate") {
+    leadBlocks.push({ type: "paragraph", text: GATE_INSTRUCTION });
+  }
+  const blocks: ContentBlock[] = [...leadBlocks, ...contextBlocks];
   // Title shape: "<step> [· rev N] - <parent cycle>". The step name leads so
   // the board stays scannable by step rather than a wall of identical cycle
   // prefixes; the cycle ref trails so the same step across different cycles
@@ -781,30 +791,72 @@ async function loadDoneStepOutput(
   return row ? loadStepOutputText(row.id) : "";
 }
 
-// Fallback publish title from the article markdown (first heading). The
-// receiver usually lifts its own headline from the body; this is the backstop.
-function derivePublishTitle(content: string, fallback: string): string {
-  const m = content.match(/^#{1,6}[ \t]+(.+?)[ \t#]*$/m);
-  return (m?.[1]?.trim() || fallback || "Untitled").slice(0, 200);
+// Default input payload for a tool step: the carried deliverable as `content`.
+// Tool-agnostic by design — the engine knows nothing about any specific tool's
+// shape. A step's `input` map (resolved from YAML) is merged ON TOP of this, so
+// authors add or override fields per tool (title, image_url, format, …) without
+// the engine carrying tool-specific branches. Per-tool normalization (e.g.
+// publish deriving a title from the article heading) lives in that tool's
+// handler, not here.
+function buildToolInput(content: string): Record<string, unknown> {
+  return { content };
 }
 
-// Build the input payload for a tool step from the carried deliverable. Each
-// tool type maps the content into the shape its action expects; add a branch
-// here when a new deterministic tool step lands. Unknown types get a generic
-// best-effort shape.
-function buildToolInput(
-  toolType: string,
-  content: string,
-  parentTitle: string,
-): Record<string, unknown> {
-  if (toolType === "publish") {
-    return {
-      title: derivePublishTitle(content, parentTitle),
-      content,
-      format: "markdown",
-    };
+// Persist a completed step's output under its `id` so a later tool step's
+// `input` can reference it. No-op for steps without an id (not referenceable).
+// jsonb-merges so concurrent/sequential step writes accumulate.
+async function recordStepOutput(
+  runId: string,
+  stepId: string | undefined,
+  value: unknown,
+): Promise<void> {
+  if (!stepId) return;
+  await db
+    .update(workflowRuns)
+    .set({
+      stepOutputs: sql`${workflowRuns.stepOutputs} || ${JSON.stringify({ [stepId]: value })}::jsonb`,
+      updatedAt: new Date(),
+    })
+    .where(eq(workflowRuns.id, runId));
+}
+
+// Resolve a tool step's `input` map against the run's stored step outputs.
+// `{{id.output}}` → the stored output stringified; `{{id.output.field}}` → a
+// field of a stored object output (e.g. a generated image url). Missing refs
+// resolve to empty string (validation already guarantees the id exists; an
+// empty value means that step produced nothing referenceable at run time).
+async function resolveToolInput(
+  runId: string,
+  inputMap: Record<string, string>,
+): Promise<Record<string, unknown>> {
+  const [row] = await db
+    .select({ stepOutputs: workflowRuns.stepOutputs })
+    .from(workflowRuns)
+    .where(eq(workflowRuns.id, runId))
+    .limit(1);
+  const outputs = (row?.stepOutputs ?? {}) as Record<string, unknown>;
+  const lookup = (id: string, field?: string): string => {
+    const out = outputs[id];
+    if (field) {
+      const f =
+        out && typeof out === "object"
+          ? (out as Record<string, unknown>)[field]
+          : undefined;
+      return f == null ? "" : String(f);
+    }
+    if (out == null) return "";
+    return typeof out === "string" ? out : JSON.stringify(out);
+  };
+  const resolved: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(inputMap)) {
+    const out = resolveOutputRefs(value, lookup);
+    // A value that resolved to empty means a referenced step produced nothing
+    // (e.g. an image step that failed). Omit the key rather than pass "" — the
+    // tool sees an absent optional field and degrades gracefully (publish ships
+    // the article without a cover image instead of failing url validation).
+    if (out !== "") resolved[key] = out;
   }
-  return { content };
+  return resolved;
 }
 
 // Deterministic tool step. The engine does NOT spawn a task: it resolves the
@@ -818,7 +870,6 @@ async function executeToolStep(
   definition: WorkflowDefinition,
   stepIndex: number,
   content: string,
-  parentTitle: string,
 ): Promise<void> {
   const step = definition.steps[stepIndex];
   if (
@@ -885,12 +936,19 @@ async function executeToolStep(
     return;
   }
 
+  // Default input from the carried deliverable, with the step's explicit
+  // `input` map (resolved against prior step outputs) merged on top.
+  const input = {
+    ...buildToolInput(content),
+    ...(step.input ? await resolveToolInput(run.id, step.input) : {}),
+  };
+
   const outcome = await invokeTool({
     toolId: toolRow.id,
     actionName,
     companyId: run.companyId,
     deploymentId,
-    input: buildToolInput(toolType, content, parentTitle),
+    input,
   });
 
   if (outcome.kind !== "ok") {
@@ -905,6 +963,10 @@ async function executeToolStep(
     emit({ outcome: "failed", reason });
     return;
   }
+
+  // Store this tool step's JSON output so a later step's `input` can reference
+  // it (e.g. {{cover_image.output.url}} flowing into the publish step).
+  await recordStepOutput(run.id, step.id, outcome.output ?? null);
 
   const url = (outcome.output as { url?: string } | null)?.url ?? "";
   if (url) {
@@ -957,7 +1019,7 @@ async function runToolStepsFrom(
     }
     const step = definition.steps[index];
     if (step && isSpawnStep(step) && step.kind === "tool") {
-      await executeToolStep(run, definition, index, content, parentTitle);
+      await executeToolStep(run, definition, index, content);
       continue;
     }
     // First non-tool step after the tool run — spawn it carrying the same
@@ -1068,7 +1130,15 @@ async function advanceGateStep(
     await killRun(run, "gate_revise_cap");
     return { spawned: 0 };
   }
-  const draftIndex = Math.max(0, gateIndex - 2);
+  // Bounce target: the gate's explicit `on_fail_goto` (a step id), else the
+  // legacy two-steps-back default. Re-runs the pipeline from there.
+  const gateStep = definition.steps[gateIndex];
+  const targetId =
+    gateStep && isSpawnStep(gateStep) ? gateStep.on_fail_goto : undefined;
+  const byId = targetId
+    ? definition.steps.findIndex((s) => isSpawnStep(s) && s.id === targetId)
+    : -1;
+  const draftIndex = byId >= 0 ? byId : Math.max(0, gateIndex - 2);
   const updated = await db
     .update(workflowRuns)
     .set({
@@ -1182,6 +1252,19 @@ async function advanceWorkflowRun(completed: {
   // on the gate task's completion; never advances toward publish on a
   // missing/invalid verdict (fail-safe FAIL).
   const completedStep = wf.definition.steps[run.currentStepIndex];
+
+  // Persist this step's deliverable under its id so a later tool step's
+  // `input` can reference it (e.g. publish pulling {{seo.output}}). Runs for
+  // every completed spawn/gate step before any branch, including the path
+  // into the gate handler.
+  if (completedStep && isSpawnStep(completedStep) && completedStep.id) {
+    await recordStepOutput(
+      run.id,
+      completedStep.id,
+      await loadStepOutputText(completed.id),
+    );
+  }
+
   if (
     completedStep &&
     isSpawnStep(completedStep) &&

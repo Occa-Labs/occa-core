@@ -42,11 +42,26 @@ const credentialsSchema = z.object({
 type PublishCredentials = z.infer<typeof credentialsSchema>;
 
 const postInputSchema = z.object({
-  title: z.string().trim().min(1).max(LIMITS.TITLE),
+  // Optional: when omitted, the title is derived from the content's first
+  // markdown heading. The engine is tool-agnostic and only carries `content`;
+  // deriving a display title from the document being published is this tool's
+  // own normalization, not workflow/engine logic.
+  title: z.string().trim().min(1).max(LIMITS.TITLE).optional(),
   content: z.string().min(1),
   format: z.string().trim().max(LIMITS.TINY).optional(),
   tags: z.array(z.string().trim().min(1).max(LIMITS.TAG)).max(LIMITS.TAGS_MAX).optional(),
+  // Optional hosted cover image URL — forwarded to the receiver, which decides
+  // how to use it. Set by a workflow that ran an image step before publish.
+  image_url: z.string().trim().url().max(LIMITS.URL).optional(),
 });
+
+// Title from the article markdown (first heading). The receiver usually lifts
+// its own headline from the body too; this fills the payload's display title
+// when the caller didn't pass one explicitly.
+function deriveTitleFromContent(content: string): string {
+  const m = content.match(/^#{1,6}[ \t]+(.+?)[ \t#]*$/m);
+  return (m?.[1]?.trim() || "Untitled").slice(0, LIMITS.TITLE);
+}
 
 const postOutputSchema = z.object({ url: z.string().url() });
 
@@ -96,13 +111,20 @@ async function publishContent(
   const taskId = await resolveCurrentTaskId(deploymentId);
   const tags = input.tags ?? [];
   const format = input.format ?? "markdown";
+  const title = input.title ?? deriveTitleFromContent(input.content);
 
   const payload = {
     event: EVENT,
     occurredAt: new Date().toISOString(),
     company: { id: companyId, name: "" },
-    task: { id: taskId ?? "tool", title: input.title, tags },
-    document: { title: input.title, content: input.content, format, tags },
+    task: { id: taskId ?? "tool", title, tags },
+    document: {
+      title,
+      content: input.content,
+      format,
+      tags,
+      ...(input.image_url ? { image_url: input.image_url } : {}),
+    },
     agent,
     delegatedBy: null,
     trace: { id: "tool" },

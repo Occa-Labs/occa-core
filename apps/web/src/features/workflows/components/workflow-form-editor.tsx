@@ -52,9 +52,12 @@ export function formStateFromDefinition(
     taskType: def.trigger.match.task_type,
     steps: def.steps.filter(isSpawnStep).map((s) => ({
       kind: s.kind,
+      id: s.id,
       title: s.title,
       assigned_to: s.assigned_to,
+      prompt: s.prompt,
       acceptance_criteria: s.acceptance_criteria,
+      on_fail_goto: s.on_fail_goto,
       tool: s.tool,
       action: s.action,
     })),
@@ -84,11 +87,14 @@ export function formStateToYaml(state: WorkflowFormState): string {
       // workflow via the form never silently strips a step back to a plain
       // spawn (or drops a tool step's tool/action).
       kind: s.kind,
+      ...(s.id ? { id: s.id } : {}),
       title: s.title,
       assigned_to: s.assigned_to,
+      ...(s.prompt ? { prompt: s.prompt } : {}),
       ...(s.acceptance_criteria
         ? { acceptance_criteria: s.acceptance_criteria }
         : {}),
+      ...(s.on_fail_goto ? { on_fail_goto: s.on_fail_goto } : {}),
       ...(s.tool ? { tool: s.tool } : {}),
       ...(s.action ? { action: s.action } : {}),
     })),
@@ -292,6 +298,9 @@ function StepsSection({
             canMoveDown={i < state.steps.length - 1}
             canRemove={state.steps.length > 1}
             assigneeOptions={assigneeOptions}
+            stepIds={state.steps
+              .map((s) => s.id)
+              .filter((id): id is string => !!id)}
             onChange={(next) => {
               const steps = [...state.steps];
               steps[i] = next;
