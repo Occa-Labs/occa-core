@@ -6,12 +6,21 @@
 // detail line. Workflow events (Phase 5+) will land here too once
 // emitted as `agent_action_emitted` rows with `actionType: WorkflowExecuted`.
 
+import { useState } from "react";
 import type { TaskEventDTO } from "@occa/shared/types";
+import { Modal } from "@/components/ui/modal";
+import { MarkdownViewer } from "@/components/ui/markdown-viewer";
 
 interface AgentRef {
   id: string;
   name: string;
 }
+
+// Detail lines longer than this are clipped to a preview in the timeline; the
+// full text moves behind a "View full" button that opens a markdown modal.
+// Verdict / review feedback is frequently multi-paragraph and was previously
+// hard-truncated at the source, hiding the actionable part.
+const PREVIEW_LIMIT = 160;
 
 export function TaskTimeline({
   events,
@@ -20,6 +29,11 @@ export function TaskTimeline({
   events: TaskEventDTO[];
   agentList?: AgentRef[];
 }) {
+  const [fullView, setFullView] = useState<{
+    title: string;
+    content: string;
+  } | null>(null);
+
   if (events.length === 0) {
     return (
       <div className="text-xs text-white/30 py-2">No activity yet.</div>
@@ -30,34 +44,60 @@ export function TaskTimeline({
     return agentList?.find((a) => a.id === id)?.name ?? id.slice(0, 8);
   };
   return (
-    <ol className="relative space-y-2.5 pl-4">
-      <span
-        aria-hidden
-        className="absolute left-1 top-1 bottom-1 w-px bg-white/8"
-      />
-      {events.map((event) => {
-        const { label, detail } = eventLabel(event, agentName);
-        return (
-          <li key={event.id} className="relative">
-            <span
-              aria-hidden
-              className={`absolute -left-[15px] top-1.5 size-2 rounded-full ${dotColor(event.actorType)}`}
+    <>
+      <ol className="relative space-y-2.5 pl-4">
+        <span
+          aria-hidden
+          className="absolute left-1 top-1 bottom-1 w-px bg-white/8"
+        />
+        {events.map((event) => {
+          const { label, detail } = eventLabel(event, agentName);
+          const clipped = detail && detail.length > PREVIEW_LIMIT;
+          return (
+            <li key={event.id} className="relative">
+              <span
+                aria-hidden
+                className={`absolute -left-[15px] top-1.5 size-2 rounded-full ${dotColor(event.actorType)}`}
+              />
+              <div className="flex items-baseline gap-2">
+                <span className="text-[10px] text-white/30 font-mono shrink-0 w-12">
+                  {formatTime(event.createdAt)}
+                </span>
+                <span className="text-xs text-white/70">{label}</span>
+              </div>
+              {detail && (
+                <p className="ml-14 text-[11px] text-white/40 mt-0.5 whitespace-pre-wrap">
+                  {clipped ? truncate(detail, PREVIEW_LIMIT) : detail}
+                  {clipped && (
+                    <button
+                      type="button"
+                      onClick={() => setFullView({ title: label, content: detail })}
+                      className="ml-1 text-cyan-400/70 hover:text-cyan-300 cursor-pointer"
+                    >
+                      View full
+                    </button>
+                  )}
+                </p>
+              )}
+            </li>
+          );
+        })}
+      </ol>
+      <Modal
+        open={fullView !== null}
+        onClose={() => setFullView(null)}
+        title={fullView?.title}
+      >
+        {fullView && (
+          <div className="px-5 py-4">
+            <MarkdownViewer
+              content={fullView.content}
+              className="max-h-[60vh] overflow-y-auto"
             />
-            <div className="flex items-baseline gap-2">
-              <span className="text-[10px] text-white/30 font-mono shrink-0 w-12">
-                {formatTime(event.createdAt)}
-              </span>
-              <span className="text-xs text-white/70">{label}</span>
-            </div>
-            {detail && (
-              <p className="ml-14 text-[11px] text-white/40 mt-0.5">
-                {detail}
-              </p>
-            )}
-          </li>
-        );
-      })}
-    </ol>
+          </div>
+        )}
+      </Modal>
+    </>
   );
 }
 
@@ -154,7 +194,7 @@ function eventLabel(
       const body = typeof p.body === "string" ? p.body : null;
       return {
         label: "Comment",
-        detail: body ? truncate(body, 120) : undefined,
+        detail: body ?? undefined,
       };
     }
     case "task_blocked": {
@@ -200,7 +240,7 @@ function reviewVerdictLabel(
     : `Editorial review by ${agentName(event.actorId)} — ${decision}`;
   return {
     label,
-    detail: feedback ? truncate(feedback, 160) : undefined,
+    detail: feedback ?? undefined,
   };
 }
 
@@ -229,7 +269,7 @@ function gateVerdictLabel(
           : verdict;
   return {
     label: `Editorial gate by ${agentName(event.actorId)} — ${phrase}`,
-    detail: reason ? truncate(reason, 160) : undefined,
+    detail: reason ?? undefined,
   };
 }
 

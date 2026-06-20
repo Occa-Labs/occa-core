@@ -9,7 +9,7 @@
 // the same workflow on the parent task. The pg-boss queue adds a
 // second layer of dedup via singletonKey.
 
-import { and, count, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import {
   agentIdentities,
   companyTools,
@@ -1410,53 +1410,51 @@ async function handleWorkflowStepError(errored: {
   const title =
     erroredStep && isSpawnStep(erroredStep) ? erroredStep.title : "step";
 
-  // retry: re-spawn the same step (cursor stays put) up to the cap, then fail.
+  // retry: resume the SAME errored task rather than spawning a fresh one. The
+  // dispatcher keys the agent session by task id, so re-dispatching this exact
+  // task lands on the same session and claude `--resume` continues the prior
+  // transcript instead of re-paying the full prompt. A new task would mint a
+  // new session key and throw the interrupted work (and its cost) away.
   if (policy === "retry") {
-    // Dedup: if a task at this step is already pending/running, a retry is
-    // already in flight — don't double-spawn on a duplicate error event.
-    const [active] = await db
-      .select({ n: count() })
-      .from(tasks)
-      .where(
-        and(
-          eq(tasks.workflowRunId, run.id),
-          eq(tasks.workflowStepIndex, run.currentStepIndex),
-          sql`${tasks.status} IN ('todo', 'in_progress')`,
-        ),
-      );
-    if ((active?.n ?? 0) > 0) return { spawned: 0 };
+    // Atomic claim: flip the errored task back to `todo` and bump its retry
+    // counter in one write. The `status = 'error'` guard makes this the dedup —
+    // a duplicate/late error event (or a sibling already retried to done) finds
+    // no row to claim and no-ops, so the step can't be re-dispatched twice. The
+    // dispatcher clears errorCode + sets in_progress when it picks the job up.
+    const claimed = await db
+      .update(tasks)
+      .set({
+        status: "todo",
+        retryCount: sql`${tasks.retryCount} + 1`,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(tasks.id, errored.id), eq(tasks.status, "error")))
+      .returning({ retryCount: tasks.retryCount });
+    if (claimed.length === 0) return { spawned: 0 };
 
-    const [errored] = await db
-      .select({ n: count() })
-      .from(tasks)
-      .where(
-        and(
-          eq(tasks.workflowRunId, run.id),
-          eq(tasks.workflowStepIndex, run.currentStepIndex),
-          eq(tasks.status, "error"),
-        ),
-      );
-    if ((errored?.n ?? 0) > MAX_STEP_RETRIES) {
+    const attempt = claimed[0]?.retryCount ?? 0;
+    if (attempt > MAX_STEP_RETRIES) {
+      // Out of retries — revert to `error` so the failed step stays the board's
+      // visible failure record (errorCode is untouched), then fail the run.
+      await db
+        .update(tasks)
+        .set({ status: "error", updatedAt: new Date() })
+        .where(eq(tasks.id, errored.id));
       await failRun(run, `step_error_retries_exhausted:${title}`);
       return { spawned: 0 };
     }
 
-    const parentTitle = run.parentTaskId
-      ? await loadTaskTitle(run.parentTaskId)
-      : "";
-    const carry = await loadDoneStepOutput(run.id, run.currentStepIndex - 1);
-    const spawnedId = await spawnSequentialStep(
-      { ...run },
-      wf.definition,
-      run.currentStepIndex,
-      parentTitle,
-      contextBlock("Input from the previous step (retrying after an error):", carry),
+    void enqueueTaskDispatch(errored.id, { dedupe: false }).catch((err) =>
+      log.error(
+        { err, taskId: errored.id },
+        "workflow step retry re-dispatch enqueue failed",
+      ),
     );
     log.warn(
-      { runId: run.id, stepIndex: run.currentStepIndex, erroredSoFar: errored?.n ?? 0 },
-      "workflow step errored; re-spawning (retry)",
+      { runId: run.id, stepIndex: run.currentStepIndex, taskId: errored.id, attempt },
+      "workflow step errored; resuming same task (retry)",
     );
-    return { spawned: spawnedId ? 1 : 0 };
+    return { spawned: 1 };
   }
 
   // Default (fail_run): a critical step died — fail the run rather than freeze it.

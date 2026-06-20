@@ -680,6 +680,12 @@ export const tasks = pgTable(
     // advancing, so a duplicate done-event can't double-spawn the next
     // step. Null when workflowRunId is null.
     workflowStepIndex: integer("workflow_step_index"),
+    // How many times this task has been re-dispatched after erroring under a
+    // workflow step's `on_error: retry`. A retry resumes the SAME task (same
+    // session key → claude `--resume` continues the prior transcript) rather
+    // than spawning a fresh task, so this counter — not a COUNT of sibling
+    // error rows — bounds the retry loop against the engine's cap.
+    retryCount: integer("retry_count").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
