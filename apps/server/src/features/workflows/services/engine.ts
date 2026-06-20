@@ -9,7 +9,7 @@
 // the same workflow on the parent task. The pg-boss queue adds a
 // second layer of dedup via singletonKey.
 
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, count, desc, eq, sql } from "drizzle-orm";
 import {
   agentIdentities,
   companyTools,
@@ -43,6 +43,11 @@ const log = childLogger("services:workflows:engine");
 // omits `caps.max_revisions`. Guards against an infinite
 // draft→verify→gate→fail loop.
 const DEFAULT_MAX_REVISIONS = 2;
+
+// How many times a step with `on_error: retry` may be re-spawned after its task
+// parks in `error` before the engine gives up and fails the run. Bounds the
+// re-spawn loop so a permanently-broken step can't run forever.
+const MAX_STEP_RETRIES = 3;
 
 // Discriminator for what actually happened during a workflow run; the
 // spawn-step / skip / meta detail is folded into a single audit row.
@@ -733,6 +738,25 @@ async function killRun(
   );
 }
 
+// Mark the run failed (a step's task errored and its policy is fail_run) and
+// close its container so the run can't sit "In Progress" forever. Done steps
+// stay done/paid; the routine fires a fresh cycle next tick. The errored step
+// task remains in the board's "Needs attention" as the failure record.
+async function failRun(
+  run: { id: string; companyId: string; parentTaskId: string | null },
+  reason: string,
+): Promise<void> {
+  await db
+    .update(workflowRuns)
+    .set({ status: "failed", updatedAt: new Date() })
+    .where(eq(workflowRuns.id, run.id));
+  await closeRunContainer(run, reason);
+  log.warn(
+    { runId: run.id, container: run.parentTaskId, reason },
+    "workflow run failed on step error",
+  );
+}
+
 // Read the head's verdict for a completed gate task. The dispatcher records
 // it as an `agent_action_emitted` task_event (actionType GATE_VERDICT) with
 // the parsed body under `actionPayload`. Fail-safe: a missing or invalid
@@ -1341,6 +1365,159 @@ async function advanceWorkflowRun(completed: {
   return { spawned: spawnedId ? 1 : 0 };
 }
 
+// A workflow step task errored (parked after its retries were exhausted).
+// Mirror of advanceWorkflowRun for the failure case: skip past the step if its
+// policy allows, else fail the whole run so it can't stall "In Progress".
+async function handleWorkflowStepError(errored: {
+  id: string;
+  workflowRunId: string;
+  workflowStepIndex: number | null;
+}): Promise<{ spawned: number }> {
+  const [run] = await db
+    .select({
+      id: workflowRuns.id,
+      companyId: workflowRuns.companyId,
+      workflowRowId: workflowRuns.workflowRowId,
+      workflowYamlId: workflowRuns.workflowYamlId,
+      parentTaskId: workflowRuns.parentTaskId,
+      currentStepIndex: workflowRuns.currentStepIndex,
+      status: workflowRuns.status,
+      reviseCount: workflowRuns.reviseCount,
+    })
+    .from(workflowRuns)
+    .where(eq(workflowRuns.id, errored.workflowRunId))
+    .limit(1);
+  if (!run || run.status !== "running") return { spawned: 0 };
+  // Only the errored step still sitting at the cursor matters — a stale/dup
+  // event, or a step since retried to done and advanced, is a no-op.
+  if (
+    errored.workflowStepIndex == null ||
+    errored.workflowStepIndex !== run.currentStepIndex
+  ) {
+    return { spawned: 0 };
+  }
+
+  const wf = await loadEnabledWorkflowByYamlId(run.companyId, run.workflowYamlId);
+  if (!wf) return { spawned: 0 };
+
+  const erroredStep = wf.definition.steps[run.currentStepIndex];
+  // Default to `retry`: salvage a flaky step (up to the cap) before giving up,
+  // rather than failing the whole run on the first error. `fail_run`/`skip` are
+  // explicit opt-ins per step.
+  const policy =
+    (erroredStep && isSpawnStep(erroredStep) ? erroredStep.on_error : undefined) ??
+    "retry";
+  const title =
+    erroredStep && isSpawnStep(erroredStep) ? erroredStep.title : "step";
+
+  // retry: re-spawn the same step (cursor stays put) up to the cap, then fail.
+  if (policy === "retry") {
+    // Dedup: if a task at this step is already pending/running, a retry is
+    // already in flight — don't double-spawn on a duplicate error event.
+    const [active] = await db
+      .select({ n: count() })
+      .from(tasks)
+      .where(
+        and(
+          eq(tasks.workflowRunId, run.id),
+          eq(tasks.workflowStepIndex, run.currentStepIndex),
+          sql`${tasks.status} IN ('todo', 'in_progress')`,
+        ),
+      );
+    if ((active?.n ?? 0) > 0) return { spawned: 0 };
+
+    const [errored] = await db
+      .select({ n: count() })
+      .from(tasks)
+      .where(
+        and(
+          eq(tasks.workflowRunId, run.id),
+          eq(tasks.workflowStepIndex, run.currentStepIndex),
+          eq(tasks.status, "error"),
+        ),
+      );
+    if ((errored?.n ?? 0) > MAX_STEP_RETRIES) {
+      await failRun(run, `step_error_retries_exhausted:${title}`);
+      return { spawned: 0 };
+    }
+
+    const parentTitle = run.parentTaskId
+      ? await loadTaskTitle(run.parentTaskId)
+      : "";
+    const carry = await loadDoneStepOutput(run.id, run.currentStepIndex - 1);
+    const spawnedId = await spawnSequentialStep(
+      { ...run },
+      wf.definition,
+      run.currentStepIndex,
+      parentTitle,
+      contextBlock("Input from the previous step (retrying after an error):", carry),
+    );
+    log.warn(
+      { runId: run.id, stepIndex: run.currentStepIndex, erroredSoFar: errored?.n ?? 0 },
+      "workflow step errored; re-spawning (retry)",
+    );
+    return { spawned: spawnedId ? 1 : 0 };
+  }
+
+  // Default (fail_run): a critical step died — fail the run rather than freeze it.
+  if (policy !== "skip") {
+    await failRun(run, `step_error:${title}`);
+    return { spawned: 0 };
+  }
+
+  // skip: advance past the errored step. Its output is NOT recorded, so a later
+  // `{{<id>.output}}` reference resolves empty and degrades gracefully (e.g. a
+  // publish step ships without the missing image). Carry the last good
+  // deliverable forward as context.
+  const nextIndex = run.currentStepIndex + 1;
+  const parentTitle = run.parentTaskId
+    ? await loadTaskTitle(run.parentTaskId)
+    : "";
+  const carry = await loadDoneStepOutput(run.id, run.currentStepIndex - 1);
+
+  if (nextIndex >= wf.definition.steps.length) {
+    await finishRun(run, "workflow_run_complete_after_skip");
+    return { spawned: 0 };
+  }
+
+  const nextStep = wf.definition.steps[nextIndex];
+  if (nextStep && isSpawnStep(nextStep) && nextStep.kind === "tool") {
+    return runToolStepsFrom(
+      run,
+      wf.definition,
+      nextIndex,
+      run.currentStepIndex,
+      carry,
+      parentTitle,
+    );
+  }
+
+  const updated = await db
+    .update(workflowRuns)
+    .set({ currentStepIndex: nextIndex, updatedAt: new Date() })
+    .where(
+      and(
+        eq(workflowRuns.id, run.id),
+        eq(workflowRuns.currentStepIndex, run.currentStepIndex),
+      ),
+    )
+    .returning({ id: workflowRuns.id });
+  if (updated.length === 0) return { spawned: 0 };
+
+  const spawnedId = await spawnSequentialStep(
+    { ...run },
+    wf.definition,
+    nextIndex,
+    parentTitle,
+    contextBlock("Input from the previous step:", carry),
+  );
+  log.info(
+    { runId: run.id, skippedStepIndex: run.currentStepIndex, nextIndex },
+    "workflow run skipped errored step",
+  );
+  return { spawned: spawnedId ? 1 : 0 };
+}
+
 export interface RunWorkflowsForTaskResult {
   evaluated: number;
   spawnedTotal: number;
@@ -1360,21 +1537,37 @@ export async function runWorkflowsForTask(
     .select({
       workflowRunId: tasks.workflowRunId,
       workflowStepIndex: tasks.workflowStepIndex,
+      status: tasks.status,
     })
     .from(tasks)
     .where(eq(tasks.id, taskId))
     .limit(1);
   if (stepRow?.workflowRunId) {
-    const adv = await advanceWorkflowRun({
-      id: taskId,
-      workflowRunId: stepRow.workflowRunId,
-      workflowStepIndex: stepRow.workflowStepIndex,
-    });
+    // A step that errored (vs completed) takes the failure path: skip the step
+    // or fail the run per its on_error policy, so the run never stalls.
+    const adv =
+      stepRow.status === "error"
+        ? await handleWorkflowStepError({
+            id: taskId,
+            workflowRunId: stepRow.workflowRunId,
+            workflowStepIndex: stepRow.workflowStepIndex,
+          })
+        : await advanceWorkflowRun({
+            id: taskId,
+            workflowRunId: stepRow.workflowRunId,
+            workflowStepIndex: stepRow.workflowStepIndex,
+          });
     return {
       evaluated: 1,
       spawnedTotal: adv.spawned,
       skippedAlreadyEvaluated: 0,
     };
+  }
+
+  // A non-workflow task that errored has nothing to fan out — only `done`
+  // tasks drive task_type matching. (The poller now also fires on `error`.)
+  if (stepRow?.status === "error") {
+    return { evaluated: 0, spawnedTotal: 0, skippedAlreadyEvaluated: 0 };
   }
 
   const parent = await loadParentTask(taskId);

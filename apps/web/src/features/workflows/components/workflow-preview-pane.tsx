@@ -73,7 +73,9 @@ function TriggerLine({ state }: { state: WorkflowFormState }) {
 }
 
 function LinearPreview({ state }: { state: WorkflowFormState }) {
-  const validSteps = state.steps.filter((s) => s.title.trim().length > 0);
+  const validSteps = state.steps.filter((s) =>
+    "title" in s ? s.title.trim().length > 0 : true,
+  );
   const sequential = state.execution === "sequential";
   // The 3-children-per-run cap is a fan-out (parallel) concern. Sequential
   // runs advance one step at a time, so the cap warning does not apply.
@@ -102,10 +104,15 @@ function LinearPreview({ state }: { state: WorkflowFormState }) {
               }`}
             >
               <div className="text-white/85 leading-snug">
-                {renderTitle(step.title)}
+                {"title" in step
+                  ? renderTitle(step.title)
+                  : "Close the parent task"}
               </div>
               <div className="text-[10px] text-white/40">
-                → {step.assigned_to || "(unassigned)"}
+                →{" "}
+                {"title" in step
+                  ? step.assigned_to || "(unassigned)"
+                  : "(auto-resolve)"}
               </div>
             </li>
           ))}

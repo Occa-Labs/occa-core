@@ -72,6 +72,18 @@ const spawnStepSchema = z
     // FAIL verdict (re-runs the pipeline from there). Omit to use the default
     // (two steps back, for the legacy draft→verify→gate adjacency).
     on_fail_goto: stepIdSlug.optional(),
+    // What the engine does if this step's task errors out (parks in `error`
+    // after its trace-level retries are exhausted), so a dead step never
+    // freezes the run:
+    //   • retry (default) — re-spawn the step up to a cap, then fail the run.
+    //                       Salvages a flaky step without losing the run.
+    //   • fail_run        — end the run immediately; the routine fires a fresh
+    //                       cycle. Opt in for a step where a retry can't help.
+    //   • skip            — advance past the step. Use only for a non-critical
+    //                       step the pipeline tolerates missing (e.g. a
+    //                       cover-image brief, where downstream degrades to no
+    //                       image).
+    on_error: z.enum(["fail_run", "retry", "skip"]).optional(),
     // The step's instruction to the agent — prepended to the task body so it
     // leads, before the prior step's output. This is where authors shape what a
     // step does and what its output must look like (e.g. "output only the final

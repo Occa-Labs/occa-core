@@ -46,7 +46,10 @@ interface DoneEventRow {
 async function fetchNewDoneEvents(): Promise<DoneEventRow[]> {
   const baseCondition = and(
     eq(taskEvents.eventType, "task_status_changed"),
-    sql`${taskEvents.payload}->>'to' = 'done'`,
+    // `done` drives normal advance + task_type fan-out; `error` lets the engine
+    // react to a parked step (skip / fail the run) instead of stalling. The
+    // engine sorts out which path a given task takes from its status.
+    sql`${taskEvents.payload}->>'to' IN ('done', 'error')`,
   );
   const conditions = lastSeenCreatedAt
     ? and(

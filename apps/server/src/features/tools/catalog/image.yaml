@@ -1,28 +1,28 @@
-# Image generation
+# Image generation (OpenRouter)
 #
 # OCCA-provided tool for turning a text prompt into a hosted image URL. Backed
-# by the in-process `image` handler: it calls a generation model (Gemini
-# "Nano Banana" gemini-2.5-flash-image by default), then POSTs the bytes to a
-# configured media receiver that hosts them and returns { url }. OCCA holds no
-# blob storage, so the publisher hosts its own media.
+# by the in-process `image` handler: it calls OpenRouter's chat-completions
+# image modality (model id is config, e.g. google/gemini-2.5-flash-image), then
+# POSTs the bytes to a configured media receiver that hosts them and returns
+# { url }. OCCA holds no blob storage, so the publisher hosts its own media.
 #
-# Embedded today. When a standalone `mcp-occa-image` server lands, flip
-# `implementation` to { kind: mcp, ... } without touching other code.
+# One concrete provider per catalog entry (the X-tool pattern). A native-Gemini
+# or fal backend would be its own YAML, not a switch inside this one.
 
 type: image
-displayName: "Image generation"
-description: "Generate an image from a text prompt and get back its hosted public URL. House style is locked in config; the caller supplies only the subject."
+displayName: "Image generation (OpenRouter)"
+description: "Generate an image from a text prompt via OpenRouter and get back its hosted public URL. House style is locked in config; the caller supplies only the subject."
 
 implementation:
   kind: embedded
   handler: image
 
 credentialFields:
-  - name: geminiApiKey
+  - name: apiKey
     type: string
     required: true
     secret: true
-    description: "Google Generative Language API key used to generate the image."
+    description: "OpenRouter API key used to generate the image."
   - name: uploadEndpoint
     type: string
     required: true
@@ -39,7 +39,7 @@ metadataFields:
     type: string
     required: false
     secret: false
-    description: "Model id (default gemini-2.5-flash-image, a.k.a. Nano Banana)."
+    description: "OpenRouter image model (default google/gemini-2.5-flash-image)."
   - name: styleTemplate
     type: string
     required: false
@@ -49,7 +49,7 @@ metadataFields:
     type: string
     required: false
     secret: false
-    description: "Aspect ratio for the image, e.g. 16:9 for a wide thumbnail."
+    description: "Aspect ratio hint appended to the prompt, e.g. 16:9."
 
 actions:
   - name: generate

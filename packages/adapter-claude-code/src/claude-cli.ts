@@ -353,6 +353,25 @@ function isMissingSession(out: SpawnOutput): boolean {
   );
 }
 
+// A create against a session id that already exists. "in use" really means the
+// session is real — so resume it instead of failing. Mirror of isMissingSession.
+function isSessionInUse(out: SpawnOutput): boolean {
+  const hay = `${out.rawStderr} ${out.rawStdout} ${
+    out.state.errorMessage ?? ""
+  }`.toLowerCase();
+  return /already in use|session id .*in use/.test(hay);
+}
+
+// A transient connection/network drop surfaced as a failed run (e.g. "The
+// socket connection was closed unexpectedly"). The worker's retry policy keys
+// off the error code, so label these `network_error` (transient → auto-retried
+// with backoff) rather than `prompt_failed` (treated as permanent → parked).
+function isConnectionDrop(text: string): boolean {
+  return /socket (connection|hang)|connection (closed|reset|refused|error)|network error|econn(reset|refused|aborted)|etimedout|fetch failed|premature close|stream (closed|disconnected|error)/i.test(
+    text,
+  );
+}
+
 function mapUsage(usage: ClaudeUsage | null): RunClaudeResult["usage"] {
   if (!usage) return null;
   // Anthropic bills input across three buckets; OCCA's `inputTokens` is the
@@ -392,25 +411,31 @@ function toResult(out: SpawnOutput): RunClaudeResult {
   }
   const s = out.state;
   if (!s.sawResult) {
+    const reason = (out.rawStderr || "no result line from claude").slice(0, 600);
     return {
       ok: false,
       reply: "",
       sessionId: s.sessionId,
       usage: null,
       costUsd: null,
-      error: out.code === 0 ? "prompt_invalid_response" : "prompt_failed",
-      reason: (out.rawStderr || "no result line from claude").slice(0, 600),
+      error: isConnectionDrop(reason)
+        ? "network_error"
+        : out.code === 0
+          ? "prompt_invalid_response"
+          : "prompt_failed",
+      reason,
     };
   }
   if (s.isError) {
+    const reason = (s.errorMessage ?? "claude reported is_error").slice(0, 600);
     return {
       ok: false,
       reply: s.resultText,
       sessionId: s.sessionId,
       usage: mapUsage(s.usage),
       costUsd: s.costUsd,
-      error: "prompt_failed",
-      reason: (s.errorMessage ?? "claude reported is_error").slice(0, 600),
+      error: isConnectionDrop(reason) ? "network_error" : "prompt_failed",
+      reason,
     };
   }
   return {
@@ -435,6 +460,21 @@ export async function runClaude(input: RunClaudeInput): Promise<RunClaudeResult>
     isMissingSession(resumeOut)
   ) {
     const createOut = await spawnClaude(input, "create", "stream-json", input.onEvent);
+    // A retry can race the prior (failed) attempt: this resume saw no session
+    // file yet and fell to create, but the session now exists ("already in
+    // use"). The session is real, so resume it rather than fail — the
+    // continuation OCCA wanted. Failed resume/create attempts exit at
+    // num_turns=0 with no assistant output, so the extra spawns add no
+    // duplicate events.
+    if (
+      !createOut.aborted &&
+      !createOut.timedOut &&
+      isSessionInUse(createOut)
+    ) {
+      return toResult(
+        await spawnClaude(input, "resume", "stream-json", input.onEvent),
+      );
+    }
     return toResult(createOut);
   }
   return toResult(resumeOut);

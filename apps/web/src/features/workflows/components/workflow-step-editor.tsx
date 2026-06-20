@@ -7,8 +7,8 @@
 // Reorder uses ↑↓ buttons, not drag-drop, on purpose: avoids a DnD
 // library dependency for what is usually 1-5 rows.
 
-import { ArrowDown, ArrowUp, Sparkles, Trash2 } from "lucide-react";
-import type { SpawnStep } from "@occa/shared/workflows";
+import { ArrowDown, ArrowUp, Plus, Sparkles, Trash2 } from "lucide-react";
+import type { MetaActionStep, SpawnStep } from "@occa/shared/workflows";
 import { roleLabelFor } from "@occa/shared/role-catalog";
 import {
   Autocomplete,
@@ -68,11 +68,29 @@ export function WorkflowStepEditor({
   };
 
   const isGate = step.kind === "gate";
-  const setKind = (kind: "spawn" | "gate") => {
+  const isTool = step.kind === "tool";
+  const setKind = (kind: "spawn" | "gate" | "tool") => {
     if (kind === step.kind) return;
+    if (kind === "tool") {
+      // A tool step is engine-executed I/O — it has no prompt, acceptance, or
+      // gate target. Drop those so the YAML for a tool step stays clean.
+      onChange({
+        ...step,
+        kind,
+        prompt: undefined,
+        acceptance_criteria: undefined,
+        on_fail_goto: undefined,
+        on_error: undefined,
+      });
+      return;
+    }
     onChange({
       ...step,
       kind,
+      // Leaving tool: drop the tool wiring so a spawn/gate step carries none.
+      tool: undefined,
+      action: undefined,
+      input: undefined,
       // A gate is the head's decision point. Default its assignee to the
       // editorial head role when switching in, unless the author already
       // chose a role tag.
@@ -83,10 +101,29 @@ export function WorkflowStepEditor({
     });
   };
 
+  // Tool step input map (key → literal/template). Controlled from props; new
+  // rows seed a unique key so two blank keys never collapse mid-edit.
+  const inputEntries = Object.entries(step.input ?? {});
+  const writeInput = (entries: [string, string][]) => {
+    const rec: Record<string, string> = {};
+    for (const [k, v] of entries) rec[k] = v;
+    onChange({ ...step, input: entries.length ? rec : undefined });
+  };
+  const addInput = () => {
+    const keys = new Set(inputEntries.map(([k]) => k));
+    let n = inputEntries.length + 1;
+    while (keys.has(`field${n}`)) n += 1;
+    writeInput([...inputEntries, [`field${n}`, ""]]);
+  };
+
   return (
     <div
       className={`glass-light rounded-xl p-3 space-y-2.5 ${
-        isGate ? "ring-1 ring-amber-300/25" : ""
+        isGate
+          ? "ring-1 ring-amber-300/25"
+          : isTool
+            ? "ring-1 ring-sky-300/25"
+            : ""
       }`}
     >
       <div className="flex items-start justify-between gap-2">
@@ -95,11 +132,14 @@ export function WorkflowStepEditor({
             Step {index + 1}
           </span>
           <div className="flex items-center gap-0.5 rounded-lg bg-white/5 p-0.5">
-            <KindButton active={!isGate} onClick={() => setKind("spawn")}>
+            <KindButton active={!isGate && !isTool} onClick={() => setKind("spawn")}>
               Work
             </KindButton>
             <KindButton active={isGate} onClick={() => setKind("gate")}>
               Gate
+            </KindButton>
+            <KindButton active={isTool} onClick={() => setKind("tool")}>
+              Tool
             </KindButton>
           </div>
         </div>
@@ -206,36 +246,225 @@ export function WorkflowStepEditor({
         />
       </div>
 
-      <div className="space-y-1">
-        <label className="text-[10px] text-white/45">
-          Prompt <span className="text-white/30">(optional)</span>
-        </label>
-        <textarea
-          value={step.prompt ?? ""}
-          onChange={(e) =>
-            onChange({ ...step, prompt: e.target.value || undefined })
-          }
-          placeholder="Instructions for this step — what to do and what the output must look like. Leads the task body."
-          rows={3}
-          className="w-full glass-light rounded-lg px-3 py-2 text-xs text-white/90 leading-relaxed placeholder:text-white/30 outline-none focus:ring-1 focus:ring-white/20 resize-none"
-        />
-      </div>
+      {isTool ? (
+        <>
+          <p className="text-[10px] leading-relaxed text-sky-200/65">
+            A tool step is run by the engine (no agent) as the assignee&apos;s
+            role — it invokes the company tool below with the input mapping.
+          </p>
+          <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-1">
+              <label className="text-[10px] text-white/45">Tool</label>
+              <input
+                value={step.tool ?? ""}
+                onChange={(e) =>
+                  onChange({ ...step, tool: e.target.value || undefined })
+                }
+                placeholder="e.g. publish, image"
+                className="w-full glass-light rounded-lg px-3 py-2 text-xs font-mono text-white/90 placeholder:text-white/30 outline-none focus:ring-1 focus:ring-white/20"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-[10px] text-white/45">Action</label>
+              <input
+                value={step.action ?? ""}
+                onChange={(e) =>
+                  onChange({ ...step, action: e.target.value || undefined })
+                }
+                placeholder="e.g. post, generate"
+                className="w-full glass-light rounded-lg px-3 py-2 text-xs font-mono text-white/90 placeholder:text-white/30 outline-none focus:ring-1 focus:ring-white/20"
+              />
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-[10px] text-white/45">
+              Input <span className="text-white/30">(optional)</span>
+            </label>
+            <p className="text-[10px] leading-relaxed text-white/35">
+              Map each field to a literal, or a prior step&apos;s output with{" "}
+              <code>{"{{step_id.output}}"}</code> /{" "}
+              <code>{"{{step_id.output.field}}"}</code>.
+            </p>
+            {inputEntries.map(([k, v], i) => (
+              <div key={i} className="flex items-center gap-1.5">
+                <input
+                  value={k}
+                  onChange={(e) =>
+                    writeInput(
+                      inputEntries.map((row, idx) =>
+                        idx === i ? [e.target.value, row[1]] : row,
+                      ),
+                    )
+                  }
+                  placeholder="field"
+                  className="w-1/3 glass-light rounded-lg px-2.5 py-2 text-xs font-mono text-white/90 placeholder:text-white/30 outline-none focus:ring-1 focus:ring-white/20"
+                />
+                <input
+                  value={v}
+                  onChange={(e) =>
+                    writeInput(
+                      inputEntries.map((row, idx) =>
+                        idx === i ? [row[0], e.target.value] : row,
+                      ),
+                    )
+                  }
+                  placeholder="{{seo.output}}"
+                  className="flex-1 glass-light rounded-lg px-2.5 py-2 text-xs font-mono text-white/90 placeholder:text-white/30 outline-none focus:ring-1 focus:ring-white/20"
+                />
+                <IconButton
+                  label="Remove input"
+                  onClick={() =>
+                    writeInput(inputEntries.filter((_, idx) => idx !== i))
+                  }
+                  tone="danger"
+                >
+                  <Trash2 className="size-3.5" />
+                </IconButton>
+              </div>
+            ))}
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              onClick={addInput}
+            >
+              <Plus className="size-3" /> Add input
+            </Button>
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="space-y-1">
+            <label className="text-[10px] text-white/45">
+              Prompt <span className="text-white/30">(optional)</span>
+            </label>
+            <textarea
+              value={step.prompt ?? ""}
+              onChange={(e) =>
+                onChange({ ...step, prompt: e.target.value || undefined })
+              }
+              placeholder="Instructions for this step — what to do and what the output must look like. Leads the task body."
+              rows={3}
+              className="w-full glass-light rounded-lg px-3 py-2 text-xs text-white/90 leading-relaxed placeholder:text-white/30 outline-none focus:ring-1 focus:ring-white/20 resize-none"
+            />
+          </div>
 
+          <div className="space-y-1">
+            <label className="text-[10px] text-white/45">
+              Acceptance criteria{" "}
+              <span className="text-white/30">(optional)</span>
+            </label>
+            <textarea
+              value={step.acceptance_criteria ?? ""}
+              onChange={(e) =>
+                onChange({
+                  ...step,
+                  acceptance_criteria: e.target.value || undefined,
+                })
+              }
+              placeholder="What does done look like for this step?"
+              rows={2}
+              className="w-full glass-light rounded-lg px-3 py-2 text-xs text-white/90 leading-relaxed placeholder:text-white/30 outline-none focus:ring-1 focus:ring-white/20 resize-none"
+            />
+          </div>
+
+          <div className="space-y-1">
+            <label className="text-[10px] text-white/45">On error</label>
+            <select
+              value={step.on_error ?? "retry"}
+              onChange={(e) =>
+                onChange({
+                  ...step,
+                  on_error:
+                    e.target.value === "retry"
+                      ? undefined
+                      : (e.target.value as "fail_run" | "skip"),
+                })
+              }
+              className="w-full glass-light rounded-lg px-3 py-2 text-xs text-white/90 outline-none focus:ring-1 focus:ring-white/20 cursor-pointer"
+            >
+              <option value="retry">Retry up to 3x, then fail the run (default)</option>
+              <option value="fail_run">Fail the run immediately</option>
+              <option value="skip">Skip this step and continue</option>
+            </select>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// Meta-action step row — currently only `close_parent`, which auto-resolves the
+// run's parent task when reached. No agent, no title/assignee; just an optional
+// resolution comment.
+export function MetaStepEditor({
+  step,
+  index,
+  canMoveUp,
+  canMoveDown,
+  canRemove,
+  onChange,
+  onMoveUp,
+  onMoveDown,
+  onRemove,
+}: {
+  step: MetaActionStep;
+  index: number;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  canRemove: boolean;
+  onChange: (next: MetaActionStep) => void;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+  onRemove: () => void;
+}) {
+  return (
+    <div className="glass-light rounded-xl p-3 space-y-2.5 ring-1 ring-violet-300/20">
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] uppercase tracking-wider text-white/40">
+            Step {index + 1}
+          </span>
+          <span className="rounded-md bg-violet-400/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-violet-200/80">
+            Close parent
+          </span>
+        </div>
+        <div className="flex items-center gap-0.5">
+          <IconButton label="Move up" disabled={!canMoveUp} onClick={onMoveUp}>
+            <ArrowUp className="size-3.5" />
+          </IconButton>
+          <IconButton
+            label="Move down"
+            disabled={!canMoveDown}
+            onClick={onMoveDown}
+          >
+            <ArrowDown className="size-3.5" />
+          </IconButton>
+          <IconButton
+            label="Remove step"
+            disabled={!canRemove}
+            onClick={onRemove}
+            tone="danger"
+          >
+            <Trash2 className="size-3.5" />
+          </IconButton>
+        </div>
+      </div>
+      <p className="text-[10px] leading-relaxed text-violet-200/60">
+        Auto-resolves the parent task with a canned comment when the run reaches
+        this step. No agent runs.
+      </p>
       <div className="space-y-1">
         <label className="text-[10px] text-white/45">
-          Acceptance criteria <span className="text-white/30">(optional)</span>
+          Comment <span className="text-white/30">(optional)</span>
         </label>
-        <textarea
-          value={step.acceptance_criteria ?? ""}
+        <input
+          value={step.comment ?? ""}
           onChange={(e) =>
-            onChange({
-              ...step,
-              acceptance_criteria: e.target.value || undefined,
-            })
+            onChange({ ...step, comment: e.target.value || undefined })
           }
-          placeholder="What does done look like for this step?"
-          rows={2}
-          className="w-full glass-light rounded-lg px-3 py-2 text-xs text-white/90 leading-relaxed placeholder:text-white/30 outline-none focus:ring-1 focus:ring-white/20 resize-none"
+          placeholder="Resolution note left on the parent task"
+          className="w-full glass-light rounded-lg px-3 py-2 text-xs text-white/90 placeholder:text-white/30 outline-none focus:ring-1 focus:ring-white/20"
         />
       </div>
     </div>

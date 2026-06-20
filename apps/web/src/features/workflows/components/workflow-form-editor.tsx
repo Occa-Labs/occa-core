@@ -10,8 +10,10 @@ import { ChevronDown, ChevronRight, Plus } from "lucide-react";
 import {
   serializeWorkflowToYaml,
   type LinearWorkflowDefinition,
+  type MetaActionStep,
   type SpawnStep,
   type WorkflowDefinition,
+  type WorkflowStep,
 } from "@occa/shared/workflows";
 import { TASK_TYPES, type TaskType } from "@occa/shared/types";
 import { Button } from "@/components/ui/button";
@@ -19,7 +21,14 @@ import {
   useDeploymentNames,
   type DeploymentOption,
 } from "../api/use-deployment-names";
-import { WorkflowStepEditor } from "./workflow-step-editor";
+import { MetaStepEditor, WorkflowStepEditor } from "./workflow-step-editor";
+
+// A workflow's per-run caps (all optional). Mirrors the YAML `caps` block.
+export interface WorkflowCaps {
+  max_revisions?: number;
+  max_depth?: number;
+  max_children?: number;
+}
 
 export interface WorkflowFormState {
   yamlId: string;
@@ -31,7 +40,10 @@ export interface WorkflowFormState {
   // silently downgrades a sequential workflow to parallel on save.
   execution: "parallel" | "sequential";
   taskType: string;
-  steps: SpawnStep[];
+  // Union: ordinary spawn/gate/tool steps plus meta-action steps
+  // (close_parent), so the form round-trips every step kind the YAML allows.
+  steps: WorkflowStep[];
+  caps?: WorkflowCaps;
 }
 
 const EMPTY_STEP: SpawnStep = {
@@ -39,6 +51,14 @@ const EMPTY_STEP: SpawnStep = {
   title: "",
   assigned_to: "human",
 };
+
+const EMPTY_META_STEP: MetaActionStep = {
+  action: "close_parent",
+};
+
+function isSpawnFormStep(s: WorkflowStep): s is SpawnStep {
+  return "title" in s;
+}
 
 // Build form state from an existing typed definition.
 export function formStateFromDefinition(
@@ -50,22 +70,25 @@ export function formStateFromDefinition(
     description: def.description ?? "",
     execution: def.execution,
     taskType: def.trigger.match.task_type,
-    steps: def.steps.filter(isSpawnStep).map((s) => ({
-      kind: s.kind,
-      id: s.id,
-      title: s.title,
-      assigned_to: s.assigned_to,
-      prompt: s.prompt,
-      acceptance_criteria: s.acceptance_criteria,
-      on_fail_goto: s.on_fail_goto,
-      tool: s.tool,
-      action: s.action,
-    })),
+    steps: def.steps.map((s) =>
+      isSpawnFormStep(s)
+        ? {
+            kind: s.kind,
+            id: s.id,
+            title: s.title,
+            assigned_to: s.assigned_to,
+            prompt: s.prompt,
+            acceptance_criteria: s.acceptance_criteria,
+            on_fail_goto: s.on_fail_goto,
+            on_error: s.on_error,
+            tool: s.tool,
+            action: s.action,
+            input: s.input,
+          }
+        : { action: s.action, comment: s.comment },
+    ),
+    caps: def.caps,
   };
-}
-
-function isSpawnStep(s: unknown): s is SpawnStep {
-  return typeof s === "object" && s !== null && "title" in s;
 }
 
 // Serialize form state to YAML. Caller passes the result straight into
@@ -82,24 +105,46 @@ export function formStateToYaml(state: WorkflowFormState): string {
       when: "task.completed",
       match: { task_type: state.taskType },
     },
-    steps: state.steps.map((s) => ({
-      // Preserve kind + tool wiring on round-trip so editing a gate or tool
-      // workflow via the form never silently strips a step back to a plain
-      // spawn (or drops a tool step's tool/action).
-      kind: s.kind,
-      ...(s.id ? { id: s.id } : {}),
-      title: s.title,
-      assigned_to: s.assigned_to,
-      ...(s.prompt ? { prompt: s.prompt } : {}),
-      ...(s.acceptance_criteria
-        ? { acceptance_criteria: s.acceptance_criteria }
-        : {}),
-      ...(s.on_fail_goto ? { on_fail_goto: s.on_fail_goto } : {}),
-      ...(s.tool ? { tool: s.tool } : {}),
-      ...(s.action ? { action: s.action } : {}),
-    })),
+    steps: state.steps.map((s) =>
+      isSpawnFormStep(s)
+        ? {
+            // Preserve kind + tool wiring on round-trip so editing a gate or
+            // tool workflow via the form never silently strips a step back to a
+            // plain spawn (or drops a tool step's tool/action/input).
+            kind: s.kind,
+            ...(s.id ? { id: s.id } : {}),
+            title: s.title,
+            assigned_to: s.assigned_to,
+            ...(s.prompt ? { prompt: s.prompt } : {}),
+            ...(s.acceptance_criteria
+              ? { acceptance_criteria: s.acceptance_criteria }
+              : {}),
+            ...(s.on_fail_goto ? { on_fail_goto: s.on_fail_goto } : {}),
+            ...(s.on_error ? { on_error: s.on_error } : {}),
+            ...(s.tool ? { tool: s.tool } : {}),
+            ...(s.action ? { action: s.action } : {}),
+            ...(s.input && Object.keys(s.input).length
+              ? { input: s.input }
+              : {}),
+          }
+        : { action: s.action, ...(s.comment ? { comment: s.comment } : {}) },
+    ),
+    ...(capsForYaml(state.caps) ? { caps: capsForYaml(state.caps)! } : {}),
   };
   return serializeWorkflowToYaml(def);
+}
+
+// Keep only the caps the user actually set — an all-undefined caps block should
+// not emit `caps: {}` into the YAML.
+function capsForYaml(caps?: WorkflowCaps): WorkflowCaps | null {
+  if (!caps) return null;
+  const out: WorkflowCaps = {};
+  if (typeof caps.max_revisions === "number")
+    out.max_revisions = caps.max_revisions;
+  if (typeof caps.max_depth === "number") out.max_depth = caps.max_depth;
+  if (typeof caps.max_children === "number")
+    out.max_children = caps.max_children;
+  return Object.keys(out).length ? out : null;
 }
 
 interface WorkflowFormEditorProps {
@@ -125,6 +170,7 @@ export function WorkflowFormEditor({
         onChange={onChange}
         assigneeOptions={assigneeOptions}
       />
+      <CapsSection state={state} onChange={onChange} />
       <AdvancedSection state={state} />
     </div>
   );
@@ -289,55 +335,160 @@ function StepsSection({
         Maximum 3 children fire per run; extra steps log as skipped.
       </p>
       <div className="space-y-2.5">
-        {state.steps.map((step, i) => (
-          <WorkflowStepEditor
-            key={i}
-            step={step}
-            index={i}
-            canMoveUp={i > 0}
-            canMoveDown={i < state.steps.length - 1}
-            canRemove={state.steps.length > 1}
-            assigneeOptions={assigneeOptions}
-            stepIds={state.steps
-              .map((s) => s.id)
-              .filter((id): id is string => !!id)}
-            onChange={(next) => {
-              const steps = [...state.steps];
-              steps[i] = next;
-              onChange({ ...state, steps });
-            }}
-            onMoveUp={() => {
-              if (i === 0) return;
-              const steps = [...state.steps];
-              [steps[i - 1], steps[i]] = [steps[i], steps[i - 1]];
-              onChange({ ...state, steps });
-            }}
-            onMoveDown={() => {
-              if (i === state.steps.length - 1) return;
-              const steps = [...state.steps];
-              [steps[i], steps[i + 1]] = [steps[i + 1], steps[i]];
-              onChange({ ...state, steps });
-            }}
-            onRemove={() => {
-              if (state.steps.length <= 1) return;
-              const steps = state.steps.filter((_, idx) => idx !== i);
-              onChange({ ...state, steps });
-            }}
-          />
-        ))}
+        {state.steps.map((step, i) => {
+          const replace = (next: WorkflowStep) => {
+            const steps = [...state.steps];
+            steps[i] = next;
+            onChange({ ...state, steps });
+          };
+          const moveUp = () => {
+            if (i === 0) return;
+            const steps = [...state.steps];
+            [steps[i - 1], steps[i]] = [steps[i], steps[i - 1]];
+            onChange({ ...state, steps });
+          };
+          const moveDown = () => {
+            if (i === state.steps.length - 1) return;
+            const steps = [...state.steps];
+            [steps[i], steps[i + 1]] = [steps[i + 1], steps[i]];
+            onChange({ ...state, steps });
+          };
+          const remove = () => {
+            if (state.steps.length <= 1) return;
+            onChange({
+              ...state,
+              steps: state.steps.filter((_, idx) => idx !== i),
+            });
+          };
+          const shared = {
+            index: i,
+            canMoveUp: i > 0,
+            canMoveDown: i < state.steps.length - 1,
+            canRemove: state.steps.length > 1,
+            onMoveUp: moveUp,
+            onMoveDown: moveDown,
+            onRemove: remove,
+          };
+          return isSpawnFormStep(step) ? (
+            <WorkflowStepEditor
+              key={i}
+              step={step}
+              assigneeOptions={assigneeOptions}
+              stepIds={state.steps
+                .filter(isSpawnFormStep)
+                .map((s) => s.id)
+                .filter((id): id is string => !!id)}
+              onChange={replace}
+              {...shared}
+            />
+          ) : (
+            <MetaStepEditor key={i} step={step} onChange={replace} {...shared} />
+          );
+        })}
       </div>
-      <Button
-        type="button"
-        size="sm"
-        variant="secondary"
-        onClick={() =>
-          onChange({ ...state, steps: [...state.steps, { ...EMPTY_STEP }] })
-        }
-        disabled={state.steps.length >= 10}
-      >
-        <Plus className="size-3" /> Add step
-      </Button>
+      <div className="flex flex-wrap gap-1.5">
+        <Button
+          type="button"
+          size="sm"
+          variant="secondary"
+          onClick={() =>
+            onChange({ ...state, steps: [...state.steps, { ...EMPTY_STEP }] })
+          }
+          disabled={state.steps.length >= 10}
+        >
+          <Plus className="size-3" /> Add step
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="secondary"
+          onClick={() =>
+            onChange({
+              ...state,
+              steps: [...state.steps, { ...EMPTY_META_STEP }],
+            })
+          }
+          disabled={state.steps.length >= 10}
+          title="A meta step that auto-resolves the parent task when reached"
+        >
+          <Plus className="size-3" /> Add close-parent
+        </Button>
+      </div>
     </Section>
+  );
+}
+
+function CapsSection({
+  state,
+  onChange,
+}: {
+  state: WorkflowFormState;
+  onChange: (next: WorkflowFormState) => void;
+}) {
+  const caps = state.caps ?? {};
+  const setCap = (key: keyof WorkflowCaps, raw: string) => {
+    const trimmed = raw.trim();
+    const value = trimmed === "" ? undefined : Number(trimmed);
+    onChange({
+      ...state,
+      caps: {
+        ...caps,
+        [key]: value !== undefined && Number.isFinite(value) ? value : undefined,
+      },
+    });
+  };
+  return (
+    <Section title="Limits (optional)">
+      <div className="grid grid-cols-3 gap-2">
+        <CapField
+          label="Max revisions"
+          hint="0–5"
+          value={caps.max_revisions}
+          onChange={(r) => setCap("max_revisions", r)}
+        />
+        <CapField
+          label="Max depth"
+          hint="1–5"
+          value={caps.max_depth}
+          onChange={(r) => setCap("max_depth", r)}
+        />
+        <CapField
+          label="Max children"
+          hint="1–10"
+          value={caps.max_children}
+          onChange={(r) => setCap("max_children", r)}
+        />
+      </div>
+      <Hint>
+        Gate fail rewinds up to max revisions before the run auto-kills.
+        Depth and children bound parallel fan-out.
+      </Hint>
+    </Section>
+  );
+}
+
+function CapField({
+  label,
+  hint,
+  value,
+  onChange,
+}: {
+  label: string;
+  hint: string;
+  value?: number;
+  onChange: (raw: string) => void;
+}) {
+  return (
+    <div className="space-y-1">
+      <label className="text-[10px] text-white/45">{label}</label>
+      <input
+        type="number"
+        value={value ?? ""}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={hint}
+        className="w-full glass-light rounded-lg px-3 py-2 text-xs text-white/90 placeholder:text-white/30 outline-none focus:ring-1 focus:ring-white/20"
+      />
+    </div>
   );
 }
 
