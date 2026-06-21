@@ -192,6 +192,11 @@ export interface ActionBlockHandlerArgs {
   // Trace row id of the agent reply that emitted this block. Stamped
   // onto any side-effect that wants an audit link back to the run.
   traceId: string;
+  // True when the emitting task is a step inside a sequential workflow run.
+  // The engine owns task spawning for workflow steps (a gate fail re-spawns
+  // the draft via on_fail_goto), so a step agent's DELEGATE would duplicate
+  // that — it is ignored rather than spawning an off-workflow child task.
+  isWorkflowStep?: boolean;
 }
 
 export async function handleDelegateBlock(

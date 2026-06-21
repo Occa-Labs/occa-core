@@ -44,6 +44,9 @@ export interface ProcessActionBlocksArgs {
   companyId: string;
   currentTaskId: string;
   traceId: string;
+  // Set when the emitting task is a workflow step — suppresses DELEGATE so the
+  // engine stays the sole spawner of step tasks (see ActionBlockHandlerArgs).
+  isWorkflowStep?: boolean;
 }
 
 export async function processActionBlocks(
@@ -75,6 +78,7 @@ export async function processActionBlocks(
       companyId: args.companyId,
       currentTaskId: args.currentTaskId,
       traceId: args.traceId,
+      isWorkflowStep: args.isWorkflowStep,
     };
     try {
       const outcome = await routeBlock(block.token, handlerArgs, deps);
@@ -109,6 +113,17 @@ async function routeBlock(
 ): Promise<ActionBlockOutcome> {
   switch (token) {
     case "DELEGATE":
+      // Workflow steps don't spawn their own children — the engine drives the
+      // pipeline (e.g. a gate fail re-spawns the draft via on_fail_goto). A
+      // step agent's DELEGATE would duplicate that, so drop it. Recorded as an
+      // ignored outcome (audit), not acted on.
+      if (args.isWorkflowStep) {
+        log.warn(
+          { taskId: args.currentTaskId, agentId: args.agentId },
+          "DELEGATE from a workflow step ignored — engine owns step spawning",
+        );
+        return { kind: "ignored", reason: "workflow_step_no_delegate" };
+      }
       return handleDelegateBlock(args, deps);
     case "BLOCK":
       return handleBlockBlock(args);

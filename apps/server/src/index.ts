@@ -218,6 +218,18 @@ async function main() {
   process.on("SIGINT", () => void shutdown("SIGINT"));
 }
 
+// A single bad request must not take down the whole server. Express's error
+// middleware only catches sync throws and next(err); an async route handler
+// that rejects (e.g. a malformed id reaching Postgres as a 22P02) surfaces
+// here as an unhandledRejection, which Node would otherwise treat as fatal.
+// Log and keep serving — that one request already failed, but the process is
+// not corrupt and should live. (uncaughtException is intentionally left to
+// the default fatal behavior: the process may be in a bad state, so let it
+// crash and have the supervisor restart it.)
+process.on("unhandledRejection", (reason) => {
+  log.error({ err: reason }, "unhandledRejection — kept process alive");
+});
+
 main().catch((err) => {
   log.error({ err }, "server boot failed");
   process.exit(1);

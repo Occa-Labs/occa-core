@@ -21,6 +21,13 @@ import {
 
 const router: Router = Router();
 
+// Document ids are uuids. An agent can pass a malformed id (e.g. a truncated
+// uuid copied from a prompt); the bare `id` would reach Postgres and throw a
+// 22P02 invalid-uuid error. Reject non-uuids at the boundary so a bad agent
+// input degrades to a clean 404 instead of a query error.
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 interface AgentDocumentDTO {
   id: string;
   taskId: string | null;
@@ -89,6 +96,10 @@ router.get(
   requireAgentToken,
   async (req: Request, res: Response) => {
     const { companyId } = req.agent!;
+    if (!UUID_RE.test(req.params.id)) {
+      res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.NOT_FOUND });
+      return;
+    }
     const row = await findDocumentById({ companyId, id: req.params.id });
     if (!row) {
       res.status(StatusCodes.NOT_FOUND).json({ error: ERROR_CODES.NOT_FOUND });

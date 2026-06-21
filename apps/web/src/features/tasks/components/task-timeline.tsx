@@ -35,9 +35,7 @@ export function TaskTimeline({
   } | null>(null);
 
   if (events.length === 0) {
-    return (
-      <div className="text-xs text-white/30 py-2">No activity yet.</div>
-    );
+    return <div className="text-xs text-white/30 py-2">No activity yet.</div>;
   }
   const agentName = (id: string | null | undefined): string => {
     if (!id) return "—";
@@ -57,7 +55,7 @@ export function TaskTimeline({
             <li key={event.id} className="relative">
               <span
                 aria-hidden
-                className={`absolute -left-[15px] top-1.5 size-2 rounded-full ${dotColor(event.actorType)}`}
+                className={`absolute -left-3.75 top-1.5 size-2 rounded-full ${dotColor(event.actorType)}`}
               />
               <div className="flex items-baseline gap-2">
                 <span className="text-[10px] text-white/30 font-mono shrink-0 w-12">
@@ -71,7 +69,9 @@ export function TaskTimeline({
                   {clipped && (
                     <button
                       type="button"
-                      onClick={() => setFullView({ title: label, content: detail })}
+                      onClick={() =>
+                        setFullView({ title: label, content: detail })
+                      }
                       className="ml-1 text-cyan-400/70 hover:text-cyan-300 cursor-pointer"
                     >
                       View full
@@ -276,9 +276,10 @@ function gateVerdictLabel(
 // WorkflowExecuted is a synthetic agent_action_emitted row written by
 // the server-side workflow engine. The payload has more structure than
 // other action types — break out a dedicated renderer.
-function workflowExecutedLabel(
-  p: Record<string, unknown>,
-): { label: string; detail?: string } {
+function workflowExecutedLabel(p: Record<string, unknown>): {
+  label: string;
+  detail?: string;
+} {
   const name = typeof p.workflowName === "string" ? p.workflowName : "workflow";
   const spawned = Array.isArray(p.spawned) ? p.spawned : [];
   const skipped = Array.isArray(p.skipped) ? p.skipped : [];
@@ -287,7 +288,11 @@ function workflowExecutedLabel(
   const detailLines: string[] = [];
   if (spawned.length > 0) {
     const titles = spawned
-      .map((s) => (typeof s === "object" && s && "title" in s ? String((s as { title: unknown }).title) : ""))
+      .map((s) =>
+        typeof s === "object" && s && "title" in s
+          ? String((s as { title: unknown }).title)
+          : "",
+      )
       .filter((t) => t.length > 0);
     detailLines.push(
       `spawned ${spawned.length}${titles.length > 0 ? `: ${titles.slice(0, 3).join(" · ")}${titles.length > 3 ? " …" : ""}` : ""}`,

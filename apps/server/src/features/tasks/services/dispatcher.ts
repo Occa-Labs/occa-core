@@ -276,6 +276,9 @@ export async function dispatchTask(
       companyId: taskRow.companyId,
       currentTaskId: taskRow.id,
       traceId,
+      // A workflow step (gate/draft/verify/…) must not spawn its own children;
+      // the engine owns step spawning. Suppresses DELEGATE for these tasks.
+      isWorkflowStep: taskRow.workflowRunId != null,
     },
     deps,
   );

@@ -684,9 +684,30 @@ export async function startWorkflowRun(
 // A raw status update, NOT the finalize path, so the wrapper does not bill —
 // the paid work is the steps. Guarded against re-closing a settled container.
 async function closeRunContainer(
-  run: { companyId: string; parentTaskId: string | null },
+  run: { id: string; companyId: string; parentTaskId: string | null },
   reason: string,
 ): Promise<void> {
+  // Cancel any step task still in flight when the run ends. On a normal finish
+  // there are none (every step is already done); on kill/fail this stops a dead
+  // run from leaving children running on the board and prevents their late
+  // completion from looking like live work. Archived (not deleted) so the
+  // attempt stays auditable. A claude turn already mid-flight can't be aborted,
+  // but its result is harmless: the advance path bails on a non-running run, so
+  // no further step spawns and no re-dispatch happens.
+  await db
+    .update(tasks)
+    .set({
+      archivedAt: new Date(),
+      archiveReason: `workflow_${reason}`,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(tasks.workflowRunId, run.id),
+        sql`${tasks.status} IN ('todo', 'in_progress', 'review')`,
+      ),
+    );
+
   if (!run.parentTaskId) return;
   await db
     .update(tasks)
