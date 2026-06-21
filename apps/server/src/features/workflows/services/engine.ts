@@ -9,7 +9,7 @@
 // the same workflow on the parent task. The pg-boss queue adds a
 // second layer of dedup via singletonKey.
 
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
 import {
   agentIdentities,
   companyTools,
@@ -463,18 +463,17 @@ async function loadEnabledWorkflowByYamlId(
 // know the exact contract regardless of how the step's acceptance criteria
 // are authored. A missing/invalid verdict is treated as fail upstream.
 const GATE_INSTRUCTION =
-  "EDITORIAL GATE. You are the head making the publish decision on this " +
-  "piece. Review it, then END your reply with exactly one verdict marker " +
-  "(raw JSON between the tags, no code fences):\n\n" +
+  "GATE STEP. Review the work above against this step's instructions, then " +
+  "END your reply with exactly one verdict marker (raw JSON between the " +
+  "tags, no code fences):\n\n" +
   "[[OCCA:GATE_VERDICT]]\n" +
   '{ "verdict": "go", "reason": "<one line>" }\n' +
   "[[/OCCA:GATE_VERDICT]]\n\n" +
   "verdict values:\n" +
-  "- go: publishable. The piece advances to the next stage.\n" +
-  "- fail: needs revision. It returns to the writer to redraft — state " +
-  "what must change in your reply so the writer can act on it.\n" +
-  "- kill: must not run at all (unsalvageable or wrong call). The cycle " +
-  "ends here.\n\n" +
+  "- go: passes. The work advances to the next step.\n" +
+  "- fail: needs revision. It returns to an earlier step for rework — state " +
+  "what must change in your reply so it can be acted on.\n" +
+  "- kill: cannot be salvaged. The run ends here.\n\n" +
   "A missing or malformed verdict is treated as fail, so always emit one.";
 
 // Spawn the step at `stepIndex` under the run's parent. The step's authored
@@ -515,7 +514,35 @@ async function spawnSequentialStep(
   if (step.kind === "gate") {
     leadBlocks.push({ type: "paragraph", text: GATE_INSTRUCTION });
   }
-  const blocks: ContentBlock[] = [...leadBlocks, ...contextBlocks];
+  // Standing cross-step context so every agent stays connected to the cycle,
+  // not just the immediately-prior output. Kept light: the brief (the angle +
+  // intended sources) inline, plus a list of earlier deliverables as document
+  // ids the agent can fetch on demand — full earlier docs are NOT dumped in.
+  const standingBlocks: ContentBlock[] = [];
+  // Step 1's prior output already IS the brief; only steps further down need it
+  // re-surfaced as the standing mandate.
+  if (stepIndex >= 2) {
+    const briefText = await loadDoneStepOutput(run.id, 0);
+    standingBlocks.push(
+      ...contextBlock(
+        "Cycle brief — the standing mandate and intended sources for this story:",
+        briefText,
+      ),
+    );
+  }
+  if (stepIndex >= 1) {
+    const refs = await loadPriorStepDocRefs(run.id, stepIndex);
+    if (refs.length > 0) {
+      const list = refs.map((r) => `- ${r.title}: document ${r.docId}`).join("\n");
+      standingBlocks.push(
+        ...contextBlock(
+          "Earlier deliverables in this cycle — fetch the full text by id with your documents tool if you need more than the input below:",
+          list,
+        ),
+      );
+    }
+  }
+  const blocks: ContentBlock[] = [...leadBlocks, ...standingBlocks, ...contextBlocks];
   // Title shape: "<step> [· rev N] - <parent cycle>". The step name leads so
   // the board stays scannable by step rather than a wall of identical cycle
   // prefixes; the cycle ref trails so the same step across different cycles
@@ -704,6 +731,9 @@ async function closeRunContainer(
     .where(
       and(
         eq(tasks.workflowRunId, run.id),
+        // Step tasks only — the container task (step_index NULL) is closed by
+        // the dedicated parent update below, not archived here.
+        sql`${tasks.workflowStepIndex} IS NOT NULL`,
         sql`${tasks.status} IN ('todo', 'in_progress', 'review')`,
       ),
     );
@@ -834,6 +864,42 @@ async function loadDoneStepOutput(
     .orderBy(desc(tasks.updatedAt))
     .limit(1);
   return row ? loadStepOutputText(row.id) : "";
+}
+
+// Document references for every prior step of this run, so a later step can
+// pull the FULL earlier deliverable on demand instead of having all of them
+// dumped into its prompt. One entry per step (latest doc, so a revised step
+// points at its newest version). The agent fetches a doc by id through its
+// documents tool (`/api/me/agent/documents/:id`).
+async function loadPriorStepDocRefs(
+  runId: string,
+  beforeIndex: number,
+): Promise<Array<{ stepIndex: number; title: string; docId: string }>> {
+  const rows = await db
+    .select({
+      stepIndex: tasks.workflowStepIndex,
+      title: tasks.title,
+      docId: documents.id,
+    })
+    .from(tasks)
+    .innerJoin(documents, eq(documents.taskId, tasks.id))
+    .where(
+      and(
+        eq(tasks.workflowRunId, runId),
+        eq(tasks.status, "done"),
+        sql`${tasks.workflowStepIndex} IS NOT NULL`,
+        sql`${tasks.workflowStepIndex} < ${beforeIndex}`,
+      ),
+    )
+    .orderBy(asc(tasks.workflowStepIndex), desc(documents.createdAt));
+  const seen = new Set<number>();
+  const out: Array<{ stepIndex: number; title: string; docId: string }> = [];
+  for (const r of rows) {
+    if (r.stepIndex == null || seen.has(r.stepIndex)) continue;
+    seen.add(r.stepIndex);
+    out.push({ stepIndex: r.stepIndex, title: r.title, docId: r.docId });
+  }
+  return out;
 }
 
 // Default input payload for a tool step: the carried deliverable as `content`.
@@ -1150,11 +1216,8 @@ async function advanceGateStep(
       nextIndex,
       parentTitle,
       [
-        ...contextBlock(
-          "Approved article (cleared the editorial gate):",
-          article,
-        ),
-        ...contextBlock("Head sign-off notes:", signoff),
+        ...contextBlock("Output that passed the gate:", article),
+        ...contextBlock("Gate sign-off notes:", signoff),
       ],
     );
     log.info(
@@ -1210,10 +1273,10 @@ async function advanceGateStep(
     parentTitle,
     [
       ...contextBlock(
-        "Your prior draft (returned by the editorial gate for revision):",
+        "Your prior output (returned by the gate for revision):",
         priorDraft,
       ),
-      ...contextBlock("Revision notes from the head — address these:", signoff),
+      ...contextBlock("Revision notes from the gate — address these:", signoff),
     ],
   );
   log.info(

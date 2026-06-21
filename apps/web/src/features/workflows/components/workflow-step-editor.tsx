@@ -345,7 +345,7 @@ export function WorkflowStepEditor({
               }
               placeholder="Instructions for this step — what to do and what the output must look like. Leads the task body."
               rows={3}
-              className="w-full glass-light rounded-lg px-3 py-2 text-xs text-white/90 leading-relaxed placeholder:text-white/30 outline-none focus:ring-1 focus:ring-white/20 resize-none"
+              className="w-full glass-light rounded-lg px-3 py-2 text-xs text-white/90 leading-relaxed placeholder:text-white/30 outline-none focus:ring-1 focus:ring-white/20 resize-y min-h-16"
             />
           </div>
 
@@ -364,7 +364,7 @@ export function WorkflowStepEditor({
               }
               placeholder="What does done look like for this step?"
               rows={2}
-              className="w-full glass-light rounded-lg px-3 py-2 text-xs text-white/90 leading-relaxed placeholder:text-white/30 outline-none focus:ring-1 focus:ring-white/20 resize-none"
+              className="w-full glass-light rounded-lg px-3 py-2 text-xs text-white/90 leading-relaxed placeholder:text-white/30 outline-none focus:ring-1 focus:ring-white/20 resize-y min-h-16"
             />
           </div>
 

@@ -6,7 +6,7 @@
 // The gateway streams NDJSON for /v1/run: one `{t:"event"}` line per run
 // event, a final `{t:"result"}` line carrying the RunClaudeResult.
 
-import type { ClaudeStreamEvent, RunClaudeResult } from "./claude-cli";
+import type { ClaudeStreamEvent, RunClaudeResult } from "@occa/gateway-claude-code/wire";
 
 export interface GatewayTarget {
   gatewayUrl: string;

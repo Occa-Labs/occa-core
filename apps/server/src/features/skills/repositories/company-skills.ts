@@ -133,11 +133,18 @@ export async function listLibraryForCompany(args: {
 
   let visibilityFilter;
   if (args.roleScopedKeys !== undefined) {
-    // Per-agent view. A skill is visible to a role two ways:
+    // Per-agent view. A skill is visible to a role three ways:
     //   1. its key is in the static catalog allow-list (`roleScopedKeys`)
     //      — OCCA defaults + ROLE_DEFAULT_SKILLS.
     //   2. it's an imported skill whose `allowed_roles` column explicitly
     //      lists this role — the static catalog can't know user imports.
+    //   3. the skill is UNRESTRICTED — no row for that key (within this
+    //      company's scope: its own rows + NULL globals) carries a non-empty
+    //      `allowed_roles`. "All roles" must mean all roles regardless of
+    //      whether the row is company-scoped or a NULL seed. A skill that has
+    //      an explicit restriction ANYWHERE (e.g. a company row scoping
+    //      fact-check to verification roles) is NOT unrestricted, so its
+    //      restriction still holds and path 3 does not fire.
     // inArray on `[]` emits invalid `IN ()`, so guard with a sentinel.
     const staticMatch =
       args.roleScopedKeys.length > 0
@@ -146,7 +153,8 @@ export async function listLibraryForCompany(args: {
     const roleAllowed = args.role
       ? sql`${args.role} = ANY(${companySkills.allowedRoles})`
       : sql`false`;
-    visibilityFilter = or(staticMatch, roleAllowed);
+    const unrestricted = sql`NOT EXISTS (SELECT 1 FROM ${companySkills} cs2 WHERE cs2.key = ${companySkills.key} AND (cs2.company_id = ${args.companyId} OR cs2.company_id IS NULL) AND cardinality(cs2.allowed_roles) > 0)`;
+    visibilityFilter = or(staticMatch, roleAllowed, unrestricted);
   } else {
     // Company library view: every custom import (company-scoped) is always
     // visible — user deliberately imported it, expects to see it. Builtin

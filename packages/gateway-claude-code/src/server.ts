@@ -13,7 +13,13 @@
 // The gateway is OCCA-agnostic: it knows nothing about deployments, tasks,
 // or markers. It writes the files it's handed and runs the prompt it's given.
 
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import {
+  createServer as createHttpServer,
+  type IncomingMessage,
+  type Server,
+  type ServerResponse,
+} from "node:http";
+import { createServer as createHttpsServer } from "node:https";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -22,11 +28,15 @@ import {
   sessionUuidFromKey,
   type ClaudeStreamEvent,
   type RunClaudeResult,
-} from "../claude-cli";
-import { workspacePathFor } from "../workspace";
-import { loadConfig } from "./config";
+} from "./claude-cli";
+import { workspacePathFor } from "./workspace";
+import type { GatewayConfig } from "./config";
 
-const config = loadConfig();
+// Set once by startGateway() before the server begins listening. The request
+// handlers below read it per-request (always after startup), and the run
+// registry is likewise module-singleton state — this service runs one gateway
+// per process.
+let config: GatewayConfig;
 
 function log(level: "info" | "warn" | "error", obj: Record<string, unknown>, msg: string): void {
   const line = JSON.stringify({ level, msg, ...obj });
@@ -331,7 +341,7 @@ async function handleCancel(req: IncomingMessage, res: ServerResponse): Promise<
 
 // ── Router ──────────────────────────────────────────────────────────────────
 
-const server = createServer((req, res) => {
+function handleRequest(req: IncomingMessage, res: ServerResponse): void {
   const method = req.method ?? "GET";
   const url = (req.url ?? "").split("?")[0];
 
@@ -374,11 +384,21 @@ const server = createServer((req, res) => {
       res.end();
     }
   });
-});
+}
 
+// Start the gateway: bind the config the handlers read, build an HTTP or
+// HTTPS server (HTTPS when cfg.tls is present), then listen.
 // Undefined host → listen on all interfaces (dual-stack), so localhost,
 // 127.0.0.1, and a remote OCCA all reach it. An explicit host restricts it.
-const onListen = () =>
-  log("info", { host: config.host ?? "*", port: config.port }, "claude-gateway listening");
-if (config.host) server.listen(config.port, config.host, onListen);
-else server.listen(config.port, onListen);
+export function startGateway(cfg: GatewayConfig): Server {
+  config = cfg;
+  const server = cfg.tls
+    ? createHttpsServer({ key: cfg.tls.key, cert: cfg.tls.cert }, handleRequest)
+    : createHttpServer(handleRequest);
+  const scheme = cfg.tls ? "https" : "http";
+  const onListen = () =>
+    log("info", { scheme, host: cfg.host ?? "*", port: cfg.port }, "claude-gateway listening");
+  if (cfg.host) server.listen(cfg.port, cfg.host, onListen);
+  else server.listen(cfg.port, onListen);
+  return server;
+}

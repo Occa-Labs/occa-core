@@ -437,14 +437,19 @@ export async function dispatchTask(
   // `invalid_payload`. Without feedback the agent never learns and the
   // task silently parks in review having done nothing (observed: a Head
   // emitting a malformed DELEGATE then [[OCCA:REVIEW]] stalls the cycle).
-  // Bounce it back to the same agent with the exact reason so it can
-  // re-emit a valid marker. Only when nothing else succeeded this turn,
-  // and capped so a persistently-broken agent can't loop forever.
+  // A DELEGATE emitted from a workflow step is dropped as
+  // `workflow_step_no_delegate` (the engine owns step spawning) — but a Head
+  // reflexively hands the step off and its reply is the hand-off note, not the
+  // work, so the step output becomes an abdication message that would publish
+  // as the deliverable. Both cases bounce back to the same agent so it does
+  // the work itself. Only when nothing else succeeded this turn, and capped so
+  // a persistently-broken agent can't loop forever.
   const rejectedActionable = processed.find(
     (p) =>
       p.outcome.kind === "ignored" &&
-      p.outcome.reason === "invalid_payload" &&
-      (p.token === "DELEGATE" || p.token === "BLOCK"),
+      ((p.outcome.reason === "invalid_payload" &&
+        (p.token === "DELEGATE" || p.token === "BLOCK")) ||
+        p.outcome.reason === "workflow_step_no_delegate"),
   );
   const nothingSucceeded =
     delegationsSpawned === 0 && blockedBy === null && !wasReported;
@@ -471,18 +476,26 @@ export async function dispatchTask(
         taskStatus: "todo",
         createdAt: finishedAt.toISOString(),
       });
+      const isWorkflowDelegate =
+        rejectedActionable.outcome.kind === "ignored" &&
+        rejectedActionable.outcome.reason === "workflow_step_no_delegate";
       await bounceTaskToAgent({
         taskId: taskRow.id,
         companyId: taskRow.companyId,
         assignedDeploymentId: agentRow.id,
-        body:
-          `${MARKER_BOUNCE_PREFIX} your [[OCCA:${rejectedActionable.token}]] ` +
-          `marker was rejected because its JSON body did not parse. ` +
-          `Re-emit it with RAW JSON between the tags — no prose, no code ` +
-          `fences, no comments, no trailing commas, exactly one block. For ` +
-          `DELEGATE use a "targetAgentId" copied from the "Available reports" ` +
-          `block. If you cannot form a valid marker, do the work yourself ` +
-          `instead of ending with [[OCCA:REVIEW]].`,
+        body: isWorkflowDelegate
+          ? `${MARKER_BOUNCE_PREFIX} you cannot delegate inside a workflow ` +
+            `step — the workflow runs the next step automatically. Do THIS ` +
+            `step's work yourself and output the finished result (the actual ` +
+            `deliverable), not a note about who should do it. Whatever you ` +
+            `output becomes the input to the next step.`
+          : `${MARKER_BOUNCE_PREFIX} your [[OCCA:${rejectedActionable.token}]] ` +
+            `marker was rejected because its JSON body did not parse. ` +
+            `Re-emit it with RAW JSON between the tags — no prose, no code ` +
+            `fences, no comments, no trailing commas, exactly one block. For ` +
+            `DELEGATE use a "targetAgentId" copied from the "Available reports" ` +
+            `block. If you cannot form a valid marker, do the work yourself ` +
+            `instead of ending with [[OCCA:REVIEW]].`,
         redispatchDedupe: false,
       });
       return;

@@ -10,12 +10,16 @@
 // (from `claude setup-token`, a Pro/Max subscription) on a server, or the
 // interactive login on a dev machine. This module never handles the token.
 //
-// Shared by the claude-code adapter (local mode) and the claude-gateway
-// service (remote BYORT mode). It is OCCA-neutral — node builtins only.
+// This drives the gateway's /v1/run handler. It is OCCA-neutral — node
+// builtins only.
 
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
+
+import type { ClaudeStreamEvent, RunClaudeInput, RunClaudeResult } from "./wire";
+
+export type { ClaudeStreamEvent, RunClaudeInput, RunClaudeResult } from "./wire";
 
 // Binary path override for hosts where `claude` isn't on the service PATH.
 const CLAUDE_BIN = process.env.OCCA_CLAUDE_BIN ?? "claude";
@@ -35,64 +39,14 @@ export function sessionUuidFromKey(sessionKey: string): string {
   ].join("-");
 }
 
-// Normalized run event surfaced live during a streaming task run. Callers map
-// these onto their own event shape (the adapter onto OCCA's AdapterTraceEvent,
-// the gateway onto an NDJSON wire frame).
-export interface ClaudeStreamEvent {
-  kind: "assistant_text" | "tool_use" | "tool_result" | "error";
-  text?: string;
-  toolName?: string;
-  toolInput?: unknown;
-  toolResult?: string;
-  isError?: boolean;
-}
+// Wire-protocol types (ClaudeStreamEvent, RunClaudeInput, RunClaudeResult)
+// live in ./wire — the contract this package shares with HTTP clients.
 
 interface ClaudeUsage {
   input_tokens?: number;
   output_tokens?: number;
   cache_read_input_tokens?: number;
   cache_creation_input_tokens?: number;
-}
-
-export interface RunClaudeInput {
-  prompt: string;
-  cwd: string;
-  model: string;
-  sessionUuid: string;
-  /** Extra system instructions (kept small — persona/skills ride in the
-   *  seeded workspace files, not here). */
-  appendSystemPrompt?: string | null;
-  /** Tool allowlist. Empty/omitted = no tools (pure text reply, for chat). */
-  allowedTools?: string[] | null;
-  /** Tool denylist — takes precedence over any host-side permission
-   *  allowlist. Needed because an empty `--allowedTools` does NOT block a
-   *  tool the host's settings.json already approves; `--disallowedTools`
-   *  does. Used to keep chat strictly text-only and to block subagent
-   *  spawning on tasks. */
-  disallowedTools?: string[] | null;
-  signal?: AbortSignal;
-  timeoutMs?: number;
-  /** Hard dollar ceiling on the run's API spend (`--max-budget-usd`). The
-   *  CLI ends the run once spend crosses this, bounding both cost and the
-   *  runaway research-loop that otherwise burns the full timeout. Omit for
-   *  unbounded (chat — short by nature). */
-  maxBudgetUsd?: number;
-  /** Live per-turn events (tool calls, assistant text). Omit for chat. */
-  onEvent?: (event: ClaudeStreamEvent) => void;
-}
-
-export interface RunClaudeResult {
-  ok: boolean;
-  reply: string;
-  sessionId: string | null;
-  usage: {
-    inputTokens: number;
-    outputTokens: number;
-    cachedTokensIn: number;
-  } | null;
-  costUsd: number | null;
-  error?: string;
-  reason?: string;
 }
 
 // Mutable accumulator filled as NDJSON lines stream in. The `result` line

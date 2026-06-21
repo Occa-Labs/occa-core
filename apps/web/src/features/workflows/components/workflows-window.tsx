@@ -584,7 +584,7 @@ function WorkflowDetail({
             onChange={(e) => setYamlText(e.target.value)}
             spellCheck={false}
             rows={20}
-            className="w-full bg-black/30 rounded px-3 py-2 text-xs font-mono leading-relaxed text-white/85 outline-none border border-white/8 focus:border-white/20"
+            className="w-full bg-black/30 rounded px-3 py-2 text-xs font-mono leading-relaxed text-white/85 outline-none border border-white/8 focus:border-white/20 resize-y min-h-40"
           />
         )}
       </div>
@@ -733,7 +733,7 @@ function WorkflowCreateForm({
               onChange={(e) => setYamlText(e.target.value)}
               spellCheck={false}
               rows={22}
-              className="w-full bg-black/30 rounded px-3 py-2 text-xs font-mono leading-relaxed text-white/85 outline-none border border-white/8 focus:border-white/20"
+              className="w-full bg-black/30 rounded px-3 py-2 text-xs font-mono leading-relaxed text-white/85 outline-none border border-white/8 focus:border-white/20 resize-y min-h-40"
             />
             {yamlError && (
               <YamlErrorBanner

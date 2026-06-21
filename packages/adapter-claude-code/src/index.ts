@@ -4,8 +4,8 @@
 // and OCCA reaches it over HTTP, exactly like the openclaw / hermes adapters.
 // The adapter NEVER spawns claude itself — OCCA runs on OCCA's servers and
 // can't be co-located with a third party's Claude login. Every call goes to a
-// Claude Gateway (this package's `src/gateway/`) addressed by `gatewayUrl` +
-// `apiKey`. For local dev you point at a gateway on `localhost`.
+// Claude Gateway (the @occa/gateway-claude-code service) addressed by
+// `gatewayUrl` + `apiKey`. For local dev you point at a gateway on `localhost`.
 //
 // Each agent gets an isolated workspace on the gateway box; OCCA's persona +
 // skills are assembled into a CLAUDE.md (Claude Code auto-loads it) and
@@ -33,7 +33,7 @@ import type {
 } from "@occa/runtime-core";
 import { buildWakeText } from "@occa/runtime-core";
 
-import type { ClaudeStreamEvent, RunClaudeResult } from "./claude-cli";
+import type { ClaudeStreamEvent, RunClaudeResult } from "@occa/gateway-claude-code/wire";
 import { parseConfig, type ClaudeCodeAdapterConfig } from "./types";
 import {
   gatewayHealth,
