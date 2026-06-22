@@ -41,6 +41,10 @@ import { childLogger } from "../../../lib/logger";
 import { getAdapter } from "../../../lib/adapter-registry";
 import { publishTraceEvent } from "../../../services/trace-events-bus";
 import { getCompanyBudgetStatus } from "../../../services/company-budget";
+import {
+  notifyDispatchHalted,
+  type DispatchHaltReason,
+} from "./dispatch-halt-notify";
 import { snapshotDeploymentSkills } from "../../../services/trace-skill-snapshot";
 import {
   nextStatusAfterDispatch,
@@ -117,7 +121,14 @@ export async function dispatchTask(
     taskRow.assignedDeploymentId!,
     taskRow.companyId,
   );
-  if (!agentRow) return;
+  if (!agentRow) {
+    void notifyHalt(
+      taskRow,
+      "agent_unavailable",
+      "the assigned agent could not be loaded, it may have been retired or removed",
+    );
+    return;
+  }
 
   const adapter = getAdapter(agentRow.adapterType);
   if (!adapter) {
@@ -125,12 +136,22 @@ export async function dispatchTask(
       { adapterType: agentRow.adapterType, deploymentId: agentRow.id },
       "unknown adapter type, skipping dispatch",
     );
+    void notifyHalt(
+      taskRow,
+      "agent_unavailable",
+      `the agent's runtime adapter "${agentRow.adapterType}" is not recognized`,
+    );
     return;
   }
   if (!agentRow.externalAgentId) {
     log.warn(
       { deploymentId: agentRow.id },
       "agent missing externalAgentId, skipping dispatch",
+    );
+    void notifyHalt(
+      taskRow,
+      "agent_unavailable",
+      "the agent's runtime is not finished provisioning",
     );
     return;
   }
@@ -149,6 +170,11 @@ export async function dispatchTask(
         budgetCents: budget.budgetCents,
       },
       "monthly budget reached, skipping task dispatch",
+    );
+    void notifyHalt(
+      taskRow,
+      "budget_exhausted",
+      "month-to-date spend reached the company budget",
     );
     return;
   }
@@ -674,6 +700,24 @@ export async function dispatchTask(
       );
     });
   }
+}
+
+// Thin adapter from a loaded task row to the dispatch-halt notifier.
+// Fire-and-forget (`void notifyHalt(...)`) at each silent halt point so a
+// stalled task surfaces to the operator instead of dying in a log line.
+function notifyHalt(
+  taskRow: typeof tasks.$inferSelect,
+  reason: DispatchHaltReason,
+  detail: string,
+): Promise<void> {
+  return notifyDispatchHalted({
+    companyId: taskRow.companyId,
+    taskId: taskRow.id,
+    taskNumber: taskRow.taskNumber,
+    taskTitle: taskRow.title,
+    reason,
+    detail,
+  });
 }
 
 async function loadDispatchableTask(taskId: string) {

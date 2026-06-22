@@ -1461,7 +1461,13 @@ export interface ListApprovalsResponse {
 // Known kinds listed here; schema accepts any string so new kinds land
 // without a migration. Reserve `approval_*` prefix for approval-derived
 // notifications so consumers can route generically.
-export const NOTIFICATION_KINDS = ["approval_pending"] as const;
+export const NOTIFICATION_KINDS = [
+  "approval_pending",
+  // Dispatch halted before an agent could start a task. Carries
+  // payload.reason ("budget_exhausted" | "agent_unavailable") and a
+  // "tasks:<taskId>" link. See features/tasks/services/dispatch-halt-notify.
+  "task_dispatch_halted",
+] as const;
 export type NotificationKind =
   | (typeof NOTIFICATION_KINDS)[number]
   | (string & {});
@@ -1540,6 +1546,10 @@ export interface ToolCredentialField {
   // True when this field stores a secret (password/token). UI masks it.
   secret: boolean;
   description?: string;
+  // True (string fields only) when the install UI should render a
+  // resizeable multi-line textarea instead of a single-line input — for
+  // long values like a locked house-style prompt.
+  multiline?: boolean;
 }
 
 export interface ToolActionSpec {

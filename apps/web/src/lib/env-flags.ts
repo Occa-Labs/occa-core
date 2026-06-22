@@ -38,6 +38,20 @@ export const IS_PRODUCTION_MODE: boolean =
 export const UNLOCK_PRODUCTION: boolean =
   process.env.NEXT_PUBLIC_UNLOCK_PRODUCTION === "1";
 
+// True when the 3D office scene is allowed to render. OFF by default so the
+// public open-source mirror (Occa-Labs/occa-core) — which omits the
+// commercially licensed 3D assets under `apps/web/public/models/` — runs
+// image-only with zero config and never tries to load assets it lacks.
+// Internal/dev and prod, which ship the assets, opt in with
+// `NEXT_PUBLIC_ENABLE_3D_OFFICE=1` at build time to render the full office.
+//
+// When off, `useViewMode` forces the static image background and the 3D
+// toggle is hidden so a user can't switch into a scene whose assets don't
+// exist. Reveal-on-true, matching the convention above: the safe default is
+// the one that always loads.
+export const ENABLE_3D_OFFICE: boolean =
+  process.env.NEXT_PUBLIC_ENABLE_3D_OFFICE === "1";
+
 // True when dev-only affordances (Dev Tools dock item, waypoint
 // recorder, floor-grid overlay, debug panels) are allowed to render.
 // Stays false in the local production preview so the dev surfaces

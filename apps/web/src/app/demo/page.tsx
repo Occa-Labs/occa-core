@@ -7,6 +7,7 @@ import { surface } from "@/components/ui/tokens";
 import { DEMO_AGENTS } from "@/archive/demo/data";
 import { INTRO_DIALOG } from "@/features/theater/constants";
 import { LandingFab } from "@/features/auth/components/landing-fab";
+import { ENABLE_3D_OFFICE } from "@/lib/env-flags";
 
 // Production demo route. Public, no auth, no API calls. Renders only the
 // 3D office scene populated from `DEMO_AGENTS` plus a single "Show Me
@@ -64,17 +65,29 @@ export default function DemoPage() {
 
   return (
     <main className="relative h-svh w-full overflow-hidden">
-      <OfficeScene
-        agents={DEMO_AGENTS}
-        showRoof
-        tourActive={tourActive}
-        tourWalkEnabled={tourWalkEnabled}
-        onTourEnd={handleTourEnd}
-        tourDialog={tourDialog}
-        onTourDialog={handleTourDialog}
-        onTourDialogDismiss={clearTourDialog}
-      />
-      {!tourActive && (
+      {ENABLE_3D_OFFICE ? (
+        <OfficeScene
+          agents={DEMO_AGENTS}
+          showRoof
+          tourActive={tourActive}
+          tourWalkEnabled={tourWalkEnabled}
+          onTourEnd={handleTourEnd}
+          tourDialog={tourDialog}
+          onTourDialog={handleTourDialog}
+          onTourDialogDismiss={clearTourDialog}
+        />
+      ) : (
+        <div
+          className="absolute inset-0"
+          style={{
+            backgroundImage: "url(/images/background.jpg)",
+            backgroundSize: "cover",
+            backgroundPosition: "center",
+            backgroundRepeat: "no-repeat",
+          }}
+        />
+      )}
+      {!tourActive && ENABLE_3D_OFFICE && (
         <button
           type="button"
           onClick={handleStartTour}

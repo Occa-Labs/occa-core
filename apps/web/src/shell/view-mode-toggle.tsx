@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Boxes, ImageIcon } from "lucide-react";
 import { surface } from "@/components/ui/tokens";
+import { ENABLE_3D_OFFICE } from "@/lib/env-flags";
 import { cn } from "@/lib/utils";
 
 const STORAGE_KEY = "occa_view_3d";
@@ -12,17 +13,23 @@ const STORAGE_KEY = "occa_view_3d";
  * background image instead. Initial value is `true` (3D on) — the office
  * is the canonical OCCA visual; flat mode is opt-in for users who want a
  * lighter rendering load.
+ *
+ * When `ENABLE_3D_OFFICE` is off (the open-source mirror without the
+ * licensed 3D assets), the office is forced off regardless of stored
+ * preference and `toggle` is a no-op — the caller also hides the toggle.
  */
 export function useViewMode(): { enabled: boolean; toggle: () => void } {
   const [enabled, setEnabled] = useState<boolean>(true);
 
   useEffect(() => {
+    if (!ENABLE_3D_OFFICE) return;
     if (typeof window === "undefined") return;
     const stored = window.localStorage.getItem(STORAGE_KEY);
     if (stored !== null) setEnabled(stored === "true");
   }, []);
 
   const toggle = useCallback(() => {
+    if (!ENABLE_3D_OFFICE) return;
     setEnabled((prev) => {
       const next = !prev;
       if (typeof window !== "undefined") {
@@ -32,7 +39,7 @@ export function useViewMode(): { enabled: boolean; toggle: () => void } {
     });
   }, []);
 
-  return { enabled, toggle };
+  return { enabled: ENABLE_3D_OFFICE ? enabled : false, toggle };
 }
 
 interface ViewModeToggleProps {

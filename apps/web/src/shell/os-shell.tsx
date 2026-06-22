@@ -106,6 +106,11 @@ interface OsShellProps {
    *  section. Driven by treasury-readiness notification clicks. */
   pendingChainSection?: string | null;
   onClearPendingChain?: () => void;
+  /** When set, OsShell auto-opens the Task Board. Driven by dispatch-halt
+   *  notification clicks ("tasks:<taskId>"). The id is carried for forward
+   *  compat; the board opens but does not yet focus a specific card. */
+  pendingTasksFocus?: string | null;
+  onClearPendingTasks?: () => void;
 }
 
 // OS chrome: dock + windows. The first-run flow (onboarding wizard,
@@ -130,6 +135,8 @@ export function OsShell({
   onClearPendingApproval,
   pendingChainSection = null,
   onClearPendingChain,
+  pendingTasksFocus = null,
+  onClearPendingTasks,
 }: OsShellProps) {
   const { status: authStatus } = useAuth();
   const authenticated = authStatus === "authenticated";
@@ -197,6 +204,11 @@ export function OsShell({
     if (pendingChainSection) setActiveWindow("chain");
   }, [pendingChainSection]);
 
+  // Deep-link to the Task Board via notification (e.g. dispatch halted).
+  useEffect(() => {
+    if (pendingTasksFocus) setActiveWindow("tasks");
+  }, [pendingTasksFocus]);
+
   // Closing the AgentsWindow always clears upstream focus so the camera
   // can return to idle. Local agent-focus (set by OrgChart click) also
   // clears so a subsequent theater click isn't shadowed.
@@ -215,6 +227,11 @@ export function OsShell({
     setActiveWindow(null);
     onClearPendingChain?.();
   }, [onClearPendingChain]);
+
+  const closeTasksWindow = useCallback(() => {
+    setActiveWindow(null);
+    onClearPendingTasks?.();
+  }, [onClearPendingTasks]);
 
   // After the operator-signed deploy succeeds from a proposal: mark the
   // proposal resolved (approve runs no provisioning side effect for
@@ -418,7 +435,7 @@ export function OsShell({
         <TaskManager
           companyId={me.company.id}
           agentList={agentList}
-          onClose={close}
+          onClose={closeTasksWindow}
         />
       )}
       {activeWindow === "agents" && (

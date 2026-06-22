@@ -69,6 +69,15 @@ function FieldRow({
   }
 
   const isSecret = field.secret;
+  // Long string values (e.g. a locked house-style prompt) get a resizeable
+  // textarea instead of a cramped single-line input.
+  const isMultiline = field.multiline === true && field.type === "string";
+  const stringValue =
+    value === undefined || value === null
+      ? ""
+      : typeof value === "string" || typeof value === "number"
+        ? String(value)
+        : "";
 
   return (
     <div>
@@ -95,32 +104,36 @@ function FieldRow({
           </button>
         )}
       </div>
-      <input
-        type={
-          field.type === "number"
-            ? "number"
-            : isSecret && !revealed
-              ? "password"
-              : "text"
-        }
-        value={
-          value === undefined || value === null
-            ? ""
-            : typeof value === "string" || typeof value === "number"
-              ? String(value)
-              : ""
-        }
-        onChange={(e) =>
-          onChange(
+      {isMultiline ? (
+        <textarea
+          value={stringValue}
+          onChange={(e) => onChange(e.target.value)}
+          spellCheck={false}
+          rows={5}
+          className="mt-1 w-full px-3 py-2 rounded-md bg-white/5 border border-white/10 text-[13px] font-mono leading-relaxed text-white/90 placeholder:text-white/30 focus:outline-none focus:border-white/30 resize-y min-h-24"
+        />
+      ) : (
+        <input
+          type={
             field.type === "number"
-              ? Number(e.target.value)
-              : e.target.value,
-          )
-        }
-        spellCheck={false}
-        autoComplete={isSecret ? "new-password" : undefined}
-        className="mt-1 w-full px-3 py-1.5 rounded-md bg-white/5 border border-white/10 text-[13px] font-mono text-white/90 placeholder:text-white/30 focus:outline-none focus:border-white/30"
-      />
+              ? "number"
+              : isSecret && !revealed
+                ? "password"
+                : "text"
+          }
+          value={stringValue}
+          onChange={(e) =>
+            onChange(
+              field.type === "number"
+                ? Number(e.target.value)
+                : e.target.value,
+            )
+          }
+          spellCheck={false}
+          autoComplete={isSecret ? "new-password" : undefined}
+          className="mt-1 w-full px-3 py-1.5 rounded-md bg-white/5 border border-white/10 text-[13px] font-mono text-white/90 placeholder:text-white/30 focus:outline-none focus:border-white/30"
+        />
+      )}
       {field.description && (
         <p className="text-[10px] text-white/40 mt-1">{field.description}</p>
       )}

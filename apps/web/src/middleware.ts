@@ -7,6 +7,11 @@ import { NextResponse, type NextRequest } from "next/server";
 //   NEXT_PUBLIC_DEMO_MODE=0 → opt out in production (debugging only)
 
 const isDemoMode = () => {
+  // The demo lockdown is a pure 3D-office showcase. When the office is not
+  // enabled (the open-source mirror without the licensed assets) there is
+  // no demo to redirect to, so force the lockdown off — otherwise every
+  // route would land on a /demo that can't load.
+  if (process.env.NEXT_PUBLIC_ENABLE_3D_OFFICE !== "1") return false;
   const flag = process.env.NEXT_PUBLIC_DEMO_MODE;
   if (flag === "1") return true;
   if (flag === "0") return false;

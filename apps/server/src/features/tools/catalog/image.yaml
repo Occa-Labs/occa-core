@@ -44,6 +44,7 @@ metadataFields:
     type: string
     required: false
     secret: false
+    multiline: true
     description: "Locked house style, prefixed to every prompt so a series stays on-brand."
   - name: aspectRatio
     type: string

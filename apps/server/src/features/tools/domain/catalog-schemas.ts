@@ -25,6 +25,9 @@ export const fieldHintSchema = z.object({
   required: z.boolean().default(true),
   secret: z.boolean().default(false),
   description: z.string().optional(),
+  // Render a resizeable multi-line textarea in the install UI (string
+  // fields only) — for long values like a locked house-style prompt.
+  multiline: z.boolean().default(false),
 });
 
 export const actionSpecSchema = z.object({

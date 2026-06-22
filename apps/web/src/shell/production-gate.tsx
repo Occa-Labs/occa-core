@@ -3,6 +3,7 @@
 import dynamic from "next/dynamic";
 import { Sparkles } from "lucide-react";
 import { Spinner } from "@/components/ui/spinner";
+import { ENABLE_3D_OFFICE } from "@/lib/env-flags";
 
 // R3F scene — browser-only. Three.js needs a real DOM/canvas, so SSR
 // is impossible.
@@ -34,7 +35,19 @@ export function ProductionGate() {
       className="fixed inset-0 h-screen w-screen overflow-hidden"
       style={{ background: "var(--app-bg-scene)" }}
     >
-      <OfficeScene />
+      {ENABLE_3D_OFFICE ? (
+        <OfficeScene />
+      ) : (
+        <div
+          className="absolute inset-0"
+          style={{
+            backgroundImage: "url(/images/background.jpg)",
+            backgroundSize: "cover",
+            backgroundPosition: "center",
+            backgroundRepeat: "no-repeat",
+          }}
+        />
+      )}
       <ProductionNotReadyOverlay />
     </main>
   );

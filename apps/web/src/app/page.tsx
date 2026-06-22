@@ -7,6 +7,7 @@ import { useMe, type UseMeResult } from "@/hooks/use-me";
 import { useCompanyAgents } from "@/features/agents/api/use-company-agents";
 import { Spinner } from "@/components/ui/spinner";
 import { useViewMode } from "@/shell/view-mode-toggle";
+import { ENABLE_3D_OFFICE } from "@/lib/env-flags";
 import { TopMenuBar } from "@/shell/top-menu-bar";
 import { DesktopOnlyGate } from "@/shell/desktop-only-gate";
 import { OnboardingWindow } from "@/features/onboarding/components/onboarding-window";
@@ -240,12 +241,19 @@ export default function HomePage() {
   const [pendingChainSection, setPendingChainSection] = useState<
     string | null
   >(null);
+  const [pendingTasksFocus, setPendingTasksFocus] = useState<string | null>(
+    null,
+  );
   const handleClearPendingApproval = useCallback(
     () => setPendingApprovalId(null),
     [],
   );
   const handleClearPendingChain = useCallback(
     () => setPendingChainSection(null),
+    [],
+  );
+  const handleClearPendingTasks = useCallback(
+    () => setPendingTasksFocus(null),
     [],
   );
   const handleNavigate = useCallback(
@@ -259,8 +267,13 @@ export default function HomePage() {
           // section id. Missing target opens the default section.
           setPendingChainSection(parsed.target ?? "registry");
           break;
-        // Other windows (agents, tasks, ...) wire in as their consumers
-        // add deep-link entry points. Unknown windows are no-ops.
+        case "tasks":
+          // "tasks:<taskId>" from a dispatch-halt notification. Opens the
+          // Task Board; the id is kept for a future focus-the-card pass.
+          setPendingTasksFocus(parsed.target ?? "open");
+          break;
+        // Other windows (agents, ...) wire in as their consumers add
+        // deep-link entry points. Unknown windows are no-ops.
         default:
           break;
       }
@@ -345,7 +358,7 @@ export default function HomePage() {
               notificationsEnabled={hasCompany}
               viewMode3d={view.enabled}
               onToggleViewMode={view.toggle}
-              viewModeToggleEnabled={true}
+              viewModeToggleEnabled={ENABLE_3D_OFFICE}
               onNavigate={handleNavigate}
               onExitCompany={() => setInCompany(false)}
             />
@@ -372,6 +385,8 @@ export default function HomePage() {
               onClearPendingApproval={handleClearPendingApproval}
               pendingChainSection={pendingChainSection}
               onClearPendingChain={handleClearPendingChain}
+              pendingTasksFocus={pendingTasksFocus}
+              onClearPendingTasks={handleClearPendingTasks}
             />
           </main>
         ) : (
