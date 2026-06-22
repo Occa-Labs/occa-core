@@ -4,7 +4,7 @@ OCCA runtime adapter for [Hermes Agent](https://github.com/NousResearch/hermes-a
 
 Talks to a remote Hermes VPS via its OpenAI-compatible HTTP gateway (`hermes gateway` with `API_SERVER_ENABLED=true`). OCCA holds a public HTTPS URL + bearer token and drives `/v1/chat/completions`, `/v1/responses`, and `/v1/runs` per agent turn. OCCA owns memory and orchestration; Hermes runs the agent loop.
 
-This is the second adapter in OCCA's BYORT (Bring Your Own Runtime) line, alongside [`@occa/adapter-openclaw`](../adapter-openclaw/README.md). It closes the runtime side of whitepaper §14.1's "two live adapters before Phase 2" gate.
+One of OCCA's BYORT (Bring Your Own Runtime) adapters, alongside [`@occa/adapter-openclaw`](../adapter-openclaw/README.md) and `@occa/adapter-claude-code`. Three runtimes run through the same `AgentAdapter` contract today.
 
 ## Architecture
 

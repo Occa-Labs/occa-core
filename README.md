@@ -21,7 +21,7 @@ Stand up a hierarchical team — CEO, Heads, specialists — with persistent con
 <br />
 
 > [!WARNING]
-> **Early Alpha** — APIs, schema, and behavior will change without notice. Not production-ready. On-chain layer (Solana Registry, payroll, marketplace) is whitepaper-only today.
+> **Early Alpha.** APIs, schema, and behavior will change without notice. Not production ready. The on-chain layer (Solana Registry, treasury, trace anchoring) runs on devnet today, with the mainnet cutover still ahead.
 
 ---
 
@@ -49,10 +49,10 @@ flowchart LR
   Adapter -->|HTTPS| Gateway((OpenClaw<br/>Gateway))
   Server <-->|drizzle| DB[(Postgres<br/>schema + history)]
   Worker <--> DB
-  Server -.->|future| Chain((Solana<br/>Registry))
+  Server -.->|devnet| Chain((Solana<br/>Registry))
 ```
 
-Three apps, one Postgres, one or more adapters. The chain layer is whitepaper-only today.
+Three apps, one Postgres, three runtime adapters. The chain layer runs on devnet today.
 
 ## Context Engineering
 
@@ -120,7 +120,7 @@ Single `loadContext` + typed `ContextSpec` + per-surface renderers. Identity and
 
 ### BYORT — Bring Your Own Runtime
 
-Agent backends pluggable via the `AgentAdapter` contract. OpenClaw ships as the default. Phase 2 requires ≥2 adapters.
+Agent backends pluggable via the `AgentAdapter` contract. Three adapters ship today, OpenClaw, Hermes, and Claude Code.
 
 </td>
 <td width="50%" valign="top">
@@ -182,7 +182,7 @@ No test suite yet.
 | **Database** | PostgreSQL 15+                                    |
 | **Auth**     | Solana wallet (nonce → sign → JWT), Privy         |
 | **Agents**   | BYORT contract → OpenClaw adapter (default)       |
-| **Chain**    | Solana (Anchor) — whitepaper only                 |
+| **Chain**    | Solana (Anchor) program, live on devnet           |
 
 ## Repo layout
 
@@ -229,29 +229,30 @@ packages/
 
 ## Status
 
-> **Chain = truth, DB = cache.** Every field is tagged Truth / Derived / Ephemeral. Truth fields are scheduled to live on Solana; DB is a hot cache. Today the chain layer is whitepaper-only — DB is the de-facto source.
+> **Chain = truth, DB = cache.** Every field is tagged Truth / Derived / Ephemeral. Truth fields are scheduled to live on Solana; DB is a hot cache. The chain layer runs on devnet today, so the DB stays the operational source until the mainnet cutover.
 
 <details open>
-<summary><b>Shipped — Phase 1, partial</b></summary>
+<summary><b>Shipped</b></summary>
 
 - Wallet-based auth (nonce → sign → JWT 24h)
-- 3D OS shell with windowed apps
+- 3D OS shell with windowed apps, image-only fallback
 - Onboarding + post-onboarding kickoff + meeting service
 - Org primitives in DB (`AgentIdentity`, `Deployment`, `RuntimeProfile`)
-- BYORT adapter contract + OpenClaw adapter
+- BYORT adapter contract + three adapters (OpenClaw, Hermes, Claude Code)
 - REST API + pg-boss task dispatch + cron + orphan reaper
-- Agent-to-agent task delegation
-- GitHub-sourced skill catalog
+- Agent-to-agent delegation, sequential workflow pipelines, editorial review gate
+- GitHub-sourced skill catalog, composable tools
 - **Context Engineering Pipeline (Tier 1-3b + UI)**
+- **On-chain layer on devnet** — Solana Registry, treasury authorization classes, per-deliverable trace anchoring + provenance, all through `occa-sdk`
+- Agent marketplace with cross-owner placement
 
 </details>
 
 <details>
-<summary><b>Whitepaper-only — next phases</b></summary>
+<summary><b>Planned — next</b></summary>
 
-- On-chain layer — Solana Registry, payroll, marketplace, escrow, reputation
-- Multi-adapter — only OpenClaw registered today; §14.1 requires ≥2 for Phase 2
-- Treasury authorization classes, trace anchoring
+- Mainnet cutover for the on-chain layer (it runs on devnet today)
+- On-chain escrow and marketplace settlement
 - L1/L2/L3 autonomy heartbeat ([docs/agent-autonomy.md](./docs/agent-autonomy.md))
 - Agent custody models (Derived / Custodial / Threshold MPC)
 - Governance multi-sig, dispute resolution
