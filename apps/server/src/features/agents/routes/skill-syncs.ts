@@ -14,11 +14,16 @@ import {
   deploymentSkillSyncs,
 } from "@occa/shared/schema";
 import type {
+  AgentRole,
   AgentSkillSyncDTO,
   AgentSkillSyncStatus,
   ListAgentSkillSyncsResponse,
 } from "@occa/shared/types";
 import { db } from "../../../infra/database/client";
+import {
+  effectiveAllowedRoles,
+  isRoleAllowed,
+} from "../../../lib/skill-role-gate";
 import { findAccessibleByUserId } from "../repositories/deployments";
 import { findByDeploymentId as findRuntimeProfile } from "../repositories/agent-runtime-profile";
 import { requireAuth } from "../../../middleware/auth";
@@ -173,8 +178,17 @@ router.post(
             inArray(companySkills.key, dedup),
           ),
         );
-      const knownMap = new Map(known.map((r) => [r.key, r.allowedRoles]));
-      const unknown = dedup.filter((k) => !knownMap.has(k));
+      // A key can have several rows (a global/OCCA seed plus a company
+      // import). Group all rows per key and gate on the EFFECTIVE roles
+      // (all-roles wins) — the same rule the catalog listing uses, so what the
+      // UI shows as toggleable is exactly what this accepts.
+      const rolesByKey = new Map<string, AgentRole[][]>();
+      for (const r of known) {
+        const list = rolesByKey.get(r.key) ?? [];
+        list.push((r.allowedRoles as AgentRole[]) ?? []);
+        rolesByKey.set(r.key, list);
+      }
+      const unknown = dedup.filter((k) => !rolesByKey.has(k));
       if (unknown.length > 0) {
         res.status(StatusCodes.BAD_REQUEST).json({
           error: ERROR_CODES.UNKNOWN_SKILL_KEYS,
@@ -182,10 +196,13 @@ router.post(
         });
         return;
       }
-      const disallowed = dedup.filter((k) => {
-        const roles = knownMap.get(k) ?? [];
-        return roles.length > 0 && !roles.includes(existing.role);
-      });
+      const disallowed = dedup.filter(
+        (k) =>
+          !isRoleAllowed(
+            effectiveAllowedRoles(rolesByKey.get(k) ?? []),
+            existing.role,
+          ),
+      );
       if (disallowed.length > 0) {
         res.status(StatusCodes.BAD_REQUEST).json({
           error: ERROR_CODES.ROLE_NOT_ALLOWED,

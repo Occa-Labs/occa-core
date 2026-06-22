@@ -1,21 +1,34 @@
 # @occa/gateway-claude-code
 
+[![npm](https://img.shields.io/npm/v/@occa/gateway-claude-code.svg)](https://www.npmjs.com/package/@occa/gateway-claude-code)
+[![license](https://img.shields.io/npm/l/@occa/gateway-claude-code.svg)](./LICENSE)
+
 A thin HTTP service that wraps the [`claude`](https://docs.claude.com/en/docs/claude-code) CLI so OCCA can run Claude Code agents on a box it does **not** own (BYORT — "bring your own runtime").
 
 The box owner installs `claude`, authenticates it once, and runs this gateway with a shared bearer. OCCA's claude-code adapter then talks to it over HTTP — the same shape as the OpenClaw and Hermes gateways. The gateway is OCCA-agnostic: it knows nothing about deployments, tasks, or markers. It writes the files it is handed and runs the prompt it is given.
 
-## Install & run
+## Requirements
+
+- Node.js ≥ 18
+- The [`claude`](https://docs.claude.com/en/docs/claude-code) CLI, authenticated (a Claude Pro/Max subscription via `claude setup-token`, or an API key)
+
+## Quickstart
 
 ```bash
-# 1. Install the Claude Code CLI and authenticate (Pro/Max subscription).
+# 1. Install + authenticate the Claude Code CLI.
 npm i -g @anthropic-ai/claude-code
-claude setup-token   # writes CLAUDE_CODE_OAUTH_TOKEN-style credentials
+claude setup-token
 
-# 2. Run the gateway.
-CLAUDE_GATEWAY_TOKEN=<shared-bearer> npx @occa/gateway-claude-code
+# 2. Install the gateway (or skip and use `npx @occa/gateway-claude-code`).
+npm i -g @occa/gateway-claude-code
+
+# 3. Set a shared bearer once, confirm the box is ready, then run.
+occa-claude-gateway config set token <shared-bearer>
+occa-claude-gateway doctor
+occa-claude-gateway
 ```
 
-A liveness probe without the bearer returns `401` (proves the service is up).
+The bearer is the only shared secret — it goes into the OCCA deployment's `adapterConfig.apiKey`. A liveness probe without it returns `401` (which still proves the service is up).
 
 ## CLI
 

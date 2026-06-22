@@ -6,6 +6,7 @@ import {
 } from "@occa/shared/schema";
 import type { AgentRole } from "@occa/shared/types";
 import { db } from "../../../infra/database/client";
+import { effectiveAllowedRoles } from "../../../lib/skill-role-gate";
 
 export type CompanySkillRow = typeof companySkills.$inferSelect;
 export type CompanySkillInsert = typeof companySkills.$inferInsert;
@@ -138,13 +139,12 @@ export async function listLibraryForCompany(args: {
     //      — OCCA defaults + ROLE_DEFAULT_SKILLS.
     //   2. it's an imported skill whose `allowed_roles` column explicitly
     //      lists this role — the static catalog can't know user imports.
-    //   3. the skill is UNRESTRICTED — no row for that key (within this
-    //      company's scope: its own rows + NULL globals) carries a non-empty
-    //      `allowed_roles`. "All roles" must mean all roles regardless of
-    //      whether the row is company-scoped or a NULL seed. A skill that has
-    //      an explicit restriction ANYWHERE (e.g. a company row scoping
-    //      fact-check to verification roles) is NOT unrestricted, so its
-    //      restriction still holds and path 3 does not fire.
+    //   3. the skill is ALL-ROLES — at least one row for that key (within this
+    //      company's scope: its own rows + NULL globals) carries an empty
+    //      `allowed_roles`. "All roles" wins: an empty row anywhere makes the
+    //      skill available to every role, regardless of whether the row is
+    //      company-scoped or a NULL seed, and regardless of any sibling row
+    //      that does carry a restriction. (Mirrors `effectiveAllowedRoles`.)
     // inArray on `[]` emits invalid `IN ()`, so guard with a sentinel.
     const staticMatch =
       args.roleScopedKeys.length > 0
@@ -153,8 +153,8 @@ export async function listLibraryForCompany(args: {
     const roleAllowed = args.role
       ? sql`${args.role} = ANY(${companySkills.allowedRoles})`
       : sql`false`;
-    const unrestricted = sql`NOT EXISTS (SELECT 1 FROM ${companySkills} cs2 WHERE cs2.key = ${companySkills.key} AND (cs2.company_id = ${args.companyId} OR cs2.company_id IS NULL) AND cardinality(cs2.allowed_roles) > 0)`;
-    visibilityFilter = or(staticMatch, roleAllowed, unrestricted);
+    const allRolesSeed = sql`EXISTS (SELECT 1 FROM ${companySkills} cs2 WHERE cs2.key = ${companySkills.key} AND (cs2.company_id = ${args.companyId} OR cs2.company_id IS NULL) AND cardinality(cs2.allowed_roles) = 0)`;
+    visibilityFilter = or(staticMatch, roleAllowed, allRolesSeed);
   } else {
     // Company library view: every custom import (company-scoped) is always
     // visible — user deliberately imported it, expects to see it. Builtin
@@ -189,15 +189,25 @@ export async function listLibraryForCompany(args: {
 
   // A company-scoped import shadows a builtin with the same key (the
   // company's chosen / refreshed-from-GitHub version) — list each key once,
-  // preferring the company row, so the catalog never shows duplicates.
-  const byKey = new Map<string, CompanySkillRow>();
+  // preferring the company row, so the catalog never shows duplicates. The
+  // returned `allowedRoles` is the EFFECTIVE gate across all rows of the key
+  // (all-roles wins), so the displayed tag and the toggle eligibility match
+  // what the assign-validation enforces.
+  const rolesByKey = new Map<string, AgentRole[][]>();
+  const repByKey = new Map<string, CompanySkillRow>();
   for (const row of rows) {
-    const prev = byKey.get(row.key);
+    const list = rolesByKey.get(row.key) ?? [];
+    list.push((row.allowedRoles as AgentRole[]) ?? []);
+    rolesByKey.set(row.key, list);
+    const prev = repByKey.get(row.key);
     if (!prev || (prev.companyId === null && row.companyId !== null)) {
-      byKey.set(row.key, row);
+      repByKey.set(row.key, row);
     }
   }
-  return [...byKey.values()];
+  return [...repByKey.values()].map((row) => ({
+    ...row,
+    allowedRoles: effectiveAllowedRoles(rolesByKey.get(row.key) ?? []),
+  }));
 }
 
 // ── Mutations ────────────────────────────────────────────────────────────

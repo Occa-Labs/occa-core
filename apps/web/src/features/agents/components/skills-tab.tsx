@@ -114,6 +114,10 @@ export function SkillsTab({
         const body = e.body as { error?: string; keys?: string[] } | null;
         if (body?.error === "unknown_skill_keys") {
           setErrorMsg(`Unknown skill keys: ${(body.keys ?? []).join(", ")}`);
+        } else if (body?.error === "role_not_allowed") {
+          setErrorMsg(
+            `Not allowed for ${agent.role}: ${(body.keys ?? []).join(", ")}`,
+          );
         } else {
           setErrorMsg(body?.error ?? `http_${e.status}`);
         }
@@ -121,7 +125,7 @@ export function SkillsTab({
         setErrorMsg("network_error");
       }
     }
-  }, [agent.id, syncDesiredSkills, reloadSyncs]);
+  }, [agent.id, agent.role, syncDesiredSkills, reloadSyncs]);
 
   useEffect(() => {
     return () => {
