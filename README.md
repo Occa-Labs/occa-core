@@ -127,7 +127,7 @@ Agent backends pluggable via the `AgentAdapter` contract. OpenClaw ships as the 
 
 ### 3D OS shell
 
-Desktop metaphor with windowed apps (Tasks, Agents, Approvals, Brain, Documents, Skills) over a 3D office scene rendered with R3F.
+Desktop metaphor with windowed apps (Tasks, Agents, Approvals, Brain, Documents, Skills) over a 3D office scene rendered with R3F, with an image-only fallback when the licensed assets aren't present.
 
 </td>
 </tr>
@@ -154,6 +154,9 @@ pnpm dev
 ```
 
 Open [http://localhost:3001](http://localhost:3001), connect a Solana wallet, and onboarding will walk you through deploying your first CEO.
+
+> [!NOTE]
+> The 3D office assets are licensed separately and are not bundled here, so the OS runs in **image-only mode by default** — no config needed. If you have the assets, drop them under `apps/web/public/models/` and set `NEXT_PUBLIC_ENABLE_3D_OFFICE=1` in `apps/web/.env.local` (see `apps/web/.env.example`) to render the full 3D office.
 
 <details>
 <summary><b>Available scripts</b></summary>
