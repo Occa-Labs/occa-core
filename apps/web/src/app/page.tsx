@@ -50,6 +50,23 @@ const OsShell = dynamic(
 );
 
 export default function HomePage() {
+  // Auth gate lives at the top so the authed app (AuthedHome) — which calls
+  // Privy-dependent hooks like invites and anchor wallet — never mounts on
+  // the login path. Without a Privy app id the DisabledAuthProvider reports
+  // a non-authenticated status, so we stay on LoginScreen and never run a
+  // hook that needs a PrivyProvider. /demo is a separate route, unaffected.
+  const { status } = useAuth();
+  if (status !== "authenticated") {
+    return (
+      <DesktopOnlyGate>
+        <LoginScreen />
+      </DesktopOnlyGate>
+    );
+  }
+  return <AuthedHome />;
+}
+
+function AuthedHome() {
   const { status: authStatus, user, signOut, updateName } = useAuth();
   const authenticated = authStatus === "authenticated";
 
@@ -310,18 +327,8 @@ export default function HomePage() {
     [],
   );
 
-  // Outermost gate: until the user is authenticated, the only thing that
-  // renders is the login wall. The 3D office, top bar, dock, and OS shell
-  // do not mount behind it — login is the first surface, not a button
-  // nested inside the desktop.
-  if (!authenticated) {
-    return (
-      <DesktopOnlyGate>
-        <LoginScreen />
-      </DesktopOnlyGate>
-    );
-  }
-
+  // The unauthenticated branch (login wall) is handled by the HomePage
+  // wrapper above; AuthedHome only renders for an authenticated user.
   return (
     <DesktopOnlyGate>
       {inCompany ? (
