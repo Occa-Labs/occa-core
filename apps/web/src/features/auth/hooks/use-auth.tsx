@@ -349,6 +349,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
+/**
+ * Auth provider for builds without Privy configured (no
+ * NEXT_PUBLIC_PRIVY_APP_ID — e.g. the open-source mirror before an operator
+ * sets up Privy). It calls no Privy hooks, so the app boots and public
+ * routes like /demo render instead of crashing on PrivyProvider init. The
+ * login screen surfaces the `privy_not_configured` message. Pair with the
+ * `PRIVY_ENABLED` branch in providers so PrivyProvider never mounts with an
+ * empty app id.
+ */
+export function DisabledAuthProvider({ children }: { children: ReactNode }) {
+  const value = useMemo<UseAuthResult>(
+    () => ({
+      status: "error",
+      user: null,
+      error: "privy_not_configured",
+      signIn: () => {},
+      signOut: () => {},
+      cancel: () => {},
+      updateName: async () => {},
+    }),
+    [],
+  );
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+}
+
 export function useAuth(): UseAuthResult {
   const ctx = useContext(AuthContext);
   if (!ctx) {

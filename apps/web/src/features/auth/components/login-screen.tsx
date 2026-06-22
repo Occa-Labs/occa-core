@@ -28,7 +28,7 @@ function prettifyAuthError(code: string): string {
     case "privy_no_solana_wallet":
       return "No Solana wallet linked to this Privy account.";
     case "privy_not_configured":
-      return "Server is not configured for Privy. Contact support.";
+      return "Sign-in needs a Privy app id. Set NEXT_PUBLIC_PRIVY_APP_ID in apps/web/.env.local (free from console.privy.io).";
     case "hydrate_failed":
       return "Couldn't reach the server. Retry when it's back up.";
     case "sign_in_failed":

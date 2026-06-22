@@ -9,6 +9,11 @@ import {
 
 const APP_ID = process.env.NEXT_PUBLIC_PRIVY_APP_ID ?? "";
 
+// True when a Privy app id is configured. When false, providers mount the
+// DisabledAuthProvider instead so PrivyProvider never initializes with an
+// empty app id (which throws and 500s the whole app, including /demo).
+export const PRIVY_ENABLED = APP_ID.length > 0;
+
 // Privy needs an RPC entry per CAIP chain the SDK might touch. Even though
 // OCCA only operates on devnet, some external wallets (Phantom, etc.)
 // advertise `solana:mainnet` in their chain set, and Privy throws
