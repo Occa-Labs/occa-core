@@ -8,7 +8,8 @@
 
 import {
   listByAnyTag as listDocumentsByAnyTag,
-  listRecent as listRecentDocuments,
+  listRecentDeliverables,
+  deliverableTagDistribution,
 } from "../../../features/documents/repositories/documents";
 import { listRecentDoneTasksByCompany } from "../../../features/tasks/repositories/tasks";
 import type { ContextHistory, SurfacePayload } from "../spec";
@@ -19,6 +20,13 @@ import type { ContextHistory, SurfacePayload } from "../spec";
 const HISTORY_RECENT_TASKS_LIMIT = 5;
 const HISTORY_RELEVANT_DOCS_LIMIT = 5;
 const HISTORY_DOC_SNIPPET_LEN = 240;
+
+// Coverage signal bounds. Recent deliverables are COUNT-bounded so a burst
+// day (one news cycle can spawn 200+ docs) can't flood the prompt; the tag
+// window is TIME-bounded for long memory, cheap because it returns counts only.
+const COVERAGE_RECENT_LIMIT = 50;
+const COVERAGE_TAG_WINDOW_DAYS = 90;
+const COVERAGE_TAG_LIMIT = 20;
 
 // Loads the episodic slice most useful to the calling surface:
 //   • chat / agent_dm → "what did the team ship recently?"
@@ -44,32 +52,55 @@ export async function loadHistory(args: {
     };
   }
 
-  // task surface — tag-matched docs first, fallback to recent if empty.
-  const tagged =
+  // task surface — three optional signals, loaded together:
+  //   • relevantDocuments — tag-matched prior work, genuine topical reference
+  //   • recentlyProduced  — recent shipped deliverables, the dedup signal
+  //   • tagDistribution   — coverage by area, the gap signal
+  // The old recency-fallback for relevantDocuments is intentionally gone: when
+  // a task has no tag match, recentlyProduced (deliverables only) is the
+  // cleaner "what we shipped lately" signal than a mixed recent-docs list that
+  // dragged in process scratch.
+  const [tagged, recent, distribution] = await Promise.all([
     args.surface.tags.length > 0
-      ? await listDocumentsByAnyTag({
+      ? listDocumentsByAnyTag({
           companyId: args.companyId,
           tags: args.surface.tags,
           limit: HISTORY_RELEVANT_DOCS_LIMIT,
         })
-      : [];
+      : [],
+    listRecentDeliverables({
+      companyId: args.companyId,
+      limit: COVERAGE_RECENT_LIMIT,
+    }),
+    deliverableTagDistribution({
+      companyId: args.companyId,
+      sinceDays: COVERAGE_TAG_WINDOW_DAYS,
+      limit: COVERAGE_TAG_LIMIT,
+    }),
+  ]);
 
-  const docs =
+  const relevantDocuments =
     tagged.length > 0
-      ? tagged
-      : await listRecentDocuments({
-          companyId: args.companyId,
-          limit: HISTORY_RELEVANT_DOCS_LIMIT,
-        });
+      ? tagged.map((d) => ({
+          id: d.id,
+          title: d.title,
+          snippet: d.content.slice(0, HISTORY_DOC_SNIPPET_LEN),
+        }))
+      : undefined;
+  const recentlyProduced =
+    recent.length > 0
+      ? recent.map((d) => ({
+          title: d.title,
+          tags: d.tags,
+          producedAt: d.createdAt.toISOString().slice(0, 10),
+        }))
+      : undefined;
+  const tagDistribution = distribution.length > 0 ? distribution : undefined;
 
-  if (docs.length === 0) return undefined;
-  return {
-    relevantDocuments: docs.map((d) => ({
-      id: d.id,
-      title: d.title,
-      snippet: d.content.slice(0, HISTORY_DOC_SNIPPET_LEN),
-    })),
-  };
+  if (!relevantDocuments && !recentlyProduced && !tagDistribution) {
+    return undefined;
+  }
+  return { relevantDocuments, recentlyProduced, tagDistribution };
 }
 
 // Pull the agent_result preview out of a task's blocks JSON. Matches the

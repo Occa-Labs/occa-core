@@ -1,0 +1,2 @@
+ALTER TABLE "documents" ADD COLUMN "kind" text DEFAULT 'deliverable' NOT NULL;--> statement-breakpoint
+CREATE INDEX "idx_documents_company_kind_created" ON "documents" USING btree ("company_id","kind","created_at");

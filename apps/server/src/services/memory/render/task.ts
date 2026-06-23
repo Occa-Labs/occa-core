@@ -262,6 +262,39 @@ function formatRelevantDocuments(spec: ContextSpec): string | null {
   return lines.join("\n");
 }
 
+// Coverage signal — what the company recently SHIPPED (so the agent doesn't
+// re-produce it) plus how its output distributes across tags (so it can favor
+// under-covered areas). General: any recurring-output company benefits; the
+// agent applies its own taxonomy via tags + the profile's coverage scope. The
+// renderer never knows what a "category" is.
+function formatCoverage(spec: ContextSpec): string | null {
+  const produced = spec.history?.recentlyProduced;
+  const distribution = spec.history?.tagDistribution;
+  const hasProduced = produced !== undefined && produced.length > 0;
+  const hasDistribution = distribution !== undefined && distribution.length > 0;
+  if (!hasProduced && !hasDistribution) return null;
+
+  const lines: string[] = [];
+  if (hasProduced) {
+    lines.push(
+      `RECENTLY SHIPPED — do NOT re-produce these. Only revisit a topic with a genuinely new development or angle:`,
+    );
+    for (const d of produced) {
+      const tags = d.tags.length > 0 ? `  [${d.tags.join(", ")}]` : "";
+      lines.push(`  • ${d.producedAt} — "${d.title}"${tags}`);
+    }
+  }
+  if (hasDistribution) {
+    if (lines.length > 0) lines.push(``);
+    const dist = distribution.map((t) => `${t.tag} ×${t.count}`).join(" · ");
+    lines.push(
+      `COVERAGE BY TAG (deliverables shipped recently) — heavily-covered areas are saturated; favor lighter or new ones:`,
+    );
+    lines.push(`  ${dist}`);
+  }
+  return lines.join("\n");
+}
+
 // Company Brain (Tier 3) full-inline format — same shape as chat renderer
 // to keep agents consistent across surfaces. Visibility already filtered
 // at loadContext, so anything reaching us is authorized for this agent.
@@ -428,6 +461,7 @@ export function renderTaskPrompt(spec: ContextSpec): string {
   const profileBlock = formatCompanyProfile(spec);
   const brainBlock = formatCompanyBrain(spec);
   const relatedDocsBlock = formatRelevantDocuments(spec);
+  const coverageBlock = formatCoverage(spec);
   const workspaceFilesBlock = formatWorkspaceFiles(spec);
   const commentsBlock = renderCommentsBlock(s.comments);
   const acceptance = s.acceptanceCriteria
@@ -554,6 +588,7 @@ export function renderTaskPrompt(spec: ContextSpec): string {
     ...(profileBlock ? [profileBlock, ``] : []),
     ...(brainBlock ? [brainBlock, ``] : []),
     ...(relatedDocsBlock ? [relatedDocsBlock, ``] : []),
+    ...(coverageBlock ? [coverageBlock, ``] : []),
     renderRuntimeEnvBlock(spec),
     ``,
     ...(spec.skills.length > 0 ? [renderSkillsBlock(spec.skills), ``] : []),

@@ -25,6 +25,8 @@ import {
 import { db } from "../../../infra/database/client";
 import { childLogger } from "../../../lib/logger";
 import { LIMITS } from "../../../lib/limits";
+import { deriveTitleFromContent } from "../../../lib/markdown-title";
+import { saveDeliverableDocument } from "../../../services/auto-save-document";
 import type { ToolHandler, ToolInvokeResult } from "../domain/types";
 
 const log = childLogger("tools:handlers:publish");
@@ -54,14 +56,6 @@ const postInputSchema = z.object({
   // how to use it. Set by a workflow that ran an image step before publish.
   image_url: z.string().trim().url().max(LIMITS.URL).optional(),
 });
-
-// Title from the article markdown (first heading). The receiver usually lifts
-// its own headline from the body too; this fills the payload's display title
-// when the caller didn't pass one explicitly.
-function deriveTitleFromContent(content: string): string {
-  const m = content.match(/^#{1,6}[ \t]+(.+?)[ \t#]*$/m);
-  return (m?.[1]?.trim() || "Untitled").slice(0, LIMITS.TITLE);
-}
 
 const postOutputSchema = z.object({ url: z.string().url() });
 
@@ -193,6 +187,20 @@ async function publishContent(
       log.error({ err, taskId }, "publish: failed to record result_uri on task");
     }
   }
+
+  // Mirror the shipped piece into the documents store with its real headline
+  // + topic tags — the canonical row the memory coverage signal reads. Saved
+  // even when taskId is null (tool-only publish). Best-effort inside the
+  // service; never blocks the successful publish.
+  void saveDeliverableDocument({
+    companyId,
+    taskId,
+    deploymentId,
+    title,
+    content: input.content,
+    format,
+    tags,
+  });
 
   return { ok: true, output: { url }, resultSummary: { url, taskId } };
 }

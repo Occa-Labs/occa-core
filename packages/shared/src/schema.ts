@@ -302,6 +302,12 @@ export const documents = pgTable(
 
     tags: text("tags").array().notNull().default(sql`'{}'::text[]`),
 
+    // `deliverable` (shipped/published work, real headline + topic tags) vs
+    // `process` (workflow stage scratch: draft, fact-check, SEO pass). See
+    // DOCUMENT_KINDS in types.ts. Memory's coverage signal reads deliverables
+    // only. Defaults to `deliverable` so a standalone task's reply counts.
+    kind: text("kind").notNull().default("deliverable"),
+
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -309,6 +315,12 @@ export const documents = pgTable(
   (t) => [
     index("idx_documents_company_created").on(t.companyId, t.createdAt),
     index("idx_documents_task").on(t.taskId),
+    // Coverage queries filter by kind within a company, newest first.
+    index("idx_documents_company_kind_created").on(
+      t.companyId,
+      t.kind,
+      t.createdAt,
+    ),
   ],
 );
 

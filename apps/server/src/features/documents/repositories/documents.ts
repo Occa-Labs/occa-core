@@ -55,6 +55,57 @@ export async function listByAnyTag(args: {
     .limit(args.limit);
 }
 
+// ── Coverage signal — fuels the memory pipeline's "avoid re-covering" block ──
+
+// Recent SHIPPED deliverables — the coverage signal's high-resolution layer.
+// Count-bounded (not time-bounded) so a burst day can't flood the prompt.
+// kind='deliverable' excludes process scratch (draft / fact-check / SEO stage
+// docs), so the agent sees what was actually published, not the pipeline.
+export async function listRecentDeliverables(args: {
+  companyId: string;
+  limit: number;
+}): Promise<{ title: string; tags: string[]; createdAt: Date }[]> {
+  return db
+    .select({
+      title: documents.title,
+      tags: documents.tags,
+      createdAt: documents.createdAt,
+    })
+    .from(documents)
+    .where(
+      and(
+        eq(documents.companyId, args.companyId),
+        eq(documents.kind, "deliverable"),
+      ),
+    )
+    .orderBy(desc(documents.createdAt))
+    .limit(args.limit);
+}
+
+// Per-tag deliverable counts within a recent window — the coverage signal's
+// low-resolution, long-memory layer. Aggregate counts only, so it stays cheap
+// across a long window. A document with N tags contributes to N tags.
+export async function deliverableTagDistribution(args: {
+  companyId: string;
+  sinceDays: number;
+  limit: number;
+}): Promise<{ tag: string; count: number }[]> {
+  const result = await db.execute<{ tag: string; count: number }>(sql`
+    SELECT tag, count(*)::int AS count
+    FROM documents, unnest(tags) AS tag
+    WHERE company_id = ${args.companyId}::uuid
+      AND kind = 'deliverable'
+      AND created_at > now() - make_interval(days => ${args.sinceDays})
+    GROUP BY tag
+    ORDER BY count DESC, tag ASC
+    LIMIT ${args.limit}
+  `);
+  return result.rows.map((r) => ({
+    tag: String(r.tag),
+    count: Number(r.count),
+  }));
+}
+
 // ── Finder: paginated browse + derived folder aggregates ──────────────────
 //
 // The finder never pulls the full archive. Folder lists (dates / tags) come

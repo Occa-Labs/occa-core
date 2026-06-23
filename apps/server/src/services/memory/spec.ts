@@ -99,6 +99,15 @@ export interface ContextHistory {
     summary: string;
   }[];
   relevantDocuments?: { id: string; title: string; snippet: string }[];
+  // Coverage signal (task surface) — what the company has recently SHIPPED,
+  // so an agent producing recurring work doesn't redundantly re-cover it.
+  // Deliverables only (kind='deliverable'); process scratch is excluded.
+  // High-resolution, count-bounded layer.
+  recentlyProduced?: { title: string; tags: string[]; producedAt: string }[];
+  // Per-tag deliverable counts over a recent window — surfaces saturated vs
+  // sparsely-covered areas so the agent can favor gaps. Counts only, no
+  // bodies, so it stays cheap across a long memory window.
+  tagDistribution?: { tag: string; count: number }[];
 }
 
 // Assigned-skill view at run time. Full markdown is inlined so the

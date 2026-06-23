@@ -813,6 +813,16 @@ export type TaskStatus = (typeof TASK_STATUSES)[number];
 export const TASK_PRIORITIES = ["low", "medium", "high", "urgent"] as const;
 export type TaskPriority = (typeof TASK_PRIORITIES)[number];
 
+// Document kind — separates a shipped deliverable (the canonical published
+// piece, carrying its real headline + topic tags) from intermediate process
+// scratch (workflow stage outputs: draft, fact-check, SEO pass). The memory
+// coverage signal counts deliverables only; process docs stay browsable but
+// don't inflate "what have we already covered". Default is `deliverable`:
+// a standalone task's reply IS the deliverable; only pipeline sub-stages and
+// already-published tasks get reclassified at save time.
+export const DOCUMENT_KINDS = ["deliverable", "process"] as const;
+export type DocumentKind = (typeof DOCUMENT_KINDS)[number];
+
 // Single-select shape of work (Notion-style "Task type"). Distinct from the
 // free-form `tags` list — task type describes *what kind of work* it is, while
 // tags are any label the user wants.
