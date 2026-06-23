@@ -57,7 +57,14 @@ const postInputSchema = z.object({
   image_url: z.string().trim().url().max(LIMITS.URL).optional(),
 });
 
-const postOutputSchema = z.object({ url: z.string().url() });
+const postOutputSchema = z.object({
+  url: z.string().url(),
+  // Optional: a receiver may return the tags it assigned to the published
+  // piece (receivers commonly derive topic tags when the caller sends none).
+  // Mirrored onto the saved deliverable so the memory coverage signal has real
+  // topic tags. Receiver-agnostic — any receiver that fills this participates.
+  tags: z.array(z.string()).optional(),
+});
 
 function sign(body: string, secret: string): string {
   return crypto.createHmac("sha256", secret).update(body).digest("hex");
@@ -160,9 +167,15 @@ async function publishContent(
   }
 
   let url: string | null = null;
+  let receiverTags: string[] = [];
   try {
-    const parsed = JSON.parse(text) as { url?: unknown };
+    const parsed = JSON.parse(text) as { url?: unknown; tags?: unknown };
     if (typeof parsed.url === "string" && parsed.url.length > 0) url = parsed.url;
+    if (Array.isArray(parsed.tags)) {
+      receiverTags = parsed.tags
+        .map((t) => String(t).trim())
+        .filter((t) => t.length > 0);
+    }
   } catch {
     /* receiver returned non-JSON */
   }
@@ -188,6 +201,12 @@ async function publishContent(
     }
   }
 
+  // Tags for the saved deliverable: prefer what the agent supplied; fall back
+  // to what the receiver assigned (it often derives topic tags when the caller
+  // sends none). Mirrors the receiver's own precedence so OCCA's coverage tags
+  // match what actually published.
+  const deliverableTags = tags.length > 0 ? tags : receiverTags;
+
   // Mirror the shipped piece into the documents store with its real headline
   // + topic tags — the canonical row the memory coverage signal reads. Saved
   // even when taskId is null (tool-only publish). Best-effort inside the
@@ -199,10 +218,17 @@ async function publishContent(
     title,
     content: input.content,
     format,
-    tags,
+    tags: deliverableTags,
   });
 
-  return { ok: true, output: { url }, resultSummary: { url, taskId } };
+  return {
+    ok: true,
+    output: {
+      url,
+      ...(deliverableTags.length > 0 ? { tags: deliverableTags } : {}),
+    },
+    resultSummary: { url, taskId },
+  };
 }
 
 export const publishHandler: ToolHandler = {

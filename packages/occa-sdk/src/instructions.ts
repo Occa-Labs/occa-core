@@ -516,6 +516,8 @@ export const TREASURY_INSTRUCTION_DISCRIMINATOR = {
   closeOperations: Buffer.from([2, 52, 136, 225, 80, 230, 222, 120]),
   disburseRoutine: Buffer.from([45, 152, 225, 130, 133, 73, 62, 202]),
   disbursePrivileged: Buffer.from([173, 78, 248, 158, 76, 46, 88, 167]),
+  withdrawProtocolFees: Buffer.from([11, 68, 165, 98, 18, 208, 134, 73]),
+  setGovernance: Buffer.from([34, 71, 128, 245, 179, 42, 140, 137]),
 } as const;
 
 // ── Borsh helpers for treasury args ─────────────────────────────────────────
@@ -750,7 +752,8 @@ export interface InitProtocolFeeAccountParams {
   /** Upgrade authority of the Treasury program. Pays + signs. */
   authority: PublicKey;
   /** Long-lived withdrawal authority for accumulated fees (e.g. governance
-   *  multisig). Immutable after init. */
+   *  multisig). Set here at init, then rotatable by the current holder via
+   *  `set_governance` (see `buildSetGovernanceInstruction`). */
   governance: PublicKey;
   /** The Treasury program's own pubkey — passed as an account. Defaults to
    *  `TREASURY_PROGRAM_ID`. */
@@ -1126,6 +1129,95 @@ export function buildDisbursePrivilegedInstruction(
       { pubkey: params.deploymentPda, isSigner: false, isWritable: false },
       { pubkey: params.destination, isSigner: false, isWritable: true },
       { pubkey: protocolFeePda, isSigner: false, isWritable: true },
+    ],
+    data,
+  });
+  return { instruction };
+}
+
+// ── withdraw_protocol_fees ──────────────────────────────────────────────────
+
+export interface WithdrawProtocolFeesParams {
+  /** Governance withdrawal authority — must equal
+   *  `ProtocolFeeAccount.governance`. Signs the withdrawal. */
+  governance: PublicKey;
+  /** Where the withdrawn lamports land. Governance-chosen (DAO treasury,
+   *  multisig, etc.). */
+  destination: PublicKey;
+  /** Asset to withdraw. Phase 1: SOL only. Defaults to `SOL_PSEUDO_MINT`. */
+  mint?: PublicKey;
+  /** Amount in lamports (SOL base units). Must be > 0 and ≤ the tracked
+   *  per-asset balance. */
+  amountLamports: bigint;
+  programId?: PublicKey;
+}
+
+/**
+ * Build a `withdraw_protocol_fees` instruction — moves accumulated protocol
+ * fees out of the singleton ProtocolFeeAccount to a governance-chosen
+ * destination. Signed by the `governance` authority pinned at init. The PDA
+ * keeps its rent-exempt minimum; the request cannot exceed the tracked
+ * per-asset balance.
+ */
+export function buildWithdrawProtocolFeesInstruction(
+  params: WithdrawProtocolFeesParams,
+): { instruction: TransactionInstruction } {
+  const programId = params.programId ?? TREASURY_PROGRAM_ID;
+  const mint = params.mint ?? SOL_PSEUDO_MINT;
+  const { pda: protocolFeePda } = deriveProtocolFeePda(programId);
+
+  const data = Buffer.concat([
+    TREASURY_INSTRUCTION_DISCRIMINATOR.withdrawProtocolFees,
+    encodePubkey(mint),
+    encodeU64(params.amountLamports),
+  ]);
+
+  const instruction = new TransactionInstruction({
+    programId,
+    // Order: protocol_fee_account, governance, destination.
+    keys: [
+      { pubkey: protocolFeePda, isSigner: false, isWritable: true },
+      { pubkey: params.governance, isSigner: true, isWritable: false },
+      { pubkey: params.destination, isSigner: false, isWritable: true },
+    ],
+    data,
+  });
+  return { instruction };
+}
+
+// ── set_governance ──────────────────────────────────────────────────────────
+
+export interface SetGovernanceParams {
+  /** Current governance authority — must equal
+   *  `ProtocolFeeAccount.governance`. Signs the rotation. */
+  governance: PublicKey;
+  /** New governance authority. Cannot be the default (all-zero) pubkey. */
+  newGovernance: PublicKey;
+  programId?: PublicKey;
+}
+
+/**
+ * Build a `set_governance` instruction — rotates the ProtocolFeeAccount's
+ * withdrawal authority to a new key. Signed by the CURRENT governance
+ * authority; this is the only way to change `governance` after init.
+ */
+export function buildSetGovernanceInstruction(
+  params: SetGovernanceParams,
+): { instruction: TransactionInstruction } {
+  const programId = params.programId ?? TREASURY_PROGRAM_ID;
+  const { pda: protocolFeePda } = deriveProtocolFeePda(programId);
+
+  const data = Buffer.concat([
+    TREASURY_INSTRUCTION_DISCRIMINATOR.setGovernance,
+    encodePubkey(params.newGovernance),
+  ]);
+
+  const instruction = new TransactionInstruction({
+    programId,
+    // Order: protocol_fee_account, governance.
+    keys: [
+      { pubkey: protocolFeePda, isSigner: false, isWritable: true },
+      { pubkey: params.governance, isSigner: true, isWritable: false },
     ],
     data,
   });

@@ -11,7 +11,6 @@ import {
   integer,
   bigint,
   bigserial,
-  real,
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 
@@ -1685,49 +1684,6 @@ export const companyWebhooks = pgTable(
   },
   (t) => [
     index("idx_company_webhooks_company_event").on(t.companyId, t.event),
-  ],
-);
-
-// ── Episodic memory — what the company has done, cycle by cycle ───────
-// A curated record of completed work, distinct from `documents` (the raw
-// deliverables). One row per published piece: category, title, a
-// one-line recap, structured detail. It is the input that stops Heads
-// repeating the same topic daily and the CEO daily review reads to
-// assess coverage health.
-//
-// Ephemeral tier — operational learning, not on-chain.
-export const episodicMemory = pgTable(
-  "episodic_memory",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    companyId: uuid("company_id")
-      .notNull()
-      .references(() => companies.id, { onDelete: "cascade" }),
-    // Episode type. Only "story_published" today.
-    kind: text("kind").notNull().default("story_published"),
-    // When the work happened (the deliverable's completion time).
-    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
-    // Coverage category, derived from the deliverable.
-    category: text("category").notNull(),
-    title: text("title").notNull(),
-    // One-line human-readable recap.
-    summary: text("summary").notNull(),
-    // Structured detail — taskId, agent, outcome, and so on.
-    payload: jsonb("payload")
-      .notNull()
-      .default(sql`'{}'::jsonb`),
-    // Recency-weighted importance; higher surfaces sooner. A decay
-    // function lands here later — for now a flat default.
-    salience: real("salience").notNull().default(1),
-    createdAt: timestamp("created_at", { withTimezone: true })
-      .notNull()
-      .defaultNow(),
-  },
-  (t) => [
-    index("idx_episodic_memory_company_occurred").on(
-      t.companyId,
-      t.occurredAt,
-    ),
   ],
 );
 

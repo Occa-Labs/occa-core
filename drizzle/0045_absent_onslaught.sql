@@ -1,0 +1,1 @@
+DROP TABLE "episodic_memory" CASCADE;

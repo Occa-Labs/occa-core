@@ -814,6 +814,75 @@
       "args": []
     },
     {
+      "name": "set_governance",
+      "docs": [
+        "Rotate the `governance` withdrawal authority to a new key. Signed by",
+        "the CURRENT governance authority — the only way to change `governance`",
+        "after init, which is otherwise immutable.",
+        "",
+        "Defends against permanent fund-lock / key compromise: if the",
+        "governance key is being retired, moved to a multisig, or is feared",
+        "leaked, the current holder rotates to a fresh key here. An attacker",
+        "cannot call this without already holding the current key (which would",
+        "also let them withdraw), so rotation adds no new theft surface — it is",
+        "purely defensive.",
+        "",
+        "`new_governance` cannot be the default pubkey: that would re-lock the",
+        "account with no valid signer."
+      ],
+      "discriminator": [
+        34,
+        71,
+        128,
+        245,
+        179,
+        42,
+        140,
+        137
+      ],
+      "accounts": [
+        {
+          "name": "protocol_fee_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  95,
+                  102,
+                  101,
+                  101,
+                  115
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "governance",
+          "docs": [
+            "Current governance authority. Must sign to rotate."
+          ],
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "new_governance",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
       "name": "set_policy",
       "docs": [
         "Update policy fields and/or treasury's accepted-asset list.",
@@ -960,6 +1029,89 @@
               "name": "UpdateOperationsCapabilityParams"
             }
           }
+        }
+      ]
+    },
+    {
+      "name": "withdraw_protocol_fees",
+      "docs": [
+        "Withdraw accumulated protocol fees from the singleton",
+        "`ProtocolFeeAccount` to a governance-chosen destination. Without this",
+        "instruction, fees credited by the `disburse_*` handlers would be",
+        "write-only — permanently locked on the PDA.",
+        "",
+        "Authorization: signed by the `governance` authority pinned at",
+        "`init_protocol_fee_account` (e.g. a DAO / multisig key), distinct from",
+        "the program's upgrade authority.",
+        "",
+        "Phase 1: SOL only (`mint == SOL_PSEUDO_MINT`), matching the",
+        "disbursement path. The withdrawn `amount` is decremented from the",
+        "tracked per-asset `balances` entry (accounting truth — cannot withdraw",
+        "more than was accumulated) and the PDA's rent-exempt minimum is",
+        "protected so the runtime never GCs the account. Partial withdrawals",
+        "are allowed."
+      ],
+      "discriminator": [
+        11,
+        68,
+        165,
+        98,
+        18,
+        208,
+        134,
+        73
+      ],
+      "accounts": [
+        {
+          "name": "protocol_fee_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  95,
+                  102,
+                  101,
+                  101,
+                  115
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "governance",
+          "docs": [
+            "Governance withdrawal authority pinned at init. Must sign."
+          ],
+          "signer": true
+        },
+        {
+          "name": "destination",
+          "docs": [
+            "Destination for the withdrawn lamports. Governance signs, so it picks",
+            "freely (DAO treasury, multisig, etc.)."
+          ],
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "mint",
+          "type": "pubkey"
+        },
+        {
+          "name": "amount",
+          "type": "u64"
         }
       ]
     }
@@ -1193,6 +1345,16 @@
       "code": 6034,
       "name": "MissingDeploymentForAgentDestination",
       "msg": "agent destination flag set but no deployment account provided"
+    },
+    {
+      "code": 6035,
+      "name": "InsufficientFeeBalance",
+      "msg": "protocol fee balance is insufficient for this withdrawal"
+    },
+    {
+      "code": 6036,
+      "name": "InvalidGovernance",
+      "msg": "new governance authority cannot be the default pubkey"
     }
   ],
   "types": [
@@ -1452,7 +1614,9 @@
             "name": "governance",
             "docs": [
               "Long-lived withdrawal authority — typically a DAO / multisig key,",
-              "distinct from the program's upgrade authority. Settable only at init."
+              "distinct from the program's upgrade authority. Set at init, then",
+              "rotatable by the current holder via `set_governance` (guards against",
+              "key loss / compromise). A multisig here survives a single lost key."
             ],
             "type": "pubkey"
           },

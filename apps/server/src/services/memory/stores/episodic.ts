@@ -24,7 +24,10 @@ const HISTORY_DOC_SNIPPET_LEN = 240;
 // Coverage signal bounds. Recent deliverables are COUNT-bounded so a burst
 // day (one news cycle can spawn 200+ docs) can't flood the prompt; the tag
 // window is TIME-bounded for long memory, cheap because it returns counts only.
-const COVERAGE_RECENT_LIMIT = 50;
+// 80 covers a full day even at an aggressive cadence (≈48 cycles/day), so a
+// new cycle always sees everything already shipped today — the dedup signal
+// never drops a same-day story off the bottom of the list.
+const COVERAGE_RECENT_LIMIT = 80;
 const COVERAGE_TAG_WINDOW_DAYS = 90;
 const COVERAGE_TAG_LIMIT = 20;
 
