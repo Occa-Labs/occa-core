@@ -1,6 +1,7 @@
 import { PublicKey } from "@solana/web3.js";
 import {
   AGENT_IDENTITY_SEED,
+  ASSOCIATED_TOKEN_PROGRAM_ID,
   COMPANY_SEED,
   DAILY_ANCHOR_SEED,
   DEPLOYMENT_SEED,
@@ -8,6 +9,7 @@ import {
   POLICY_SEED,
   PROTOCOL_FEES_SEED,
   REGISTRY_PROGRAM_ID,
+  TOKEN_PROGRAM_ID,
   TRACE_SEED,
   TREASURY_PROGRAM_ID,
   TREASURY_SEED,
@@ -167,6 +169,29 @@ export function deriveOperationsPda(
     programId,
   );
   return { pda, bump };
+}
+
+/**
+ * Associated Token Account address for `(owner, mint)` — the canonical ATA
+ * the SPL Associated Token program derives. Used by the `disburse_*_spl` /
+ * `withdraw_protocol_fees_spl` builders to compute the treasury / agent /
+ * fee token accounts. `owner` may be a wallet or a PDA (e.g. the treasury or
+ * ProtocolFeeAccount PDA).
+ *
+ *   seeds = [owner, TOKEN_PROGRAM_ID, mint]  (program = ASSOCIATED_TOKEN_PROGRAM_ID)
+ *
+ * Matches `@solana/spl-token`'s `getAssociatedTokenAddressSync`, reimplemented
+ * here so the SDK depends only on `@solana/web3.js`.
+ */
+export function deriveAssociatedTokenAddress(
+  owner: PublicKey,
+  mint: PublicKey,
+): PublicKey {
+  const [ata] = PublicKey.findProgramAddressSync(
+    [owner.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), mint.toBuffer()],
+    ASSOCIATED_TOKEN_PROGRAM_ID,
+  );
+  return ata;
 }
 
 /** Encode an i64 as little-endian 8 bytes (matches Anchor / Borsh). */

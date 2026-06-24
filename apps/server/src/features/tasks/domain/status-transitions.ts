@@ -92,6 +92,16 @@ export function traceOutcomeFor(status: TaskStatus): AgentTraceOutcome {
       return "review";
     case "blocked":
       return "blocked";
+    // The trace itself succeeded but the dispatcher is re-queuing the task to
+    // `todo` to re-run it — the auto-bounce path (e.g. a Head that emitted a
+    // DELEGATE inside a workflow step, which the engine drops, so we bounce it
+    // back to do the step's work itself). The agent ran fine, so the trace
+    // outcome is still `success`; `todo` is a task-status routing decision, not
+    // a trace failure. Without this case the bounce throws here, the close
+    // aborts before the bounce comment posts, the cap never increments, and the
+    // task re-dispatches forever (observed: a Brief-story step looping 17×).
+    case "todo":
+      return "success";
     default:
       throw new Error(
         `traceOutcomeFor: unexpected nextStatus "${status}" — dispatcher should not transition to this from a successful trace`,

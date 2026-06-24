@@ -20,6 +20,18 @@ export const TREASURY_PROGRAM_ID_BASE58 =
 
 export const TREASURY_PROGRAM_ID = new PublicKey(TREASURY_PROGRAM_ID_BASE58);
 
+// Well-known SPL program IDs — same address on every cluster. Used by the
+// `disburse_*_spl` / `withdraw_protocol_fees_spl` builders to derive the
+// Associated Token Accounts the treasury program expects. Defined here (rather
+// than pulling in `@solana/spl-token`) to keep the SDK's dependency surface to
+// `@solana/web3.js` only.
+export const TOKEN_PROGRAM_ID = new PublicKey(
+  "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+);
+export const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey(
+  "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+);
+
 // PDA seed prefixes. Must match `occa-programs/programs/registry/src/lib.rs` exactly.
 export const COMPANY_SEED = Buffer.from("company");
 export const AGENT_IDENTITY_SEED = Buffer.from("agent_identity");

@@ -4,16 +4,19 @@ import {
   TransactionInstruction,
 } from "@solana/web3.js";
 import {
+  ASSOCIATED_TOKEN_PROGRAM_ID,
   MAX_QUALITY_SCORE,
   MAX_RESULT_URI_LEN,
   OPERATIONS_KIND,
   REGISTRY_PROGRAM_ID,
   SOL_PSEUDO_MINT,
+  TOKEN_PROGRAM_ID,
   TREASURY_PROGRAM_ID,
   type OperationsKind,
 } from "./constants";
 import {
   deriveAgentIdentityPda,
+  deriveAssociatedTokenAddress,
   deriveCompanyPda,
   deriveDailyAnchorPda,
   deriveDeploymentPda,
@@ -518,6 +521,11 @@ export const TREASURY_INSTRUCTION_DISCRIMINATOR = {
   disbursePrivileged: Buffer.from([173, 78, 248, 158, 76, 46, 88, 167]),
   withdrawProtocolFees: Buffer.from([11, 68, 165, 98, 18, 208, 134, 73]),
   setGovernance: Buffer.from([34, 71, 128, 245, 179, 42, 140, 137]),
+  // SPL (multi-asset, e.g. USDC) siblings of the disbursement + withdraw ix.
+  disburseRoutineSpl: Buffer.from([62, 246, 42, 181, 243, 213, 199, 222]),
+  disburseDiscretionarySpl: Buffer.from([171, 119, 247, 147, 12, 92, 189, 182]),
+  disbursePrivilegedSpl: Buffer.from([68, 114, 230, 151, 255, 100, 60, 54]),
+  withdrawProtocolFeesSpl: Buffer.from([77, 229, 10, 30, 110, 102, 48, 170]),
 } as const;
 
 // ── Borsh helpers for treasury args ─────────────────────────────────────────
@@ -1218,6 +1226,280 @@ export function buildSetGovernanceInstruction(
     keys: [
       { pubkey: protocolFeePda, isSigner: false, isWritable: true },
       { pubkey: params.governance, isSigner: true, isWritable: false },
+    ],
+    data,
+  });
+  return { instruction };
+}
+
+// ── SPL (multi-asset) disbursements + withdrawal ─────────────────────────────
+//
+// Siblings of the SOL `disburse_*` / `withdraw_protocol_fees` builders for SPL
+// tokens (e.g. USDC). The builders derive every Associated Token Account the
+// program expects from `(owner, mint)`, so callers pass plain wallets/PDAs and
+// the mint — never the ATAs directly. `mint` MUST be a real SPL mint (not
+// `SOL_PSEUDO_MINT`); use the SOL builders for native SOL. `amount` is in the
+// mint's base units (USDC = 6 decimals).
+//
+// The three recipient/source ATAs:
+//   • treasury_token_account     = ATA(treasuryPda, mint)     — source of funds
+//   • destination_token_account  = ATA(destination, mint)     — created if missing
+//   • fee_token_account          = ATA(protocolFeePda, mint)  — created if missing
+// The operator/owner/governance signer pays rent for any ATA created on demand.
+
+const SPL_TOKEN_TRAILER = [TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID, SystemProgram.programId];
+
+function assertSplMint(mint: PublicKey): void {
+  if (mint.equals(SOL_PSEUDO_MINT)) {
+    throw new Error(
+      "SPL builder requires a real mint; use the SOL builder for native SOL",
+    );
+  }
+}
+
+export interface DisburseRoutineSplParams {
+  companyPda: PublicKey;
+  treasuryPda: PublicKey;
+  policyPda: PublicKey;
+  /** Disbursement-kind OperationsAccount for this company. */
+  operationsPda: PublicKey;
+  /** Hot wallet matching `operations.signer`. The only signer; also pays rent
+   *  for any destination/fee ATA created on demand. */
+  operationsSigner: PublicKey;
+  /** Deployment PDA of the agent being paid. */
+  deploymentPda: PublicKey;
+  /** Agent's receiving_address (the wallet). Tokens land in its ATA. */
+  destination: PublicKey;
+  /** SPL mint being disbursed (e.g. USDC). */
+  mint: PublicKey;
+  /** Amount in the mint's base units. */
+  amount: bigint;
+  programId?: PublicKey;
+}
+
+/**
+ * Build a `disburse_routine_spl` instruction — SPL Routine-class batched
+ * payout. SPL sibling of `disburse_routine`. The Disbursement Wallet
+ * (`operationsSigner`) must have `disburse_routine_spl`'s discriminator in its
+ * `action_whitelist` (add via `update_operations_capability`).
+ */
+export function buildDisburseRoutineSplInstruction(
+  params: DisburseRoutineSplParams,
+): { instruction: TransactionInstruction } {
+  const programId = params.programId ?? TREASURY_PROGRAM_ID;
+  assertSplMint(params.mint);
+  const { pda: protocolFeePda } = deriveProtocolFeePda(programId);
+  const treasuryAta = deriveAssociatedTokenAddress(params.treasuryPda, params.mint);
+  const destinationAta = deriveAssociatedTokenAddress(params.destination, params.mint);
+  const feeAta = deriveAssociatedTokenAddress(protocolFeePda, params.mint);
+
+  const data = Buffer.concat([
+    TREASURY_INSTRUCTION_DISCRIMINATOR.disburseRoutineSpl,
+    encodePubkey(params.mint),
+    encodeU64(params.amount),
+  ]);
+
+  const instruction = new TransactionInstruction({
+    programId,
+    keys: [
+      { pubkey: params.companyPda, isSigner: false, isWritable: false },
+      { pubkey: params.treasuryPda, isSigner: false, isWritable: true },
+      { pubkey: params.policyPda, isSigner: false, isWritable: true },
+      { pubkey: params.operationsPda, isSigner: false, isWritable: true },
+      { pubkey: params.operationsSigner, isSigner: true, isWritable: true },
+      { pubkey: params.deploymentPda, isSigner: false, isWritable: false },
+      { pubkey: params.destination, isSigner: false, isWritable: false },
+      { pubkey: params.mint, isSigner: false, isWritable: false },
+      { pubkey: treasuryAta, isSigner: false, isWritable: true },
+      { pubkey: destinationAta, isSigner: false, isWritable: true },
+      { pubkey: protocolFeePda, isSigner: false, isWritable: true },
+      { pubkey: feeAta, isSigner: false, isWritable: true },
+      ...SPL_TOKEN_TRAILER.map((pubkey) => ({ pubkey, isSigner: false, isWritable: false })),
+    ],
+    data,
+  });
+  return { instruction };
+}
+
+export interface DisburseDiscretionarySplParams {
+  companyPda: PublicKey;
+  treasuryPda: PublicKey;
+  policyPda: PublicKey;
+  /** Must equal `company.owner`. Signs and pays rent for any ATA created. */
+  controllingAuthority: PublicKey;
+  deploymentPda: PublicKey;
+  destination: PublicKey;
+  mint: PublicKey;
+  amount: bigint;
+  programId?: PublicKey;
+}
+
+/**
+ * Build a `disburse_discretionary_spl` instruction — SPL Discretionary-class
+ * payout, signed by the controlling authority. SPL sibling of
+ * `disburse_discretionary`.
+ */
+export function buildDisburseDiscretionarySplInstruction(
+  params: DisburseDiscretionarySplParams,
+): { instruction: TransactionInstruction } {
+  const programId = params.programId ?? TREASURY_PROGRAM_ID;
+  assertSplMint(params.mint);
+  const { pda: protocolFeePda } = deriveProtocolFeePda(programId);
+  const treasuryAta = deriveAssociatedTokenAddress(params.treasuryPda, params.mint);
+  const destinationAta = deriveAssociatedTokenAddress(params.destination, params.mint);
+  const feeAta = deriveAssociatedTokenAddress(protocolFeePda, params.mint);
+
+  const data = Buffer.concat([
+    TREASURY_INSTRUCTION_DISCRIMINATOR.disburseDiscretionarySpl,
+    encodePubkey(params.mint),
+    encodeU64(params.amount),
+  ]);
+
+  const instruction = new TransactionInstruction({
+    programId,
+    keys: [
+      { pubkey: params.companyPda, isSigner: false, isWritable: false },
+      { pubkey: params.controllingAuthority, isSigner: true, isWritable: true },
+      { pubkey: params.treasuryPda, isSigner: false, isWritable: true },
+      { pubkey: params.policyPda, isSigner: false, isWritable: true },
+      { pubkey: params.deploymentPda, isSigner: false, isWritable: false },
+      { pubkey: params.destination, isSigner: false, isWritable: false },
+      { pubkey: params.mint, isSigner: false, isWritable: false },
+      { pubkey: treasuryAta, isSigner: false, isWritable: true },
+      { pubkey: destinationAta, isSigner: false, isWritable: true },
+      { pubkey: protocolFeePda, isSigner: false, isWritable: true },
+      { pubkey: feeAta, isSigner: false, isWritable: true },
+      ...SPL_TOKEN_TRAILER.map((pubkey) => ({ pubkey, isSigner: false, isWritable: false })),
+    ],
+    data,
+  });
+  return { instruction };
+}
+
+export interface DisbursePrivilegedSplParams {
+  companyPda: PublicKey;
+  treasuryPda: PublicKey;
+  policyPda: PublicKey;
+  /** Must equal `company.owner`. Signs and pays rent for any ATA created. */
+  controllingAuthority: PublicKey;
+  /** Required only when `amount` exceeds the per-mint
+   *  `privileged_threshold_per_token` entry. Omit otherwise — the slot is
+   *  filled with the program ID (Anchor's `None` placeholder), so no extra
+   *  signature is demanded below threshold. */
+  secondarySigner?: PublicKey;
+  /** Whether `destination` is an in-company agent (fee applies, `deploymentPda`
+   *  required) or an external party (no fee, `deploymentPda` omitted). */
+  isAgentDestination: boolean;
+  /** Required when `isAgentDestination = true`. Omitted otherwise (slot filled
+   *  with the program ID `None` placeholder). */
+  deploymentPda?: PublicKey;
+  destination: PublicKey;
+  mint: PublicKey;
+  amount: bigint;
+  programId?: PublicKey;
+}
+
+/**
+ * Build a `disburse_privileged_spl` instruction — SPL Privileged-class payout
+ * to an agent (fee) or any external wallet (no fee). SPL sibling of
+ * `disburse_privileged`. Above the per-mint threshold the secondary signer is
+ * also required; below it, omit `secondarySigner`.
+ */
+export function buildDisbursePrivilegedSplInstruction(
+  params: DisbursePrivilegedSplParams,
+): { instruction: TransactionInstruction } {
+  const programId = params.programId ?? TREASURY_PROGRAM_ID;
+  assertSplMint(params.mint);
+  if (params.isAgentDestination && !params.deploymentPda) {
+    throw new Error("deploymentPda is required when isAgentDestination is true");
+  }
+  const { pda: protocolFeePda } = deriveProtocolFeePda(programId);
+  const treasuryAta = deriveAssociatedTokenAddress(params.treasuryPda, params.mint);
+  const destinationAta = deriveAssociatedTokenAddress(params.destination, params.mint);
+  const feeAta = deriveAssociatedTokenAddress(protocolFeePda, params.mint);
+
+  const data = Buffer.concat([
+    TREASURY_INSTRUCTION_DISCRIMINATOR.disbursePrivilegedSpl,
+    encodePubkey(params.mint),
+    encodeU64(params.amount),
+    encodeBool(params.isAgentDestination),
+  ]);
+
+  // Optional accounts: Anchor represents `None` with the program ID, kept
+  // read-only + non-signer so no extra signature/lock is implied.
+  const secondarySignerKey = params.secondarySigner
+    ? { pubkey: params.secondarySigner, isSigner: true, isWritable: false }
+    : { pubkey: programId, isSigner: false, isWritable: false };
+  const deploymentKey = params.deploymentPda
+    ? { pubkey: params.deploymentPda, isSigner: false, isWritable: false }
+    : { pubkey: programId, isSigner: false, isWritable: false };
+
+  const instruction = new TransactionInstruction({
+    programId,
+    keys: [
+      { pubkey: params.companyPda, isSigner: false, isWritable: false },
+      { pubkey: params.controllingAuthority, isSigner: true, isWritable: true },
+      secondarySignerKey,
+      { pubkey: params.treasuryPda, isSigner: false, isWritable: true },
+      { pubkey: params.policyPda, isSigner: false, isWritable: false },
+      deploymentKey,
+      { pubkey: params.destination, isSigner: false, isWritable: false },
+      { pubkey: params.mint, isSigner: false, isWritable: false },
+      { pubkey: treasuryAta, isSigner: false, isWritable: true },
+      { pubkey: destinationAta, isSigner: false, isWritable: true },
+      { pubkey: protocolFeePda, isSigner: false, isWritable: true },
+      { pubkey: feeAta, isSigner: false, isWritable: true },
+      ...SPL_TOKEN_TRAILER.map((pubkey) => ({ pubkey, isSigner: false, isWritable: false })),
+    ],
+    data,
+  });
+  return { instruction };
+}
+
+export interface WithdrawProtocolFeesSplParams {
+  /** Governance withdrawal authority — must equal
+   *  `ProtocolFeeAccount.governance`. Signs; pays rent if the destination ATA
+   *  is created on demand. */
+  governance: PublicKey;
+  /** Destination wallet — tokens land in its ATA. Governance picks freely. */
+  destination: PublicKey;
+  /** SPL mint to withdraw. */
+  mint: PublicKey;
+  /** Amount in the mint's base units. ≤ the tracked per-asset balance. */
+  amount: bigint;
+  programId?: PublicKey;
+}
+
+/**
+ * Build a `withdraw_protocol_fees_spl` instruction — moves accumulated SPL
+ * protocol fees out of the ProtocolFeeAccount's ATA to a governance-chosen
+ * destination ATA. SPL sibling of `withdraw_protocol_fees`.
+ */
+export function buildWithdrawProtocolFeesSplInstruction(
+  params: WithdrawProtocolFeesSplParams,
+): { instruction: TransactionInstruction } {
+  const programId = params.programId ?? TREASURY_PROGRAM_ID;
+  assertSplMint(params.mint);
+  const { pda: protocolFeePda } = deriveProtocolFeePda(programId);
+  const feeAta = deriveAssociatedTokenAddress(protocolFeePda, params.mint);
+  const destinationAta = deriveAssociatedTokenAddress(params.destination, params.mint);
+
+  const data = Buffer.concat([
+    TREASURY_INSTRUCTION_DISCRIMINATOR.withdrawProtocolFeesSpl,
+    encodePubkey(params.mint),
+    encodeU64(params.amount),
+  ]);
+
+  const instruction = new TransactionInstruction({
+    programId,
+    keys: [
+      { pubkey: protocolFeePda, isSigner: false, isWritable: true },
+      { pubkey: params.governance, isSigner: true, isWritable: true },
+      { pubkey: params.destination, isSigner: false, isWritable: false },
+      { pubkey: params.mint, isSigner: false, isWritable: false },
+      { pubkey: feeAta, isSigner: false, isWritable: true },
+      { pubkey: destinationAta, isSigner: false, isWritable: true },
+      ...SPL_TOKEN_TRAILER.map((pubkey) => ({ pubkey, isSigner: false, isWritable: false })),
     ],
     data,
   });
