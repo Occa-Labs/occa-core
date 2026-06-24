@@ -12,6 +12,7 @@ import {
   buildSetAgentReceivingAddressInstruction,
   buildSetPolicyInstruction,
   buildDisburseDiscretionaryInstruction,
+  buildDisburseDiscretionarySplInstruction,
   deriveAgentIdentityPda,
   deriveCompanyPda,
   deriveDeploymentPda,
@@ -27,9 +28,16 @@ import {
 } from "../../agents/repositories/agent-identities";
 import { childLogger } from "../../../lib/logger";
 import { requireAuth } from "../../../middleware/auth";
-import { findOwnedById as findOwnedCompanyById } from "../../companies/repositories/companies";
+import {
+  findOwnedById as findOwnedCompanyById,
+  updateCore as updateCompanyCore,
+} from "../../companies/repositories/companies";
 import { findOwnedByUserId as findOwnedDeploymentByUserId } from "../../agents/repositories/deployments";
 import { findById as findCompanyById } from "../../companies/repositories/companies";
+import {
+  findPayoutAssetByMint,
+  resolvePayoutAssets,
+} from "../domain/payout-assets";
 import { getOperatorKeypair } from "../../../infra/solana/operator-signer";
 import {
   accountExists,
@@ -45,7 +53,10 @@ import {
   reserveAgentIndex,
 } from "../repositories/chain-registry";
 import { findCompaniesForWallet } from "../services/chain-lookup";
-import { fetchTreasuryState } from "../services/treasury-lookup";
+import {
+  fetchPolicyBudgetVecs,
+  fetchTreasuryState,
+} from "../services/treasury-lookup";
 import { buildDisbursementPlan } from "../../billing/services/disbursement";
 import { markInvoicesPaid } from "../../billing/repositories/invoices";
 import operationsRouter from "./operations";
@@ -144,10 +155,13 @@ const prepareSetReceivingAddressBody = z
 
 const prepareSetPolicyBody = z
   .object({
-    // SOL routine-class cap per calendar month, in lamports.
-    // Drives `disburse_routine` (auto-payouts).
+    // Asset the caps below apply to. Base58 mint; omitted = SOL. The set
+    // only touches this asset's budgets — other assets are preserved.
+    mint: z.string().min(32).optional(),
+    // Routine-class cap per calendar month, in the asset's base units
+    // (lamports for SOL, micro-USDC for USDC). Drives `disburse_routine`.
     routineBudgetLamports: z.number().int().min(0),
-    // SOL discretionary-class cap per calendar month, in lamports.
+    // Discretionary-class cap per calendar month, in the asset's base units.
     // Drives `disburse_discretionary` (manual operator-signed).
     discretionaryBudgetLamports: z.number().int().min(0),
   })
@@ -1703,9 +1717,16 @@ router.get(
       return;
     }
 
+    // Figures are read for the company's active payout asset.
+    const activeAsset =
+      findPayoutAssetByMint(company.payoutMint) ?? resolvePayoutAssets()[0];
+
     let state: Awaited<ReturnType<typeof fetchTreasuryState>>;
     try {
-      state = await fetchTreasuryState(new PublicKey(company.companyPda));
+      state = await fetchTreasuryState(
+        new PublicKey(company.companyPda),
+        activeAsset.mint,
+      );
     } catch (err) {
       log.error({ err, companyId }, "treasury state read failed");
       res
@@ -1717,9 +1738,16 @@ router.get(
     res.status(StatusCodes.OK).json({
       treasuryPda: state.treasuryPda,
       policyPda: state.policyPda,
+      // Active payout asset these figures are denominated in.
+      asset: activeAsset,
+      // Native SOL lamports on the treasury PDA — gas + ATA-rent headroom,
+      // shown regardless of the active asset.
       balanceLamports: state.balanceLamports,
+      // Active-asset balance in its base units (== balanceLamports for SOL).
+      assetBalance: state.assetBalance,
       initialized: state.initialized,
-      // bigint → string — JSON can't carry bigint, FE parses back.
+      // bigint → string — JSON can't carry bigint, FE parses back. Values are
+      // in `asset` base units (lamports for SOL, micro-USDC for USDC).
       routineBudgetLamports: state.routineBudgetLamports.toString(),
       routineSpentLamports: state.routineSpentLamports.toString(),
       discretionaryBudgetLamports: state.discretionaryBudgetLamports.toString(),
@@ -1767,24 +1795,45 @@ router.post(
     const operator = operatorOrFail(res);
     if (!operator) return;
 
+    // Asset being edited. Validate against the supported catalog so a
+    // stray mint can't write a budget no disbursement path could use.
+    const targetMint = parsed.data.mint ?? SOL_PSEUDO_MINT.toBase58();
+    if (!findPayoutAssetByMint(targetMint)) {
+      res
+        .status(StatusCodes.BAD_REQUEST)
+        .json({ error: ERROR_CODES.UNSUPPORTED_PAYOUT_ASSET });
+      return;
+    }
+
     const companyPda = new PublicKey(company.companyPda);
+
+    // set_policy REPLACES the whole budget vec on-chain. Read the current
+    // per-asset budgets and merge in only the target mint so other assets'
+    // caps survive the write.
+    const current = await fetchPolicyBudgetVecs(companyPda);
+    const mergeMint = (
+      vec: { mint: string; amount: bigint }[],
+      amount: number,
+    ): { mint: PublicKey; amount: bigint }[] => {
+      const kept = vec
+        .filter((b) => b.mint !== targetMint)
+        .map((b) => ({ mint: new PublicKey(b.mint), amount: b.amount }));
+      return [...kept, { mint: new PublicKey(targetMint), amount: BigInt(amount) }];
+    };
+
     const { instruction } = buildSetPolicyInstruction({
       companyPda,
       treasuryPda: deriveTreasuryPda(companyPda).pda,
       policyPda: derivePolicyPda(companyPda).pda,
       controllingAuthority: new PublicKey(req.user!.walletAddress),
-      routineBudgetPerMonth: [
-        {
-          mint: SOL_PSEUDO_MINT,
-          amount: BigInt(parsed.data.routineBudgetLamports),
-        },
-      ],
-      discretionaryBudgetPerMonth: [
-        {
-          mint: SOL_PSEUDO_MINT,
-          amount: BigInt(parsed.data.discretionaryBudgetLamports),
-        },
-      ],
+      routineBudgetPerMonth: mergeMint(
+        current.routine,
+        parsed.data.routineBudgetLamports,
+      ),
+      discretionaryBudgetPerMonth: mergeMint(
+        current.discretionary,
+        parsed.data.discretionaryBudgetLamports,
+      ),
     });
 
     let prepared: Awaited<ReturnType<typeof prepareOwnerSignedTx>>;
@@ -1858,6 +1907,90 @@ router.post(
   },
 );
 
+// ── Payout asset (multi-asset disbursement) ─────────────────────────────────
+
+/**
+ * GET /api/chain/companies/:companyId/payout-asset
+ *
+ * The closed set of assets this company may pay in (network-resolved mints)
+ * plus the one currently active. The web reads this to render the toggle and
+ * to format amounts — it never hardcodes a mint.
+ */
+router.get(
+  "/companies/:companyId/payout-asset",
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const userId = req.user!.userId;
+    const companyId = req.params.companyId;
+
+    const company = await findOwnedCompanyById({ userId, companyId });
+    if (!company) {
+      res
+        .status(StatusCodes.NOT_FOUND)
+        .json({ error: ERROR_CODES.COMPANY_NOT_FOUND });
+      return;
+    }
+
+    res.status(StatusCodes.OK).json({
+      assets: resolvePayoutAssets(),
+      activeMint: company.payoutMint,
+    });
+  },
+);
+
+/**
+ * PUT /api/chain/companies/:companyId/payout-asset
+ *
+ * Switch the company's active payout asset. DB-only — the treasury program
+ * is per-mint generic, so this only changes which mint NEW invoices snapshot.
+ * Invoices already accrued keep their own mint and stay payable in it.
+ */
+router.put(
+  "/companies/:companyId/payout-asset",
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const userId = req.user!.userId;
+    const companyId = req.params.companyId;
+
+    const parsed = z.object({ mint: z.string().min(32) }).safeParse(req.body);
+    if (!parsed.success) {
+      res.status(StatusCodes.BAD_REQUEST).json({
+        error: ERROR_CODES.INVALID_BODY,
+        detail: parsed.error.flatten(),
+      });
+      return;
+    }
+
+    const company = await findOwnedCompanyById({ userId, companyId });
+    if (!company) {
+      res
+        .status(StatusCodes.NOT_FOUND)
+        .json({ error: ERROR_CODES.COMPANY_NOT_FOUND });
+      return;
+    }
+
+    // Only mints in the supported catalog are accepted — guards against a
+    // typo'd or unsupported token that no treasury ATA would back.
+    const asset = findPayoutAssetByMint(parsed.data.mint);
+    if (!asset) {
+      res
+        .status(StatusCodes.BAD_REQUEST)
+        .json({ error: ERROR_CODES.UNSUPPORTED_PAYOUT_ASSET });
+      return;
+    }
+
+    const updated = await updateCompanyCore({
+      companyId,
+      patch: { payoutMint: asset.mint },
+    });
+
+    res.status(StatusCodes.OK).json({
+      activeMint: updated.payoutMint,
+      asset,
+    });
+  },
+);
+
 // ── Disbursements (Phase 1c-ii) ─────────────────────────────────────────────
 
 /**
@@ -1894,7 +2027,10 @@ router.get(
     let rentExemptMinLamports = 0;
     try {
       const conn = getConnection();
-      treasury = await fetchTreasuryState(new PublicKey(company.companyPda));
+      treasury = await fetchTreasuryState(
+        new PublicKey(company.companyPda),
+        company.payoutMint,
+      );
       // Rent-exempt floor that the TreasuryAccount must keep above. The
       // chain bails with `InsufficientFunds` (6025) if a disburse would
       // drop balance below this — FE needs the value to warn pre-flight.
@@ -1913,27 +2049,55 @@ router.get(
       log.warn({ err, companyId }, "treasury read failed during plan fetch");
     }
 
+    // Active payout asset; the gross owed in it drives the fee + balance
+    // warnings the UI shows. Older invoices in a different mint still appear
+    // under `payable`/`totalsByMint` so they aren't hidden, but the headline
+    // numbers track the active asset.
+    const activeMint = company.payoutMint;
+    const activeTotal = plan.totalsByMint[activeMint] ?? 0;
+
+    const activeAsset =
+      findPayoutAssetByMint(activeMint) ?? resolvePayoutAssets()[0];
+    const isSol = activeMint === activeAsset.mint && activeAsset.key === "SOL";
+
     const feeBps = treasury?.agentOperatingFeeBps ?? 0;
-    const estimatedFee = Math.floor((plan.totalLamports * feeBps) / 10_000);
+    const estimatedFee = Math.floor((activeTotal * feeBps) / 10_000);
     const balanceLamports = treasury?.balanceLamports ?? 0;
+    // Active-asset custodied balance: native SOL == balanceLamports, else the
+    // treasury ATA token amount. Coverage for the run is checked against this.
+    const assetBalance = treasury?.assetBalance ?? 0;
+    // SOL keeps a rent-exempt floor on the PDA; SPL coverage is the full ATA
+    // balance (the SOL rent floor doesn't apply to token balances).
     const usableBalanceLamports = Math.max(
       0,
       balanceLamports - rentExemptMinLamports,
     );
+    const usableAssetBalance = isSol ? usableBalanceLamports : assetBalance;
 
     res.status(StatusCodes.OK).json({
       payable: plan.payable.map((a) => ({
         deploymentId: a.deploymentId,
         agentName: a.agentName,
         receivingAddress: a.receivingAddress,
+        mint: a.mint,
         invoiceCount: a.invoiceIds.length,
         totalLamports: a.totalLamports,
       })),
       blocked: plan.blocked,
-      totalLamports: plan.totalLamports,
+      // Active asset for headline figures, plus the full per-mint breakdown.
+      payoutMint: activeMint,
+      asset: activeAsset,
+      totalsByMint: plan.totalsByMint,
+      totalLamports: activeTotal,
       estimatedFeeLamports: estimatedFee,
       feeBps,
+      // SOL native balance of the treasury PDA — gas + ATA rent source for
+      // every asset, shown regardless of active asset.
       treasuryBalanceLamports: balanceLamports,
+      // Active-asset custodied balance + the spendable amount after any rent
+      // floor; the UI's "can't cover this payout" check uses these.
+      treasuryAssetBalance: assetBalance,
+      usableAssetBalance,
       rentExemptMinLamports,
       usableBalanceLamports,
       budgetRemainingLamports: treasury
@@ -1999,17 +2163,31 @@ router.post(
 
     let instructions;
     try {
-      instructions = plan.payable.map(
-        (a) =>
-          buildDisburseDiscretionaryInstruction({
-            companyPda,
-            treasuryPda,
-            policyPda,
-            controllingAuthority,
-            deploymentPda: new PublicKey(a.deploymentPda),
-            destination: new PublicKey(a.receivingAddress),
-            amountLamports: BigInt(a.totalLamports),
-          }).instruction,
+      // One ix per (agent, mint) line. SOL lines use the native
+      // discretionary builder, SPL lines (e.g. USDC) the *_spl sibling —
+      // both signed by the owner wallet, who also pays rent for any ATA
+      // created on demand. A mixed-asset batch is valid in one tx.
+      instructions = plan.payable.map((a) =>
+        a.mint === SOL_PSEUDO_MINT.toBase58()
+          ? buildDisburseDiscretionaryInstruction({
+              companyPda,
+              treasuryPda,
+              policyPda,
+              controllingAuthority,
+              deploymentPda: new PublicKey(a.deploymentPda),
+              destination: new PublicKey(a.receivingAddress),
+              amountLamports: BigInt(a.totalLamports),
+            }).instruction
+          : buildDisburseDiscretionarySplInstruction({
+              companyPda,
+              treasuryPda,
+              policyPda,
+              controllingAuthority,
+              deploymentPda: new PublicKey(a.deploymentPda),
+              destination: new PublicKey(a.receivingAddress),
+              amount: BigInt(a.totalLamports),
+              mint: new PublicKey(a.mint),
+            }).instruction,
       );
     } catch (err) {
       log.error({ err, companyId }, "disbursement ix build failed");

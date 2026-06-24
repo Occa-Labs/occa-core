@@ -15,10 +15,14 @@ import {
 } from "lucide-react";
 import { useSignTransaction as useSolanaSignTransaction } from "@privy-io/react-auth/solana";
 import type { CompanyDTO } from "@occa/shared/types";
+import {
+  formatAssetAmount,
+  SOL_PSEUDO_MINT_BASE58 as SOL_PSEUDO_MINT_MARKER,
+} from "@occa/shared/payout-assets";
 import { Card } from "@/components/ui/card";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { ApiError, chainApi } from "@/lib/api";
+import { ApiError, chainApi, type PayoutAsset } from "@/lib/api";
 import { SOLANA_CAIP_CHAIN } from "@/lib/env-flags";
 import { useAnchorWallet } from "@/features/chain/hooks/use-anchor-wallet";
 import {
@@ -54,6 +58,12 @@ function lamportsToSol(lamports: bigint | number): string {
     minimumFractionDigits: 0,
     maximumFractionDigits: 6,
   });
+}
+
+// Format a base-unit amount in the active payout asset, e.g. "12.5 USDC".
+function fmtAsset(baseUnits: bigint | number, asset: PayoutAsset): string {
+  const n = typeof baseUnits === "bigint" ? Number(baseUnits) : baseUnits;
+  return `${formatAssetAmount(n, asset.decimals)} ${asset.symbol}`;
 }
 
 function toBytes(base64: string): Uint8Array {
@@ -128,14 +138,22 @@ export function TreasuryPane({ company }: { company: CompanyDTO }) {
 
   return (
     <div className="space-y-4">
+      <PayoutAssetToggle
+        companyId={company.id}
+        activeMint={t.asset.mint}
+        onSwitched={() => treasury.refetch()}
+      />
       <TreasuryBalanceCard
         treasuryPda={t.treasuryPda}
+        asset={t.asset}
+        assetBalance={t.assetBalance}
         balanceLamports={t.balanceLamports}
         onRefresh={() => treasury.refetch()}
       />
       <DiscretionaryBudgetCard
         companyId={company.id}
         policyPda={t.policyPda}
+        asset={t.asset}
         routineBudgetLamports={BigInt(t.routineBudgetLamports)}
         routineSpentLamports={BigInt(t.routineSpentLamports)}
         budgetLamports={BigInt(t.discretionaryBudgetLamports)}
@@ -149,18 +167,135 @@ export function TreasuryPane({ company }: { company: CompanyDTO }) {
   );
 }
 
+// ── Payout asset toggle ────────────────────────────────────────────────────
+
+function PayoutAssetToggle({
+  companyId,
+  activeMint,
+  onSwitched,
+}: {
+  companyId: string;
+  activeMint: string;
+  onSwitched: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const assets = useQuery({
+    queryKey: ["payout-asset", companyId],
+    queryFn: () => chainApi.getPayoutAsset(companyId),
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
+  const [switching, setSwitching] = useState<string | null>(null);
+  const [error, setError] = useState(false);
+
+  const active = assets.data?.activeMint ?? activeMint;
+  const isUsdc = active !== SOL_PSEUDO_MINT_MARKER;
+
+  const handleSwitch = useCallback(
+    async (mint: string) => {
+      if (mint === active || switching) return;
+      setSwitching(mint);
+      setError(false);
+      try {
+        await chainApi.setPayoutAsset(companyId, mint);
+        await queryClient.invalidateQueries({
+          queryKey: ["payout-asset", companyId],
+        });
+        // Treasury figures + pending plan are now denominated differently.
+        await queryClient.invalidateQueries({
+          queryKey: treasuryKeys.disbursements(companyId),
+        });
+        onSwitched();
+      } catch {
+        setError(true);
+      } finally {
+        setSwitching(null);
+      }
+    },
+    [active, switching, companyId, queryClient, onSwitched],
+  );
+
+  const options = assets.data?.assets ?? [];
+
+  return (
+    <Card padding="lg">
+      <div className="flex items-center gap-1.5 text-[10.5px] font-semibold uppercase tracking-wider text-white/40">
+        <Coins className="size-3.5 text-white/55" />
+        Payout asset
+      </div>
+
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        {options.map((opt) => {
+          const selected = opt.mint === active;
+          const busy = switching === opt.mint;
+          return (
+            <button
+              key={opt.mint}
+              type="button"
+              onClick={() => handleSwitch(opt.mint)}
+              disabled={!!switching}
+              className={`flex flex-col items-start gap-0.5 rounded-lg px-3 py-2.5 ring-1 ring-inset transition-colors cursor-pointer disabled:opacity-60 ${
+                selected
+                  ? "bg-white/10 ring-white/30"
+                  : "bg-white/3 ring-white/10 hover:bg-white/6"
+              }`}
+            >
+              <span className="flex items-center gap-1.5 text-sm font-semibold text-white/90">
+                {busy ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <span
+                    className={`size-2 rounded-full ${selected ? "bg-emerald-400" : "bg-white/20"}`}
+                  />
+                )}
+                {opt.symbol}
+              </span>
+              <span className="text-[10px] text-white/40">
+                {opt.key === "SOL" ? "native" : "SPL token"}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      <p className="mt-3 text-[11px] text-white/40 leading-relaxed">
+        New invoices are denominated in the selected asset. Invoices already
+        accrued keep the asset they were created in and stay payable in it.
+      </p>
+
+      {isUsdc && (
+        <p className="mt-2 text-[11px] text-amber-100/80 leading-relaxed">
+          The operator must hold a little SOL for first-payout ATA rent
+          (~0.002 SOL per new agent), on top of tx fees.
+        </p>
+      )}
+
+      {error && (
+        <p className="mt-2 text-[11px] text-red-300">
+          Couldn&apos;t switch payout asset. Try again.
+        </p>
+      )}
+    </Card>
+  );
+}
+
 // ── Balance + funding ──────────────────────────────────────────────────────
 
 function TreasuryBalanceCard({
   treasuryPda,
+  asset,
+  assetBalance,
   balanceLamports,
   onRefresh,
 }: {
   treasuryPda: string;
+  asset: PayoutAsset;
+  assetBalance: number;
   balanceLamports: number;
   onRefresh: () => void;
 }) {
   const [copied, setCopied] = useState(false);
+  const isUsdc = asset.key !== "SOL";
 
   const handleCopy = useCallback(async () => {
     try {
@@ -191,10 +326,18 @@ function TreasuryBalanceCard({
 
       <div className="flex items-baseline gap-2">
         <span className="text-4xl font-bold tracking-tight text-white tabular-nums">
-          {lamportsToSol(balanceLamports)}
+          {formatAssetAmount(assetBalance, asset.decimals)}
         </span>
-        <span className="text-sm font-medium text-white/40">SOL</span>
+        <span className="text-sm font-medium text-white/40">
+          {asset.symbol}
+        </span>
       </div>
+
+      {isUsdc && (
+        <div className="mt-1.5 text-[11px] text-white/40">
+          + {lamportsToSol(balanceLamports)} SOL for gas and ATA rent
+        </div>
+      )}
 
       <div className="mt-4 flex items-center gap-1.5">
         <code className="text-[11px] font-mono text-white/65 bg-white/5 px-2 py-1 rounded-md select-all">
@@ -224,8 +367,9 @@ function TreasuryBalanceCard({
       </div>
 
       <p className="mt-3 text-[11px] text-white/40 leading-relaxed">
-        To fund the treasury, send devnet SOL to this address from any
-        wallet. Disbursements to agents draw from this balance.
+        {isUsdc
+          ? `To fund the treasury, send ${asset.symbol} to this address' associated token account, and keep a little SOL here for gas and ATA rent. Disbursements to agents draw from this balance.`
+          : "To fund the treasury, send devnet SOL to this address from any wallet. Disbursements to agents draw from this balance."}
       </p>
     </Card>
   );
@@ -244,6 +388,7 @@ type SaveStage =
 function DiscretionaryBudgetCard({
   companyId,
   policyPda,
+  asset,
   routineBudgetLamports,
   routineSpentLamports,
   budgetLamports,
@@ -253,6 +398,7 @@ function DiscretionaryBudgetCard({
 }: {
   companyId: string;
   policyPda: string;
+  asset: PayoutAsset;
   routineBudgetLamports: bigint;
   routineSpentLamports: bigint;
   budgetLamports: bigint;
@@ -260,6 +406,8 @@ function DiscretionaryBudgetCard({
   feeBps: number;
   onSaved: () => void;
 }) {
+  // Budgets are read + written in the company's active payout asset. set_policy
+  // merges only this asset's caps on-chain, so other assets' budgets survive.
   const [editing, setEditing] = useState(false);
   const [routineInput, setRoutineInput] = useState("");
   const [discretionaryInput, setDiscretionaryInput] = useState("");
@@ -276,21 +424,22 @@ function DiscretionaryBudgetCard({
   const hasBudget =
     budgetLamports > ZERO || routineBudgetLamports > ZERO;
 
+  // Base units per whole token for the active asset (1e9 SOL, 1e6 USDC).
+  const perUnit = 10 ** asset.decimals;
+
   const startEdit = useCallback(() => {
     setRoutineInput(
       routineBudgetLamports > ZERO
-        ? String(Number(routineBudgetLamports) / LAMPORTS_PER_SOL)
+        ? String(Number(routineBudgetLamports) / perUnit)
         : "",
     );
     setDiscretionaryInput(
-      budgetLamports > ZERO
-        ? String(Number(budgetLamports) / LAMPORTS_PER_SOL)
-        : "",
+      budgetLamports > ZERO ? String(Number(budgetLamports) / perUnit) : "",
     );
     setErrorCode(null);
     setStage("idle");
     setEditing(true);
-  }, [routineBudgetLamports, budgetLamports]);
+  }, [routineBudgetLamports, budgetLamports, perUnit]);
 
   const handleSave = useCallback(async () => {
     const routineN = Number(routineInput.trim());
@@ -318,16 +467,15 @@ function DiscretionaryBudgetCard({
       return;
     }
 
-    const routineLamports = Math.round(routineN * LAMPORTS_PER_SOL);
-    const discretionaryLamports = Math.round(
-      discretionaryN * LAMPORTS_PER_SOL,
-    );
+    const routineBase = Math.round(routineN * perUnit);
+    const discretionaryBase = Math.round(discretionaryN * perUnit);
     setStage("preparing");
     setErrorCode(null);
     try {
       const prep = await chainApi.prepareSetPolicy(companyId, {
-        routineBudgetLamports: routineLamports,
-        discretionaryBudgetLamports: discretionaryLamports,
+        mint: asset.mint,
+        routineBudgetLamports: routineBase,
+        discretionaryBudgetLamports: discretionaryBase,
       });
 
       setStage("awaiting-signature");
@@ -372,6 +520,8 @@ function DiscretionaryBudgetCard({
     companyId,
     signTransaction,
     onSaved,
+    asset.mint,
+    perUnit,
   ]);
 
   const busy =
@@ -404,6 +554,7 @@ function DiscretionaryBudgetCard({
             <BudgetInput
               label="Auto-payouts cap"
               hint="OCCA operator signs up to this per month"
+              unit={asset.symbol}
               value={routineInput}
               onChange={setRoutineInput}
               disabled={busy || stage === "done"}
@@ -412,6 +563,7 @@ function DiscretionaryBudgetCard({
             <BudgetInput
               label="Manual payouts cap"
               hint="You sign each payout via wallet popup"
+              unit={asset.symbol}
               value={discretionaryInput}
               onChange={setDiscretionaryInput}
               disabled={busy || stage === "done"}
@@ -467,8 +619,8 @@ function DiscretionaryBudgetCard({
             <div className="rounded-lg bg-amber-500/10 border border-amber-400/25 px-3 py-2.5 text-[11px] text-amber-100 leading-relaxed">
               <strong className="font-semibold">Budgets out of sync.</strong>{" "}
               On-chain auto-payout cap is{" "}
-              {lamportsToSol(routineBudgetLamports)} SOL, manual cap is{" "}
-              {lamportsToSol(budgetLamports)} SOL. Click{" "}
+              {fmtAsset(routineBudgetLamports, asset)}, manual cap is{" "}
+              {fmtAsset(budgetLamports, asset)}. Click{" "}
               <strong>Change → Save</strong> again to align both. Run
               routine payout will revert until they match.
             </div>
@@ -481,12 +633,13 @@ function DiscretionaryBudgetCard({
               </p>
               <div className="flex items-baseline gap-1">
                 <span className="text-lg font-semibold tabular-nums text-white/90">
-                  {lamportsToSol(routineBudgetLamports)}
+                  {formatAssetAmount(Number(routineBudgetLamports), asset.decimals)}
                 </span>
-                <span className="text-[11px] text-white/40">SOL</span>
+                <span className="text-[11px] text-white/40">{asset.symbol}</span>
               </div>
               <p className="text-[10px] text-white/40 mt-0.5">
-                {lamportsToSol(routineSpentLamports)} used this month
+                {formatAssetAmount(Number(routineSpentLamports), asset.decimals)}{" "}
+                used this month
               </p>
             </div>
             <div className="rounded-lg bg-white/3 px-3 py-2.5">
@@ -495,12 +648,13 @@ function DiscretionaryBudgetCard({
               </p>
               <div className="flex items-baseline gap-1">
                 <span className="text-lg font-semibold tabular-nums text-white/90">
-                  {lamportsToSol(budgetLamports)}
+                  {formatAssetAmount(Number(budgetLamports), asset.decimals)}
                 </span>
-                <span className="text-[11px] text-white/40">SOL</span>
+                <span className="text-[11px] text-white/40">{asset.symbol}</span>
               </div>
               <p className="text-[10px] text-white/40 mt-0.5">
-                {lamportsToSol(spentLamports)} used this month
+                {formatAssetAmount(Number(spentLamports), asset.decimals)} used
+                this month
               </p>
             </div>
           </div>
@@ -551,6 +705,7 @@ function DiscretionaryBudgetCard({
 function BudgetInput({
   label,
   hint,
+  unit,
   value,
   onChange,
   disabled,
@@ -558,6 +713,7 @@ function BudgetInput({
 }: {
   label: string;
   hint: string;
+  unit: string;
   value: string;
   onChange: (next: string) => void;
   disabled: boolean;
@@ -580,7 +736,7 @@ function BudgetInput({
           className="w-full bg-white/5 ring-1 ring-inset ring-white/12 focus:ring-white/30 rounded-lg pl-2.5 pr-12 py-2 text-xs font-mono text-white/90 placeholder-white/25 outline-none disabled:opacity-50"
         />
         <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[11px] text-white/35 font-medium">
-          SOL
+          {unit}
         </span>
       </div>
       <p className="text-[10.5px] text-white/35 leading-snug">{hint}</p>
@@ -639,12 +795,21 @@ function PendingDisbursementsCard({
   }
 
   const d = plan.data;
+  // Per-line asset: a line is either SOL or the active SPL asset. The catalog
+  // has a single SPL asset (USDC), so a non-SOL line resolves to it even when
+  // the company has since switched the active asset back to SOL.
+  const lineAsset = (mint: string): PayoutAsset =>
+    mint === SOL_PSEUDO_MINT_MARKER
+      ? { key: "SOL", symbol: "SOL", decimals: 9, mint }
+      : d.asset.key !== "SOL"
+        ? d.asset
+        : { key: "USDC", symbol: "USDC", decimals: 6, mint };
+
   const grossNeeded = d.totalLamports + d.estimatedFeeLamports;
-  // Compare against usable balance (raw minus rent-exempt floor).
-  // Chain reverts InsufficientFunds (6025) when a payout drops the
-  // Treasury PDA below the rent-exempt minimum, even if raw balance
-  // covers the gross.
-  const insufficientBalance = d.usableBalanceLamports < grossNeeded;
+  // Coverage is checked in the ACTIVE asset against its spendable balance.
+  // For SOL that's balance minus the rent-exempt floor (chain reverts
+  // InsufficientFunds 6025 below it); for SPL it's the full ATA balance.
+  const insufficientBalance = d.usableAssetBalance < grossNeeded;
   const nothingPayable = d.payable.length === 0;
 
   return (
@@ -670,8 +835,10 @@ function PendingDisbursementsCard({
                 </span>
               </div>
               <span className="text-xs font-semibold text-white/90 tabular-nums shrink-0">
-                {lamportsToSol(a.totalLamports)}{" "}
-                <span className="text-white/40 font-normal">SOL</span>
+                {formatAssetAmount(a.totalLamports, lineAsset(a.mint).decimals)}{" "}
+                <span className="text-white/40 font-normal">
+                  {lineAsset(a.mint).symbol}
+                </span>
               </span>
             </div>
           ))}
@@ -692,17 +859,17 @@ function PendingDisbursementsCard({
             </div>
           ))}
 
-          {/* Totals */}
+          {/* Totals — denominated in the active payout asset. */}
           {!nothingPayable && (
             <div className="pt-2 border-t border-white/6 space-y-1 text-[11px]">
-              <Row label="To agents" value={`${lamportsToSol(d.totalLamports)} SOL`} />
+              <Row label="To agents" value={fmtAsset(d.totalLamports, d.asset)} />
               <Row
                 label={`Operating fee (${(d.feeBps / 100).toFixed(d.feeBps % 100 === 0 ? 0 : 2)}%)`}
-                value={`${lamportsToSol(d.estimatedFeeLamports)} SOL`}
+                value={fmtAsset(d.estimatedFeeLamports, d.asset)}
               />
               <Row
                 label="Total from treasury"
-                value={`${lamportsToSol(grossNeeded)} SOL`}
+                value={fmtAsset(grossNeeded, d.asset)}
                 emphasis
               />
             </div>
@@ -710,15 +877,25 @@ function PendingDisbursementsCard({
 
           {insufficientBalance && !nothingPayable && (
             <Alert variant="warning">
-              <p>
-                <strong>Treasury can&apos;t cover this payout.</strong>{" "}
-                Balance is {lamportsToSol(d.treasuryBalanceLamports)} SOL but
-                only {lamportsToSol(d.usableBalanceLamports)} SOL is usable
-                (Solana protects{" "}
-                {lamportsToSol(d.rentExemptMinLamports)} SOL rent-exempt
-                minimum). Need {lamportsToSol(grossNeeded)} SOL. Top up the
-                treasury before running.
-              </p>
+              {d.asset.key === "SOL" ? (
+                <p>
+                  <strong>Treasury can&apos;t cover this payout.</strong>{" "}
+                  Balance is {lamportsToSol(d.treasuryBalanceLamports)} SOL but
+                  only {lamportsToSol(d.usableBalanceLamports)} SOL is usable
+                  (Solana protects{" "}
+                  {lamportsToSol(d.rentExemptMinLamports)} SOL rent-exempt
+                  minimum). Need {lamportsToSol(grossNeeded)} SOL. Top up the
+                  treasury before running.
+                </p>
+              ) : (
+                <p>
+                  <strong>Treasury can&apos;t cover this payout.</strong>{" "}
+                  {d.asset.symbol} balance is{" "}
+                  {fmtAsset(d.treasuryAssetBalance, d.asset)} but this run needs{" "}
+                  {fmtAsset(grossNeeded, d.asset)}. Send more {d.asset.symbol} to
+                  the treasury before running.
+                </p>
+              )}
             </Alert>
           )}
 

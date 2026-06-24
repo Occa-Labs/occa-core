@@ -354,7 +354,7 @@ function TreasurySection({ company }: { company: CompanyDTO }) {
     <div>
       <SectionHeader
         title="Treasury"
-        desc="Company SOL balance, monthly disbursement budget, Operating Fee, and operations setup."
+        desc="Company balance, monthly disbursement budget, Operating Fee, and operations setup."
       />
       <TreasuryPane company={company} />
     </div>

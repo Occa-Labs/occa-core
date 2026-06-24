@@ -36,6 +36,15 @@ const envSchema = z.object({
   // anonymous access is rate-limited but functional in dev.
   GITHUB_TOKEN: z.string().min(1).optional(),
 
+  // SPL mint backing the "USDC" payout asset. Network-specific — defaults to
+  // Circle's devnet USDC; set the mainnet USDC mint when cutting over. The
+  // payout-asset toggle flips a company between SOL and this mint; operators
+  // never type a raw mint address.
+  OCCA_USDC_MINT: z
+    .string()
+    .min(32)
+    .default("4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"),
+
   // Gateway SSH access (only used by the dev/ops route — not core path).
   OCCA_GATEWAY_SSH_HOST: z.string().optional(),
   OCCA_GATEWAY_SSH_USER: z.string().optional(),

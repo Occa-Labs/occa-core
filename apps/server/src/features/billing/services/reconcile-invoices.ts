@@ -14,20 +14,32 @@
 // A scheduled company-wide sweep folds into the Phase 1c treasury bot.
 
 import { and, eq, isNull } from "drizzle-orm";
-import { agentRuntimeProfile, invoices, tasks } from "@occa/shared/schema";
+import { SOL_PSEUDO_MINT } from "@occa/sdk";
+import {
+  agentRuntimeProfile,
+  companies,
+  deployments,
+  invoices,
+  tasks,
+} from "@occa/shared/schema";
 import { db } from "../../../infra/database/client";
 import { childLogger } from "../../../lib/logger";
 import { createInvoiceForTask } from "../repositories/invoices";
 
 const log = childLogger("services:reconcile-invoices");
 
+const SOL_MINT = SOL_PSEUDO_MINT.toBase58();
+
 /**
- * Back-fill missing invoices for one agent. Reads the agent's current
- * `task_rate_lamports`; if set (> 0), every `done` task assigned to the
- * agent that lacks an invoice gets one created at that rate.
+ * Back-fill missing invoices for one agent. Reads the agent's rate in the
+ * company's active payout asset (`task_rate_lamports` for SOL,
+ * `task_rate_usdc` for an SPL mint); if set (> 0), every `done` task
+ * assigned to the agent that lacks an invoice gets one created at that rate,
+ * denominated in (and snapshotting) the active mint.
  *
  * Returns the number of invoices created. No-ops (returns 0) when the
- * agent has no rate — an unrated agent's completed work is not billed.
+ * agent has no rate in the active asset — an unrated agent's completed work
+ * is not billed.
  *
  * Idempotent: `createInvoiceForTask` is guarded by the `uniq_invoices_task`
  * index, so concurrent reconciles (rate-set + view-open racing) can't
@@ -36,13 +48,25 @@ const log = childLogger("services:reconcile-invoices");
 export async function reconcileInvoicesForDeployment(
   deploymentId: string,
 ): Promise<number> {
+  // The deployment belongs to one company, so its active payout mint is a
+  // single value — read it alongside the agent's per-asset rates.
   const [profile] = await db
-    .select({ taskRateLamports: agentRuntimeProfile.taskRateLamports })
+    .select({
+      taskRateLamports: agentRuntimeProfile.taskRateLamports,
+      taskRateUsdc: agentRuntimeProfile.taskRateUsdc,
+      payoutMint: companies.payoutMint,
+    })
     .from(agentRuntimeProfile)
+    .innerJoin(deployments, eq(agentRuntimeProfile.deploymentId, deployments.id))
+    .innerJoin(companies, eq(deployments.companyId, companies.id))
     .where(eq(agentRuntimeProfile.deploymentId, deploymentId))
     .limit(1);
 
-  const rate = profile?.taskRateLamports ?? null;
+  const mint = profile?.payoutMint ?? SOL_MINT;
+  const rate =
+    mint === SOL_MINT
+      ? (profile?.taskRateLamports ?? null)
+      : (profile?.taskRateUsdc ?? null);
   if (rate === null || rate <= 0) return 0;
 
   // `done` tasks assigned to this agent with no invoice row. LEFT JOIN +
@@ -66,6 +90,7 @@ export async function reconcileInvoicesForDeployment(
       deploymentId,
       taskId: orphan.taskId,
       amountLamports: rate,
+      mint,
     });
     if (invoice) created += 1;
   }

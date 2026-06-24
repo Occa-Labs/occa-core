@@ -336,6 +336,7 @@ router.get(
       invoices: rows.map((r) => ({
         id: r.id,
         amountLamports: r.amountLamports,
+        mint: r.mint,
         status: r.status,
         taskId: r.taskId,
         taskTitle: r.taskTitle,

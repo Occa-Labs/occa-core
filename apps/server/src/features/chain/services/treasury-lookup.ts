@@ -10,6 +10,7 @@ import {
   TREASURY_ACCOUNT_DISCRIMINATOR,
   TREASURY_PROGRAM_ID,
   SOL_PSEUDO_MINT,
+  deriveAssociatedTokenAddress,
   deriveTreasuryPda,
   derivePolicyPda,
 } from "@occa/sdk";
@@ -17,6 +18,8 @@ import { getConnection } from "../../../infra/solana/connection";
 import { childLogger } from "../../../lib/logger";
 
 const log = childLogger("chain:treasury-lookup");
+
+const SOL_MINT = SOL_PSEUDO_MINT.toBase58();
 
 // Borsh cursor — treasury accounts have variable-length vecs so fixed
 // offsets don't work past the first one; sequence-read instead.
@@ -80,41 +83,107 @@ function readAssetBudget(c: Cursor): AssetBudget {
   return { mint: c.readPubkey().toBase58(), amount: c.readU64() };
 }
 
-// SOL entry from a Vec<AssetBudget> — the marker mint is the all-zero
-// pseudo-mint. Returns 0n when the asset isn't present.
-function solAmount(budgets: AssetBudget[]): bigint {
-  const sol = SOL_PSEUDO_MINT.toBase58();
-  return budgets.find((b) => b.mint === sol)?.amount ?? 0n;
+// Amount for a specific mint from a Vec<AssetBudget>. SOL uses the all-zero
+// pseudo-mint marker. Returns 0n when the asset isn't present (no budget set
+// for it yet).
+function amountForMint(budgets: AssetBudget[], mint: string): bigint {
+  return budgets.find((b) => b.mint === mint)?.amount ?? 0n;
 }
 
 export interface TreasuryState {
   treasuryPda: string;
   policyPda: string;
-  /** Lamports custodied on the TreasuryAccount PDA (SOL balance). */
+  /** The asset all the budget/spent/assetBalance figures below are for —
+   *  base58 mint, all-zero pseudo-mint for SOL. */
+  mint: string;
+  /** Native SOL lamports on the TreasuryAccount PDA. Always the SOL balance
+   *  regardless of `mint` — it's the gas + ATA-rent source for every asset. */
   balanceLamports: number;
+  /** Custodied balance of `mint` in its base units. For SOL this equals
+   *  `balanceLamports`; for an SPL mint it's the treasury ATA token amount. */
+  assetBalance: number;
   /** True once `init_treasury` has run (TreasuryAccount exists on chain). */
   initialized: boolean;
-  /** SOL routine budget for the current calendar month, lamports. Used by
-   *  `disburse_routine` (auto-payouts). */
+  /** Routine budget of `mint` for the current calendar month, base units.
+   *  Used by `disburse_routine` (auto-payouts). */
   routineBudgetLamports: bigint;
-  /** SOL routine spend so far this period, lamports. */
+  /** Routine spend so far this period, base units of `mint`. */
   routineSpentLamports: bigint;
-  /** SOL discretionary budget for the current calendar month, lamports.
-   *  Used by `disburse_discretionary` (operator-signed ad-hoc). */
+  /** Discretionary budget of `mint` for the current calendar month, base
+   *  units. Used by `disburse_discretionary` (operator-signed ad-hoc). */
   discretionaryBudgetLamports: bigint;
-  /** SOL discretionary spend so far this period, lamports. */
+  /** Discretionary spend so far this period, base units of `mint`. */
   discretionarySpentLamports: bigint;
-  /** Agent Operating Fee in basis points (300 = 3%). */
+  /** Agent Operating Fee in basis points (300 = 3%). Asset-agnostic. */
   agentOperatingFeeBps: number;
 }
 
 /**
- * Fetch + decode a company's TreasuryAccount + PolicyAccount. Returns
- * `initialized: false` (with zeroed fields) when the treasury PDA has no
- * account yet — e.g. a company anchored before the CPI-init flow.
+ * Read the treasury's custodied balance of an SPL mint — the token amount in
+ * the treasury PDA's associated token account. Returns 0 when the ATA does
+ * not exist yet (nothing funded into that asset). Never throws.
+ */
+async function fetchTreasuryTokenBalance(
+  treasuryPda: PublicKey,
+  mint: string,
+): Promise<number> {
+  try {
+    const conn = getConnection();
+    const ata = deriveAssociatedTokenAddress(treasuryPda, new PublicKey(mint));
+    const bal = await conn.getTokenAccountBalance(ata, "confirmed");
+    return Number(bal.value.amount);
+  } catch {
+    // Missing ATA / unfunded asset — treat as zero balance.
+    return 0;
+  }
+}
+
+/**
+ * Read a company's FULL per-asset budget vecs from the PolicyAccount —
+ * every mint, not just one. Needed before `set_policy`, which REPLACES the
+ * whole vec on-chain: to change one asset's budget without wiping the
+ * others, the caller merges the target mint into these and resends all.
+ * Returns empty vecs when the policy isn't initialized or can't be decoded.
+ */
+export async function fetchPolicyBudgetVecs(
+  companyPda: PublicKey,
+): Promise<{ routine: AssetBudget[]; discretionary: AssetBudget[] }> {
+  const conn = getConnection();
+  const policyPda = derivePolicyPda(companyPda).pda;
+  const policyInfo = await conn.getAccountInfo(policyPda, "confirmed");
+  const empty = { routine: [], discretionary: [] };
+  if (
+    !policyInfo ||
+    !policyInfo.owner.equals(TREASURY_PROGRAM_ID) ||
+    !policyInfo.data.subarray(0, 8).equals(TREASURY_ACCOUNT_DISCRIMINATOR.PolicyAccount)
+  ) {
+    return empty;
+  }
+  try {
+    const c = new Cursor(policyInfo.data, 8);
+    c.skip(1); // version
+    c.skip(32); // company
+    const routine = c.readVec(() => readAssetBudget(c));
+    const discretionary = c.readVec(() => readAssetBudget(c));
+    return { routine, discretionary };
+  } catch (err) {
+    log.error(
+      { err, policyPda: policyPda.toBase58() },
+      "fetchPolicyBudgetVecs: decode failed",
+    );
+    return empty;
+  }
+}
+
+/**
+ * Fetch + decode a company's TreasuryAccount + PolicyAccount for one payout
+ * asset. `mint` defaults to SOL (back-compat with all existing callers).
+ * Returns `initialized: false` (with zeroed fields) when the treasury PDA has
+ * no account yet — e.g. a company anchored before the CPI-init flow.
  */
 export async function fetchTreasuryState(
   companyPda: PublicKey,
+  mint: string = SOL_MINT,
 ): Promise<TreasuryState> {
   const conn = getConnection();
   const treasuryPda = deriveTreasuryPda(companyPda).pda;
@@ -125,10 +194,19 @@ export async function fetchTreasuryState(
     "confirmed",
   );
 
+  const solBalance = treasuryInfo?.lamports ?? 0;
+  // Active-asset balance: native lamports for SOL, ATA token amount for SPL.
+  const assetBalance =
+    mint === SOL_MINT
+      ? solBalance
+      : await fetchTreasuryTokenBalance(treasuryPda, mint);
+
   const base = {
     treasuryPda: treasuryPda.toBase58(),
     policyPda: policyPda.toBase58(),
-    balanceLamports: treasuryInfo?.lamports ?? 0,
+    mint,
+    balanceLamports: solBalance,
+    assetBalance,
   };
 
   if (
@@ -195,10 +273,10 @@ export async function fetchTreasuryState(
     return {
       ...base,
       initialized: true,
-      routineBudgetLamports: solAmount(routineBudget),
-      routineSpentLamports: solAmount(routineSpent),
-      discretionaryBudgetLamports: solAmount(discretionaryBudget),
-      discretionarySpentLamports: solAmount(discretionarySpent),
+      routineBudgetLamports: amountForMint(routineBudget, mint),
+      routineSpentLamports: amountForMint(routineSpent, mint),
+      discretionaryBudgetLamports: amountForMint(discretionaryBudget, mint),
+      discretionarySpentLamports: amountForMint(discretionarySpent, mint),
       agentOperatingFeeBps: feeBps,
     };
   } catch (err) {

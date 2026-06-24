@@ -901,6 +901,9 @@ router.patch("/:id", requireAuth, async (req: Request, res: Response) => {
   if (parsed.data.taskRateLamports !== undefined) {
     profilePatch.taskRateLamports = parsed.data.taskRateLamports;
   }
+  if (parsed.data.taskRateUsdc !== undefined) {
+    profilePatch.taskRateUsdc = parsed.data.taskRateUsdc;
+  }
 
   const noop =
     Object.keys(identityPatch).length === 0 &&
@@ -959,11 +962,11 @@ router.patch("/:id", requireAuth, async (req: Request, res: Response) => {
   // Phase 1b-ii: setting a task rate back-fills invoices for any `done`
   // tasks this agent finished before the rate existed. Fire-and-forget —
   // the response already went out; reconcile self-heals the invoice set.
-  if (
-    parsed.data.taskRateLamports !== undefined &&
-    parsed.data.taskRateLamports !== null &&
-    parsed.data.taskRateLamports > 0
-  ) {
+  // Reconcile reads the company's active asset and picks the matching rate,
+  // so either rate field being set (and positive) should trigger it.
+  const rateSet = (v: number | null | undefined) =>
+    v !== undefined && v !== null && v > 0;
+  if (rateSet(parsed.data.taskRateLamports) || rateSet(parsed.data.taskRateUsdc)) {
     void reconcileInvoicesForDeployment(existing.id).catch((err) => {
       req.log.error(
         { err, agentId: existing.id },

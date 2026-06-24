@@ -64,6 +64,9 @@ export type InvoiceStatus = "pending" | "approved" | "paid" | "void";
 export interface AgentInvoice {
   id: string;
   amountLamports: number;
+  /** Payout asset mint this invoice settles in — SOL pseudo-mint or an SPL
+   *  mint. Frozen at creation; format the amount by this, not always SOL. */
+  mint: string;
   status: InvoiceStatus;
   taskId: string | null;
   /** Originating task's title — null if the task was deleted. */

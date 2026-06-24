@@ -13,6 +13,7 @@
 // until 24h pass.
 
 import { and, desc, eq, gte, isNotNull, isNull } from "drizzle-orm";
+import { SOL_PSEUDO_MINT } from "@occa/sdk";
 import { companies, notifications } from "@occa/shared/schema";
 import { db } from "../../../infra/database/client";
 import { childLogger } from "../../../lib/logger";
@@ -20,6 +21,8 @@ import { emitNotification } from "../../notifications/services/emit";
 import { buildDisbursementPlan } from "./disbursement";
 
 const log = childLogger("services:treasury-readiness");
+
+const SOL_MINT = SOL_PSEUDO_MINT.toBase58();
 
 const DEDUPE_WINDOW_MS = 24 * 60 * 60 * 1000;
 
@@ -71,15 +74,20 @@ export async function scanTreasuryReadiness(): Promise<ScanSummary> {
         summary.skippedDeduped += 1;
         continue;
       }
+      // SOL portion of the payable gross — drives the headline figure when
+      // present. Mixed/SPL-only companies render a count-only body since a
+      // single SOL number can't represent multiple assets.
+      const solLamports = plan.totalsByMint[SOL_MINT] ?? 0;
       await emitNotification({
         companyId: company.id,
         userId: company.ownerUserId,
         kind: "treasury_readiness",
         title: titleFor(plan.payable.length, plan.blocked.length),
-        body: bodyFor(plan.payable.length, plan.totalLamports, plan.blocked.length),
+        body: bodyFor(plan.payable.length, solLamports, plan.blocked.length),
         payload: {
           payableAgents: plan.payable.length,
-          payableLamports: plan.totalLamports,
+          payableLamports: solLamports,
+          totalsByMint: plan.totalsByMint,
           blockedAgents: plan.blocked.length,
         },
         link: "chain:treasury",
@@ -120,13 +128,16 @@ function titleFor(payable: number, blocked: number): string {
 
 function bodyFor(
   payable: number,
-  totalLamports: number,
+  solLamports: number,
   blocked: number,
 ): string {
-  const sol = (totalLamports / 1_000_000_000).toFixed(4);
+  // Show the SOL figure only when there's a SOL portion; an SPL-only batch
+  // would otherwise read a misleading "0.0000 SOL".
+  const amountPrefix =
+    solLamports > 0 ? `${(solLamports / 1_000_000_000).toFixed(4)} SOL across ` : "";
   const main =
     payable > 0
-      ? `${sol} SOL across ${payable} agent${payable === 1 ? "" : "s"} pending. Click to open Treasury and run disbursement.`
+      ? `${amountPrefix}${payable} agent${payable === 1 ? "" : "s"} pending. Click to open Treasury and run disbursement.`
       : "";
   const blockedNote =
     blocked > 0

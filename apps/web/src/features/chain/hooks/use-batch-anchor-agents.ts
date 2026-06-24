@@ -266,10 +266,16 @@ export function useBatchAnchorAgents(): UseBatchAnchorAgentsResult {
             signedBytesList = outs.map((o) => o.signedTransaction);
           }
         } catch (err) {
+          // Wallet rejected / failed to simulate (e.g. not enough SOL for
+          // fees + ATA rent). Reset to `idle`, NOT `ready-to-sign`: the
+          // panel auto-fires signAndRegister on every `ready-to-sign`
+          // transition, so resting there would immediately re-open the
+          // wallet popup in a loop the user can't cancel. From `idle` the
+          // error shows and the Anchor button is clickable again to retry.
           log("signTransaction failed", err);
           const m = classifyWalletError(err);
           setError({ ...m, stage: "awaiting-signature" });
-          setStage("ready-to-sign");
+          setStage("idle");
           return;
         }
 

@@ -28,6 +28,8 @@ export interface CreateInvoiceInput {
   deploymentId: string;
   taskId: string;
   amountLamports: number;
+  /** Payout asset base58 mint — all-zero pubkey for SOL, else an SPL mint. */
+  mint: string;
 }
 
 /**
@@ -47,6 +49,7 @@ export async function createInvoiceForTask(
         deploymentId: input.deploymentId,
         taskId: input.taskId,
         amountLamports: input.amountLamports,
+        mint: input.mint,
         status: "pending",
       })
       .returning();
@@ -111,6 +114,8 @@ export async function countPendingInvoices(
 export interface PendingInvoiceWithAgent {
   invoiceId: string;
   amountLamports: number;
+  /** Payout asset base58 mint — all-zero pubkey for SOL, else an SPL mint. */
+  mint: string;
   deploymentId: string;
   deploymentPda: string;
   agentName: string;
@@ -129,6 +134,7 @@ export async function listPendingInvoicesForCompany(
     .select({
       invoiceId: invoices.id,
       amountLamports: invoices.amountLamports,
+      mint: invoices.mint,
       deploymentId: invoices.deploymentId,
       deploymentPda: deployments.deploymentPda,
       receivingAddress: deployments.receivingAddress,
@@ -147,6 +153,7 @@ export async function listPendingInvoicesForCompany(
   return rows.map((r) => ({
     invoiceId: r.invoiceId,
     amountLamports: r.amountLamports,
+    mint: r.mint,
     deploymentId: r.deploymentId,
     deploymentPda: r.deploymentPda,
     agentName: r.agentName,

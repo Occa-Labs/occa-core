@@ -9,12 +9,15 @@
 // invoke this without dedup bookkeeping.
 
 import { eq } from "drizzle-orm";
-import { agentRuntimeProfile, tasks } from "@occa/shared/schema";
+import { SOL_PSEUDO_MINT } from "@occa/sdk";
+import { agentRuntimeProfile, companies, tasks } from "@occa/shared/schema";
 import { db } from "../../../infra/database/client";
 import { childLogger } from "../../../lib/logger";
 import { createInvoiceForTask } from "../repositories/invoices";
 
 const log = childLogger("services:invoice-on-task-complete");
+
+const SOL_MINT = SOL_PSEUDO_MINT.toBase58();
 
 /**
  * Create a pending invoice for a just-completed task. No-ops (returns
@@ -22,8 +25,14 @@ const log = childLogger("services:invoice-on-task-complete");
  *   - the task no longer exists
  *   - the task isn't `done` (e.g. it moved back to review)
  *   - the task has no assigned agent
- *   - the agent has no `task_rate_lamports` set (or it's 0)
+ *   - the agent has no rate set in the company's active payout asset (or
+ *     it's 0)
  *   - an invoice for the task already exists
+ *
+ * The invoice is denominated in the company's `payout_mint` at completion
+ * time and snapshots that mint, so a later asset switch leaves it payable
+ * in its original asset. The rate is read from `task_rate_lamports` for SOL
+ * or `task_rate_usdc` for an SPL mint — independent per-asset values.
  */
 export async function ensureInvoiceForCompletedTask(args: {
   taskId: string;
@@ -36,8 +45,10 @@ export async function ensureInvoiceForCompletedTask(args: {
       companyId: tasks.companyId,
       status: tasks.status,
       assignedDeploymentId: tasks.assignedDeploymentId,
+      payoutMint: companies.payoutMint,
     })
     .from(tasks)
+    .innerJoin(companies, eq(tasks.companyId, companies.id))
     .where(eq(tasks.id, taskId))
     .limit(1);
 
@@ -46,12 +57,22 @@ export async function ensureInvoiceForCompletedTask(args: {
   if (!task.assignedDeploymentId) return;
 
   const [profile] = await db
-    .select({ taskRateLamports: agentRuntimeProfile.taskRateLamports })
+    .select({
+      taskRateLamports: agentRuntimeProfile.taskRateLamports,
+      taskRateUsdc: agentRuntimeProfile.taskRateUsdc,
+    })
     .from(agentRuntimeProfile)
     .where(eq(agentRuntimeProfile.deploymentId, task.assignedDeploymentId))
     .limit(1);
 
-  const rate = profile?.taskRateLamports ?? null;
+  // Pick the rate matching the company's active payout asset. SOL and USDC
+  // rates are independent; an unset rate in the active asset means "skip",
+  // identical to the legacy SOL-only behaviour.
+  const mint = task.payoutMint;
+  const rate =
+    mint === SOL_MINT
+      ? (profile?.taskRateLamports ?? null)
+      : (profile?.taskRateUsdc ?? null);
   if (rate === null || rate <= 0) return;
 
   const invoice = await createInvoiceForTask({
@@ -59,6 +80,7 @@ export async function ensureInvoiceForCompletedTask(args: {
     deploymentId: task.assignedDeploymentId,
     taskId: task.id,
     amountLamports: rate,
+    mint,
   });
 
   if (invoice) {
@@ -68,6 +90,7 @@ export async function ensureInvoiceForCompletedTask(args: {
         taskId: task.id,
         deploymentId: task.assignedDeploymentId,
         amountLamports: rate,
+        mint,
       },
       "invoice created for completed task",
     );

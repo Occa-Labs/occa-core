@@ -19,6 +19,10 @@ import {
 import { PublicKey } from "@solana/web3.js";
 import { useSignTransaction as useSolanaSignTransaction } from "@privy-io/react-auth/solana";
 import type { AgentDTO } from "@occa/shared/types";
+import {
+  formatAssetAmount,
+  SOL_PSEUDO_MINT_BASE58,
+} from "@occa/shared/payout-assets";
 import { Modal } from "@/components/ui/modal";
 import { Card } from "@/components/ui/card";
 import { ApiError, agentsApi, chainApi } from "@/lib/api";
@@ -47,6 +51,8 @@ import {
 // 1 SOL = 10^9 lamports — fixed Solana primitive, safe to inline as a
 // constant rather than pull web3.js LAMPORTS_PER_SOL just for division.
 const LAMPORTS_PER_SOL = 1_000_000_000;
+// 1 USDC = 10^6 micro-USDC (legacy SPL Token mint, 6 decimals).
+const MICRO_PER_USDC = 1_000_000;
 
 // Devnet explorer — matches `SOLANA_CAIP_CHAIN` default. If we ever
 // promote to mainnet, swap the cluster query string here.
@@ -64,6 +70,20 @@ function solscanTxUrl(sig: string): string {
 function shortenAddress(addr: string, head = 4, tail = 4): string {
   if (addr.length <= head + tail + 3) return addr;
   return `${addr.slice(0, head)}…${addr.slice(-tail)}`;
+}
+
+// Format an invoice amount by its OWN mint — invoices are denominated in the
+// asset active when they were created (SOL or an SPL token), not always SOL.
+// The catalog has a single SPL asset (USDC, 6 decimals), so a non-SOL mint
+// resolves to it.
+function formatInvoiceAmount(amount: number, mint: string): {
+  value: string;
+  symbol: string;
+} {
+  if (mint === SOL_PSEUDO_MINT_BASE58) {
+    return { value: formatLamports(amount), symbol: "SOL" };
+  }
+  return { value: formatAssetAmount(amount, 6), symbol: "USDC" };
 }
 
 function formatLamports(lamports: number): string {
@@ -656,8 +676,10 @@ function InvoicesView({
             </div>
             <div className="flex items-center gap-3 shrink-0">
               <span className="text-xs font-semibold text-white/90 tabular-nums">
-                {formatLamports(inv.amountLamports)}{" "}
-                <span className="text-white/40 font-normal">SOL</span>
+                {formatInvoiceAmount(inv.amountLamports, inv.mint).value}{" "}
+                <span className="text-white/40 font-normal">
+                  {formatInvoiceAmount(inv.amountLamports, inv.mint).symbol}
+                </span>
               </span>
               <span className="text-[11px] text-white/35 tabular-nums w-16 text-right">
                 {formatBlockTime(
@@ -700,38 +722,49 @@ function TaskRateCard({
 }) {
   const [editing, setEditing] = useState(false);
   const [input, setInput] = useState("");
+  const [usdcInput, setUsdcInput] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const queryClient = useQueryClient();
 
   const rateLamports = agent.taskRateLamports;
+  const rateUsdc = agent.taskRateUsdc;
   const hasRate = rateLamports !== null && rateLamports > 0;
+  const hasUsdcRate = rateUsdc !== null && rateUsdc > 0;
 
   const startEdit = useCallback(() => {
     setInput(
       rateLamports !== null ? String(rateLamports / LAMPORTS_PER_SOL) : "",
     );
+    setUsdcInput(rateUsdc !== null ? String(rateUsdc / MICRO_PER_USDC) : "");
     setError(null);
     setEditing(true);
-  }, [rateLamports]);
+  }, [rateLamports, rateUsdc]);
 
   const handleSave = useCallback(async () => {
-    const trimmed = input.trim();
-    let lamports: number | null;
-    if (trimmed === "") {
-      lamports = null;
-    } else {
+    // Parse a decimal input into base units, or null when blank. Returns
+    // `undefined` on an invalid value so the caller can abort with an error.
+    const parse = (raw: string, perUnit: number): number | null | undefined => {
+      const trimmed = raw.trim();
+      if (trimmed === "") return null;
       const n = Number(trimmed);
-      if (!Number.isFinite(n) || n < 0) {
-        setError("Enter a non-negative number, or leave blank to clear.");
-        return;
-      }
-      lamports = Math.round(n * LAMPORTS_PER_SOL);
+      if (!Number.isFinite(n) || n < 0) return undefined;
+      return Math.round(n * perUnit);
+    };
+
+    const lamports = parse(input, LAMPORTS_PER_SOL);
+    const usdc = parse(usdcInput, MICRO_PER_USDC);
+    if (lamports === undefined || usdc === undefined) {
+      setError("Enter non-negative numbers, or leave a field blank to clear.");
+      return;
     }
     setSaving(true);
     setError(null);
     try {
-      await agentsApi.patch(agent.id, { taskRateLamports: lamports });
+      await agentsApi.patch(agent.id, {
+        taskRateLamports: lamports,
+        taskRateUsdc: usdc,
+      });
       await onReloadMe();
       // Setting a rate triggers server-side invoice back-fill — invalidate
       // the invoices query so the newly created rows surface without a
@@ -745,7 +778,7 @@ function TaskRateCard({
     } finally {
       setSaving(false);
     }
-  }, [input, agent.id, onReloadMe, queryClient]);
+  }, [input, usdcInput, agent.id, onReloadMe, queryClient]);
 
   return (
     <Card padding="lg">
@@ -758,7 +791,7 @@ function TaskRateCard({
             className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium text-white/55 hover:text-white/90 hover:bg-white/8 transition-colors cursor-pointer"
           >
             <Pencil className="size-3" />
-            {hasRate ? "Change" : "Set"}
+            {hasRate || hasUsdcRate ? "Change" : "Set"}
           </button>
         )}
       </div>
@@ -776,12 +809,32 @@ function TaskRateCard({
               inputMode="decimal"
               disabled={saving}
               autoFocus
-              className="w-full bg-white/5 ring-1 ring-inset ring-white/12 focus:ring-white/30 rounded-lg pl-2.5 pr-12 py-2 text-xs font-mono text-white/90 placeholder-white/25 outline-none disabled:opacity-50"
+              className="w-full bg-white/5 ring-1 ring-inset ring-white/12 focus:ring-white/30 rounded-lg pl-2.5 pr-14 py-2 text-xs font-mono text-white/90 placeholder-white/25 outline-none disabled:opacity-50"
             />
             <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[11px] text-white/35 font-medium">
               SOL
             </span>
           </div>
+          <div className="relative">
+            <input
+              type="text"
+              value={usdcInput}
+              onChange={(e) =>
+                setUsdcInput(e.target.value.replace(/[^0-9.]/g, ""))
+              }
+              placeholder="5"
+              inputMode="decimal"
+              disabled={saving}
+              className="w-full bg-white/5 ring-1 ring-inset ring-white/12 focus:ring-white/30 rounded-lg pl-2.5 pr-14 py-2 text-xs font-mono text-white/90 placeholder-white/25 outline-none disabled:opacity-50"
+            />
+            <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[11px] text-white/35 font-medium">
+              USDC
+            </span>
+          </div>
+          <p className="text-[10.5px] text-white/35 leading-snug">
+            One rate per asset. The company invoices in whichever you&apos;ve
+            set for its active payout asset — leave the other blank if unused.
+          </p>
           {error && <p className="text-[11px] text-amber-300/80">{error}</p>}
           <div className="flex items-center gap-2">
             <button
@@ -808,16 +861,22 @@ function TaskRateCard({
             </button>
           </div>
         </div>
-      ) : hasRate ? (
-        <div className="mt-3">
+      ) : hasRate || hasUsdcRate ? (
+        <div className="mt-3 space-y-2">
           <div className="flex items-baseline gap-1.5">
             <span className="text-2xl font-bold tracking-tight text-white tabular-nums">
-              {formatLamports(rateLamports!)}
+              {hasRate ? formatLamports(rateLamports!) : "—"}
             </span>
             <span className="text-xs font-medium text-white/40">SOL</span>
+            <span className="mx-1 text-white/15">·</span>
+            <span className="text-2xl font-bold tracking-tight text-white tabular-nums">
+              {hasUsdcRate ? String(rateUsdc! / MICRO_PER_USDC) : "—"}
+            </span>
+            <span className="text-xs font-medium text-white/40">USDC</span>
           </div>
-          <p className="mt-1.5 text-[11px] text-white/35">
-            Invoiced per completed task.
+          <p className="text-[11px] text-white/35">
+            Invoiced per completed task, in the company&apos;s active payout
+            asset.
           </p>
         </div>
       ) : (

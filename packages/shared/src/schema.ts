@@ -94,6 +94,16 @@ export const companies = pgTable(
     // Lower = faster/cheaper runs, thinner sourcing. Operator-tunable; default 6.
     researchBudget: integer("research_budget").notNull().default(6),
 
+    // Active payout asset for this company's disbursements. Base58 mint
+    // address; the all-zero pubkey (SOL pseudo-mint) means native SOL,
+    // otherwise an SPL mint (e.g. USDC). DB-only operational default — the
+    // treasury program is already per-mint generic, so this only decides
+    // which mint new invoices snapshot. Switching it never touches invoices
+    // already created: each invoice carries its own `mint`. Default SOL.
+    payoutMint: text("payout_mint")
+      .notNull()
+      .default("11111111111111111111111111111111"),
+
     // Kickoff lifecycle — drives the post-onboarding "CEO discovery → bulk
     // deploy" flow. Stays at 'not_started' until the user completes the
     // kickoff dialog; flips through 'provisioning' → 'completed'.
@@ -513,6 +523,13 @@ export const agentRuntimeProfile = pgTable(
     // the treasury program carries no per-agent rate field, so this is
     // operator-defined operational config that lives DB-side only.
     taskRateLamports: bigint("task_rate_lamports", { mode: "number" }),
+    // Sibling of `task_rate_lamports` for USDC-denominated companies, in
+    // micro-USDC (6 decimals). NULL = no USDC rate set; an agent with no
+    // rate in the company's active payout asset produces no invoice — same
+    // skip rule as `task_rate_lamports`. SOL and USDC rates are independent
+    // values, not a converted pair, so switching the company payout asset
+    // never silently re-prices an agent.
+    taskRateUsdc: bigint("task_rate_usdc", { mode: "number" }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -749,9 +766,20 @@ export const invoices = pgTable(
     taskId: uuid("task_id").references(() => tasks.id, {
       onDelete: "set null",
     }),
-    // Snapshot of the agent's `task_rate_lamports` at completion time.
-    // Stored on the invoice so later rate edits don't rewrite history.
+    // Snapshot of the agent's rate at completion time, in the base units of
+    // `mint` (lamports for SOL = 9 decimals, micro-USDC for USDC = 6). Stored
+    // on the invoice so later rate edits don't rewrite history. Column keeps
+    // its `amount_lamports` name for migration-history continuity; read it as
+    // "amount in mint base units", not strictly lamports.
     amountLamports: bigint("amount_lamports", { mode: "number" }).notNull(),
+    // Payout asset this invoice settles in — snapshot of the company's
+    // `payout_mint` at creation. The all-zero pubkey means native SOL,
+    // otherwise an SPL mint. Frozen here so a later company-asset switch
+    // leaves already-accrued invoices payable in their original asset; the
+    // disbursement plan groups by this mint.
+    mint: text("mint")
+      .notNull()
+      .default("11111111111111111111111111111111"),
     // pending | approved | paid | void.
     status: text("status").notNull().default("pending"),
     // Solana tx signature of the disbursement that settled this invoice.

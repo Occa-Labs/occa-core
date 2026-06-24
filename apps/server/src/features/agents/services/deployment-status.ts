@@ -109,6 +109,7 @@ function toDTO(args: {
     workstationId: profile?.workstationId ?? null,
     modelOverride: profile?.modelOverride ?? null,
     taskRateLamports: profile?.taskRateLamports ?? null,
+    taskRateUsdc: profile?.taskRateUsdc ?? null,
     status: deployment.status as AgentDTO["status"],
     agentPda: identity?.identityPda ?? null,
     agentIndex: deployment.deploymentIndex,

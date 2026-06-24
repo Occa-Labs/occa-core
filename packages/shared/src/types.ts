@@ -381,6 +381,11 @@ export interface AgentDTO {
   // not mirrored on-chain.
   taskRateLamports: number | null;
 
+  // USDC sibling of `taskRateLamports`, in micro-USDC (6 decimals). Used
+  // when the company's active payout asset is USDC. Independent value —
+  // NULL = no USDC rate set.
+  taskRateUsdc: number | null;
+
   // Lifecycle status mirrored from `deployments.status`. "active" =
   // dispatchable + visible in CEO's active team; "paused" = excluded
   // from active-team filters but reversible; "retired" = archived,
@@ -428,6 +433,9 @@ export interface UpdateAgentRequest {
   // Flat per-task invoice amount in lamports. Pass `null` to clear (no
   // auto-invoicing). Off-chain operational config — DB write only.
   taskRateLamports?: number | null;
+  // USDC per-task rate in micro-USDC. Pass `null` to clear. Used when the
+  // company pays in USDC. Independent of `taskRateLamports`.
+  taskRateUsdc?: number | null;
 }
 
 export interface SyncAgentSkillsRequest {
@@ -708,6 +716,8 @@ export interface CreateAgentRequest {
   // Omitted / null = no rate yet (operator sets it later from the Wallet
   // tab). Off-chain operational config.
   taskRateLamports?: number | null;
+  // Optional USDC per-task rate in micro-USDC, set at deploy time.
+  taskRateUsdc?: number | null;
 }
 
 export interface CreateAgentResponse {

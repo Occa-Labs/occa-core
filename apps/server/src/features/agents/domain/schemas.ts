@@ -56,6 +56,17 @@ const taskRateLamportsSchema = z
   .nullable()
   .optional();
 
+// USDC sibling rate, in micro-USDC (6 decimals). Used when the company's
+// active payout asset is USDC. Independent of the SOL rate; same shape and
+// (large) cap so the same validation applies in either asset's base units.
+const taskRateUsdcSchema = z
+  .number()
+  .int()
+  .min(0)
+  .max(MAX_TASK_RATE_LAMPORTS)
+  .nullable()
+  .optional();
+
 // ── Mutations ────────────────────────────────────────────────────────────
 
 // POST /api/agents — initial onboarding (CEO) or subsequent agent.
@@ -85,7 +96,8 @@ const createAgentSharedFields = {
   // to catalog-driven auto-resolve. Validated against the requester's
   // company in the route handler before insert.
   parentAgentId: z.string().uuid().nullable().optional(),
-  // Optional flat per-task invoice rate, set at deploy time.
+  // Optional flat per-task invoice rate, set at deploy time. The USDC rate
+  // is set post-deploy from the Wallet tab (PATCH), not at create.
   taskRateLamports: taskRateLamportsSchema,
 };
 
@@ -141,6 +153,8 @@ export const patchAgentBody = z.object({
     .optional(),
   // Flat per-task invoice rate. `null` clears it (no auto-invoicing).
   taskRateLamports: taskRateLamportsSchema,
+  // USDC sibling rate, micro-USDC. `null` clears it.
+  taskRateUsdc: taskRateUsdcSchema,
 });
 
 // POST /api/agents/:id/assign-company — move an existing idle agent (owned

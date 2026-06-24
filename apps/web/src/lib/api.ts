@@ -419,6 +419,16 @@ export const chainApi = {
       `/api/chain/companies/${companyId}/treasury/policy/confirm`,
       { method: "POST", body: JSON.stringify(body) },
     ),
+  // ── Payout asset (SOL ↔ USDC toggle) ──────────────────────────────────
+  getPayoutAsset: (companyId: string) =>
+    request<PayoutAssetResponse>(
+      `/api/chain/companies/${companyId}/payout-asset`,
+    ),
+  setPayoutAsset: (companyId: string, mint: string) =>
+    request<SetPayoutAssetResponse>(
+      `/api/chain/companies/${companyId}/payout-asset`,
+      { method: "PUT", body: JSON.stringify({ mint }) },
+    ),
   getPendingDisbursements: (companyId: string) =>
     request<PendingDisbursementsResponse>(
       `/api/chain/companies/${companyId}/disbursements/pending`,
@@ -646,10 +656,31 @@ export interface RoutinePayoutSummary {
   results: RoutinePayoutResult[];
 }
 
+/** A payout asset resolved for the active network — mint + display meta. */
+export interface PayoutAsset {
+  key: "SOL" | "USDC";
+  symbol: string;
+  decimals: number;
+  /** Base58 mint. All-zero pubkey for SOL, an SPL mint otherwise. */
+  mint: string;
+}
+
+export interface PayoutAssetResponse {
+  assets: PayoutAsset[];
+  activeMint: string;
+}
+
+export interface SetPayoutAssetResponse {
+  activeMint: string;
+  asset: PayoutAsset;
+}
+
 export interface DisbursementPayableAgent {
   deploymentId: string;
   agentName: string;
   receivingAddress: string;
+  /** Payout asset mint of this line — SOL pseudo-mint or an SPL mint. */
+  mint: string;
   invoiceCount: number;
   totalLamports: number;
 }
@@ -657,6 +688,7 @@ export interface DisbursementPayableAgent {
 export interface DisbursementBlockedAgent {
   deploymentId: string;
   agentName: string;
+  mint: string;
   invoiceCount: number;
   totalLamports: number;
 }
@@ -664,17 +696,31 @@ export interface DisbursementBlockedAgent {
 export interface PendingDisbursementsResponse {
   payable: DisbursementPayableAgent[];
   blocked: DisbursementBlockedAgent[];
+  /** Active payout asset the headline figures are denominated in. */
+  asset: PayoutAsset;
+  /** Active asset mint. */
+  payoutMint: string;
+  /** Gross owed per mint (base units keyed by base58 mint). */
+  totalsByMint: Record<string, number>;
+  /** Gross owed in the ACTIVE asset's base units. */
   totalLamports: number;
   estimatedFeeLamports: number;
   feeBps: number;
+  /** Native SOL lamports on the Treasury PDA — gas + ATA-rent headroom. */
   treasuryBalanceLamports: number;
+  /** Custodied balance of the active asset, in its base units. */
+  treasuryAssetBalance: number;
+  /** Spendable active-asset balance after any rent floor — the coverage
+   *  check uses this. For SOL it's balance - rentExemptMin; for SPL it's the
+   *  full ATA balance. */
+  usableAssetBalance: number;
   /** Minimum balance the Treasury PDA must keep to stay rent-exempt.
    *  Disbursements that would drop balance below this revert on-chain
    *  (`InsufficientFunds` 6025). */
   rentExemptMinLamports: number;
-  /** balance - rentExemptMin. What's actually disbursable right now. */
+  /** balance - rentExemptMin. SOL disbursable right now. */
   usableBalanceLamports: number;
-  /** Lamports as a string — JSON can't carry bigint. */
+  /** Active-asset base units as a string — JSON can't carry bigint. */
   budgetRemainingLamports: string;
 }
 
@@ -693,9 +739,15 @@ export interface ConfirmDisbursementRequest {
 export interface TreasuryStateResponse {
   treasuryPda: string;
   policyPda: string;
+  /** Active payout asset all budget/balance figures are denominated in. */
+  asset: PayoutAsset;
+  /** Native SOL lamports on the treasury PDA — gas + ATA-rent headroom. */
   balanceLamports: number;
+  /** Active-asset custodied balance in its base units (== balanceLamports
+   *  for SOL, treasury ATA token amount for an SPL asset). */
+  assetBalance: number;
   initialized: boolean;
-  /** Lamports as a string — JSON can't carry bigint. */
+  /** Active-asset base units as a string — JSON can't carry bigint. */
   routineBudgetLamports: string;
   routineSpentLamports: string;
   discretionaryBudgetLamports: string;
@@ -704,7 +756,12 @@ export interface TreasuryStateResponse {
 }
 
 export interface PrepareSetPolicyRequest {
+  /** Asset the caps apply to. Base58 mint; omitted = SOL. Only this asset's
+   *  budgets are touched — others are preserved on-chain. */
+  mint?: string;
+  /** Routine cap in the asset's base units (lamports for SOL, micro-USDC). */
   routineBudgetLamports: number;
+  /** Discretionary cap in the asset's base units. */
   discretionaryBudgetLamports: number;
 }
 

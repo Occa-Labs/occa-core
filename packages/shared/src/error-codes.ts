@@ -151,6 +151,8 @@ export const ERROR_CODES = {
   NOTHING_TO_DISBURSE: "nothing_to_disburse",
   /** Too many agents in one disbursement batch to fit a single Solana tx. */
   DISBURSEMENT_BATCH_TOO_LARGE: "disbursement_batch_too_large",
+  /** Payout-asset switch requested with a mint outside the supported set. */
+  UNSUPPORTED_PAYOUT_ASSET: "unsupported_payout_asset",
 } as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];

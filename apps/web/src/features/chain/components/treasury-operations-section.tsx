@@ -35,8 +35,13 @@ import {
   chainApi,
   type OperationsAccountState,
   type OperationsKindString,
+  type PayoutAsset,
   type RoutinePayoutSummary,
 } from "@/lib/api";
+import {
+  formatAssetAmount,
+  SOL_PSEUDO_MINT_BASE58,
+} from "@occa/shared/payout-assets";
 
 // Default whitelists per kind — the minimum that lets the registered
 // signer execute the ix it exists to authorize. Operator can update via
@@ -83,6 +88,11 @@ const operationsKeys = {
 
 function lamportsToSol(lamports: number): string {
   return (lamports / 1e9).toFixed(6);
+}
+
+// Format a base-unit amount in a payout asset, e.g. "12.5 USDC".
+function fmtAsset(baseUnits: number, asset: PayoutAsset): string {
+  return `${formatAssetAmount(baseUnits, asset.decimals)} ${asset.symbol}`;
 }
 
 function shortenAddress(addr: string, head = 6, tail = 6): string {
@@ -1072,8 +1082,7 @@ export function RoutinePayoutButton({
           <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-300">
             <Check className="size-3" />
             {stage.summary.paidInvoiceCount} invoice
-            {stage.summary.paidInvoiceCount === 1 ? "" : "s"} paid (
-            {lamportsToSol(stage.summary.paidLamports)} SOL)
+            {stage.summary.paidInvoiceCount === 1 ? "" : "s"} paid
           </span>
         )}
         {stage.kind === "error" && (
@@ -1180,11 +1189,12 @@ function RoutinePayoutConfirmModal({
   const grossNeeded = d
     ? d.totalLamports + d.estimatedFeeLamports
     : 0;
-  // Compare against USABLE balance (balance - rent-exempt minimum), not
-  // raw balance. The chain enforces the rent floor with InsufficientFunds
-  // (6025), so a payout that fits raw balance but eats into rent reverts.
-  const insufficient = d ? d.usableBalanceLamports < grossNeeded : false;
+  // Coverage is checked in the active asset against its spendable balance —
+  // for SOL that's balance minus the rent-exempt floor (chain reverts
+  // InsufficientFunds 6025 below it), for SPL the full ATA balance.
+  const insufficient = d ? d.usableAssetBalance < grossNeeded : false;
   const nothingPayable = d ? d.payable.length === 0 : false;
+  const isSolActive = d?.asset.key === "SOL";
   const canConfirm =
     !!d && !plan.isLoading && !nothingPayable && !insufficient && !busy;
 
@@ -1271,7 +1281,9 @@ function RoutinePayoutConfirmModal({
                       </span>
                     </span>
                     <span className="font-semibold text-white/90 tabular-nums">
-                      {lamportsToSol(a.totalLamports)} SOL
+                      {a.mint === SOL_PSEUDO_MINT_BASE58
+                        ? `${formatAssetAmount(a.totalLamports, 9)} SOL`
+                        : fmtAsset(a.totalLamports, d.asset)}
                     </span>
                   </div>
                 ))}
@@ -1305,35 +1317,37 @@ function RoutinePayoutConfirmModal({
               <div className="rounded-lg bg-white/3 px-3 py-2.5 mt-1 text-[11px] space-y-1">
                 <Row
                   label="To agents (net)"
-                  value={`${lamportsToSol(d.totalLamports)} SOL`}
+                  value={fmtAsset(d.totalLamports, d.asset)}
                 />
                 <Row
                   label={`Operating fee (${(d.feeBps / 100).toFixed(
                     d.feeBps % 100 === 0 ? 0 : 2,
                   )}%)`}
-                  value={`${lamportsToSol(d.estimatedFeeLamports)} SOL`}
+                  value={fmtAsset(d.estimatedFeeLamports, d.asset)}
                 />
                 <Row
                   label="Total from treasury"
-                  value={`${lamportsToSol(grossNeeded)} SOL`}
+                  value={fmtAsset(grossNeeded, d.asset)}
                   emphasis
                 />
                 <div className="pt-1.5 mt-1 border-t border-white/6 space-y-1 text-white/40">
                   <div className="flex items-center justify-between">
-                    <span>Treasury balance after</span>
+                    <span>Treasury {d.asset.symbol} after</span>
                     <span className="tabular-nums">
-                      {lamportsToSol(
-                        Math.max(0, d.treasuryBalanceLamports - grossNeeded),
-                      )}{" "}
-                      SOL
+                      {fmtAsset(
+                        Math.max(0, d.treasuryAssetBalance - grossNeeded),
+                        d.asset,
+                      )}
                     </span>
                   </div>
-                  <div className="flex items-center justify-between text-white/30">
-                    <span>Rent-exempt floor</span>
-                    <span className="tabular-nums">
-                      {lamportsToSol(d.rentExemptMinLamports)} SOL
-                    </span>
-                  </div>
+                  {isSolActive && (
+                    <div className="flex items-center justify-between text-white/30">
+                      <span>Rent-exempt floor</span>
+                      <span className="tabular-nums">
+                        {lamportsToSol(d.rentExemptMinLamports)} SOL
+                      </span>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -1343,12 +1357,22 @@ function RoutinePayoutConfirmModal({
                 <strong className="font-semibold">
                   Treasury can&apos;t cover this payout.
                 </strong>{" "}
-                Balance is {lamportsToSol(d.treasuryBalanceLamports)} SOL but
-                only {lamportsToSol(d.usableBalanceLamports)} SOL is usable
-                (Solana protects {lamportsToSol(d.rentExemptMinLamports)} SOL
-                rent-exempt minimum). Need{" "}
-                {lamportsToSol(grossNeeded)} SOL. Top up the treasury before
-                running.
+                {isSolActive ? (
+                  <>
+                    Balance is {lamportsToSol(d.treasuryBalanceLamports)} SOL but
+                    only {lamportsToSol(d.usableBalanceLamports)} SOL is usable
+                    (Solana protects {lamportsToSol(d.rentExemptMinLamports)} SOL
+                    rent-exempt minimum). Need {lamportsToSol(grossNeeded)} SOL.
+                    Top up the treasury before running.
+                  </>
+                ) : (
+                  <>
+                    {d.asset.symbol} balance is{" "}
+                    {fmtAsset(d.treasuryAssetBalance, d.asset)} but this run
+                    needs {fmtAsset(grossNeeded, d.asset)}. Send more{" "}
+                    {d.asset.symbol} to the treasury before running.
+                  </>
+                )}
               </div>
             )}
           </>

@@ -23,6 +23,7 @@ import {
   OPERATIONS_KIND,
   SOL_PSEUDO_MINT,
   buildDisburseRoutineInstruction,
+  buildDisburseRoutineSplInstruction,
   deriveOperationsPda,
   derivePolicyPda,
   deriveTreasuryPda,
@@ -216,17 +217,35 @@ async function executeOnePayout(
   };
 
   try {
-    const { instruction } = buildDisburseRoutineInstruction({
-      companyPda: args.companyPda,
-      treasuryPda: args.treasuryPda,
-      policyPda: args.policyPda,
-      operationsPda: args.operationsPda,
-      operationsSigner: args.operator.publicKey,
-      deploymentPda: new PublicKey(args.agent.deploymentPda),
-      destination: new PublicKey(args.agent.receivingAddress),
-      amountLamports: BigInt(args.agent.totalLamports),
-      mint: SOL_PSEUDO_MINT,
-    });
+    // Route to the native or SPL routine builder by the line's mint. SOL
+    // lines pay native lamports; SPL lines (e.g. USDC) move tokens via the
+    // treasury ATA, with the operator paying rent for any destination/fee
+    // ATA created on demand. Both are signed by the operator as the
+    // Disbursement Wallet signer.
+    const isSol = args.agent.mint === SOL_PSEUDO_MINT.toBase58();
+    const { instruction } = isSol
+      ? buildDisburseRoutineInstruction({
+          companyPda: args.companyPda,
+          treasuryPda: args.treasuryPda,
+          policyPda: args.policyPda,
+          operationsPda: args.operationsPda,
+          operationsSigner: args.operator.publicKey,
+          deploymentPda: new PublicKey(args.agent.deploymentPda),
+          destination: new PublicKey(args.agent.receivingAddress),
+          amountLamports: BigInt(args.agent.totalLamports),
+          mint: SOL_PSEUDO_MINT,
+        })
+      : buildDisburseRoutineSplInstruction({
+          companyPda: args.companyPda,
+          treasuryPda: args.treasuryPda,
+          policyPda: args.policyPda,
+          operationsPda: args.operationsPda,
+          operationsSigner: args.operator.publicKey,
+          deploymentPda: new PublicKey(args.agent.deploymentPda),
+          destination: new PublicKey(args.agent.receivingAddress),
+          amount: BigInt(args.agent.totalLamports),
+          mint: new PublicKey(args.agent.mint),
+        });
 
     const { blockhash, lastValidBlockHeight } =
       await args.connection.getLatestBlockhash("confirmed");

@@ -11,6 +11,7 @@
     "./errors": "./src/errors.ts",
     "./error-codes": "./src/error-codes.ts",
     "./markers": "./src/markers.ts",
+    "./payout-assets": "./src/payout-assets.ts",
     "./role-catalog": "./src/role-catalog.ts",
     "./seating": "./src/seating.ts",
     "./task-events": "./src/task-events.ts",

@@ -60,6 +60,13 @@ register(TREASURY_INSTRUCTION_DISCRIMINATOR.revokeOperations, "Pause operations"
 register(TREASURY_INSTRUCTION_DISCRIMINATOR.closeOperations, "Disable operations");
 register(TREASURY_INSTRUCTION_DISCRIMINATOR.disburseRoutine, "Auto-payout");
 register(TREASURY_INSTRUCTION_DISCRIMINATOR.disbursePrivileged, "Privileged payout");
+register(TREASURY_INSTRUCTION_DISCRIMINATOR.withdrawProtocolFees, "Withdraw fees");
+register(TREASURY_INSTRUCTION_DISCRIMINATOR.setGovernance, "Set governance");
+// SPL (USDC) siblings — multi-asset disbursement + fee withdrawal.
+register(TREASURY_INSTRUCTION_DISCRIMINATOR.disburseRoutineSpl, "Auto-payout (USDC)");
+register(TREASURY_INSTRUCTION_DISCRIMINATOR.disburseDiscretionarySpl, "Manual payout (USDC)");
+register(TREASURY_INSTRUCTION_DISCRIMINATOR.disbursePrivilegedSpl, "Privileged payout (USDC)");
+register(TREASURY_INSTRUCTION_DISCRIMINATOR.withdrawProtocolFeesSpl, "Withdraw fees (USDC)");
 
 export interface CompanyTransactionRecord {
   signature: string;
