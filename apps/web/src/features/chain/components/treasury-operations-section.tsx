@@ -52,6 +52,10 @@ const DEFAULT_EXPIRY_UNIX = 0;
 
 const DISBURSEMENT_WHITELIST = [
   TREASURY_INSTRUCTION_DISCRIMINATOR.disburseRoutine.toString("hex"),
+  // SPL sibling — routine payout signs disburse_routine_spl for USDC. Without
+  // it on the ops account whitelist the chain rejects USDC auto-payouts with
+  // DiscriminatorNotWhitelisted (6018).
+  TREASURY_INSTRUCTION_DISCRIMINATOR.disburseRoutineSpl.toString("hex"),
 ];
 const ANCHOR_WHITELIST = [
   INSTRUCTION_DISCRIMINATOR.commitDailyAnchor.toString("hex"),
@@ -1270,7 +1274,7 @@ function RoutinePayoutConfirmModal({
                 </p>
                 {d.payable.map((a) => (
                   <div
-                    key={a.deploymentId}
+                    key={`${a.deploymentId}-${a.mint}`}
                     className="flex items-center justify-between gap-3 px-3 py-2 rounded-lg bg-white/3 text-[12px]"
                   >
                     <span className="text-white/85">
@@ -1297,16 +1301,15 @@ function RoutinePayoutConfirmModal({
                 </p>
                 {d.blocked.map((b) => (
                   <div
-                    key={b.deploymentId}
+                    key={`${b.deploymentId}-${b.mint}`}
                     className="flex items-start gap-2 px-3 py-2 rounded-lg bg-amber-500/8 text-[11px] text-amber-100/85"
                   >
                     <AlertCircle className="size-3.5 text-amber-300 mt-0.5 shrink-0" />
                     <span>
-                      <span className="font-medium">{b.agentName}</span> has{" "}
-                      {b.invoiceCount} pending invoice
-                      {b.invoiceCount === 1 ? "" : "s"}. Set a receiving
-                      address in Chain &gt; Agents &gt; {b.agentName} to
-                      include them next time.
+                      <span className="font-medium">{b.agentName}</span>
+                      {` has ${b.invoiceCount} pending ${
+                        b.mint === SOL_PSEUDO_MINT_BASE58 ? "SOL" : "USDC"
+                      } invoice${b.invoiceCount === 1 ? "" : "s"}. Set a receiving address in the agent's Wallet tab to include them next time.`}
                     </span>
                   </div>
                 ))}

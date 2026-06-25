@@ -1834,6 +1834,12 @@ router.post(
         current.discretionary,
         parsed.data.discretionaryBudgetLamports,
       ),
+      // Allow-list every supported payout asset on each policy save. The
+      // treasury inits with [SOL] only, and disburse_*_spl rejects any mint
+      // not in accepted_assets (AssetNotAllowListed). set_policy REPLACES the
+      // list, so send the full catalog (SOL + USDC) to add USDC without
+      // dropping SOL.
+      acceptedAssets: resolvePayoutAssets().map((a) => new PublicKey(a.mint)),
     });
 
     let prepared: Awaited<ReturnType<typeof prepareOwnerSignedTx>>;

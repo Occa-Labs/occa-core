@@ -825,7 +825,7 @@ function PendingDisbursementsCard({
           {/* Payable agents */}
           {d.payable.map((a) => (
             <div
-              key={a.deploymentId}
+              key={`${a.deploymentId}-${a.mint}`}
               className="flex items-center justify-between gap-3 px-3 py-2 rounded-lg bg-white/3"
             >
               <div className="min-w-0">
@@ -846,15 +846,15 @@ function PendingDisbursementsCard({
           {/* Blocked agents — no receiving address */}
           {d.blocked.map((b) => (
             <div
-              key={b.deploymentId}
+              key={`${b.deploymentId}-${b.mint}`}
               className="flex items-start gap-2 px-3 py-2 rounded-lg bg-amber-500/8 text-[11px]"
             >
               <AlertCircle className="size-3.5 text-amber-300 mt-0.5 shrink-0" />
               <span className="text-amber-100/80">
-                <span className="font-medium">{b.agentName}</span> has{" "}
-                {b.invoiceCount} pending invoice
-                {b.invoiceCount === 1 ? "" : "s"} but no receiving address —
-                set one in the agent&apos;s Wallet tab to include them.
+                <span className="font-medium">{b.agentName}</span>
+                {` has ${b.invoiceCount} pending ${lineAsset(b.mint).symbol} invoice${
+                  b.invoiceCount === 1 ? "" : "s"
+                } (${formatAssetAmount(b.totalLamports, lineAsset(b.mint).decimals)} ${lineAsset(b.mint).symbol}), but no receiving address. Set one in the agent's Wallet tab to include them.`}
               </span>
             </div>
           ))}
