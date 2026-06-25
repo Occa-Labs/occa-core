@@ -1,8 +1,8 @@
 // Company-wide on-chain transaction list — aggregates signatures across
 // every PDA a company touches (company / treasury / policy / 2 ops /
-// per-deployment / per-day-anchor PDAs), decodes the first instruction's
-// discriminator to a human label, returns the merged + deduped + sorted
-// stream.
+// per-deployment / per-day-anchor PDAs), decodes the first OCCA-program
+// instruction's discriminator to a human label, returns the merged +
+// deduped + sorted stream.
 //
 // Implementation: `getSignaturesForAddress` per PDA in parallel, dedupe
 // by signature, sort by blockTime desc, take top N. Then
@@ -18,7 +18,9 @@ import { and, eq, isNotNull } from "drizzle-orm";
 import {
   INSTRUCTION_DISCRIMINATOR,
   OPERATIONS_KIND,
+  REGISTRY_PROGRAM_ID,
   TREASURY_INSTRUCTION_DISCRIMINATOR,
+  TREASURY_PROGRAM_ID,
   derivePolicyPda,
   deriveOperationsPda,
   deriveTreasuryPda,
@@ -29,6 +31,15 @@ import { getConnection } from "../../../infra/solana/connection";
 import { childLogger } from "../../../lib/logger";
 
 const log = childLogger("chain:transactions-aggregator");
+
+// Program IDs whose instructions carry an 8-byte Anchor discriminator we
+// can label. A tx usually leads with ComputeBudget / System ixs (priority
+// fee + compute limit) — we must skip those and decode the first ix owned
+// by an OCCA program, else everything reads "Unknown".
+const OCCA_PROGRAM_IDS = new Set<string>([
+  REGISTRY_PROGRAM_ID.toBase58(),
+  TREASURY_PROGRAM_ID.toBase58(),
+]);
 
 // Per-PDA signature fetch cap. Kept tight so public devnet rate limits
 // don't choke. Pagination via `before` cursor handles deeper history.
@@ -51,6 +62,7 @@ register(INSTRUCTION_DISCRIMINATOR.updateDeploymentStatus, "Update deployment st
 register(INSTRUCTION_DISCRIMINATOR.retireDeployment, "Retire deployment");
 register(INSTRUCTION_DISCRIMINATOR.setReceivingAddress, "Set receiving wallet");
 register(INSTRUCTION_DISCRIMINATOR.commitDailyAnchor, "Daily anchor commit");
+register(INSTRUCTION_DISCRIMINATOR.commitTrace, "Provenance commit");
 register(TREASURY_INSTRUCTION_DISCRIMINATOR.setPolicy, "Set policy");
 register(TREASURY_INSTRUCTION_DISCRIMINATOR.disburseDiscretionary, "Manual payout");
 register(TREASURY_INSTRUCTION_DISCRIMINATOR.initProtocolFeeAccount, "Init protocol fee account");
@@ -212,9 +224,11 @@ export async function listCompanyTransactions({
           };
         }
 
-        // Pull first ix's program + discriminator. Versioned txs put ix
-        // under `message.compiledInstructions`; legacy under
-        // `message.instructions`. We just want the discriminator bytes.
+        // Decode the first OCCA-program ix's discriminator. Versioned txs
+        // put ix under `message.compiledInstructions`; legacy under
+        // `message.instructions`. We must SKIP leading ComputeBudget /
+        // System ixs (priority fee + compute limit) that web3.js prepends
+        // and read the discriminator off the first ix our programs own.
         const msg = tx.transaction.message;
         const accountKeys = msg.getAccountKeys
           ? msg.getAccountKeys()
@@ -230,19 +244,34 @@ export async function listCompanyTransactions({
           (msg as { instructions?: { programIdIndex: number; data: string | Buffer }[] })
             .instructions ?? [];
 
+        // Normalize both shapes to { programIdIndex, data: Buffer }.
+        const ixs: { programIdIndex: number; data: Buffer }[] =
+          compiled.length > 0
+            ? compiled.map((ix) => ({
+                programIdIndex: ix.programIdIndex,
+                data: Buffer.from(ix.data),
+              }))
+            : legacy.map((ix) => ({
+                programIdIndex: ix.programIdIndex,
+                data:
+                  typeof ix.data === "string"
+                    ? Buffer.from(ix.data, "base64")
+                    : Buffer.from(ix.data),
+              }));
+
         let discriminatorHex: string | null = null;
-        if (compiled.length > 0) {
-          const ix = compiled[0];
-          discriminatorHex = Buffer.from(ix.data.slice(0, 8)).toString("hex");
-        } else if (legacy.length > 0) {
-          const ix = legacy[0];
-          const data =
-            typeof ix.data === "string"
-              ? Buffer.from(ix.data, "base64")
-              : ix.data;
-          discriminatorHex = data.subarray(0, 8).toString("hex");
+        for (const ix of ixs) {
+          const programId =
+            accountKeys?.get(ix.programIdIndex)?.toBase58() ?? null;
+          if (programId && OCCA_PROGRAM_IDS.has(programId)) {
+            discriminatorHex = ix.data.subarray(0, 8).toString("hex");
+            break;
+          }
         }
 
+        // `null` = no OCCA ix in this tx (e.g. a raw SOL transfer to the
+        // treasury PDA) → italic "unknown". A matched OCCA ix whose
+        // discriminator we don't recognize → "Unknown" (forward-compat).
         const action = discriminatorHex
           ? IX_LABEL[discriminatorHex] ?? "Unknown"
           : null;

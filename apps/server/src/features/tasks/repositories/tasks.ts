@@ -207,6 +207,49 @@ export async function deleteTaskInCompany(
   return row ?? null;
 }
 
+// Bulk archive every active (non-archived) task in `companyId` whose status
+// is in `statuses`. Mirrors single archive: soft-state, leaves rows in place.
+// Returns the count affected. Empty `statuses` is a no-op.
+export async function bulkArchiveByStatus(
+  companyId: string,
+  statuses: TaskStatus[],
+): Promise<number> {
+  if (statuses.length === 0) return 0;
+  const rows = await db
+    .update(tasks)
+    .set({ archivedAt: new Date(), updatedAt: new Date() })
+    .where(
+      and(
+        eq(tasks.companyId, companyId),
+        inArray(tasks.status, statuses),
+        isNull(tasks.archivedAt),
+      ),
+    )
+    .returning({ id: tasks.id });
+  return rows.length;
+}
+
+// Bulk hard-delete every active (non-archived) task in `companyId` whose
+// status is in `statuses` — same row removal as single delete, applied to a
+// set. Returns the count deleted. Empty `statuses` is a no-op.
+export async function bulkDeleteByStatus(
+  companyId: string,
+  statuses: TaskStatus[],
+): Promise<number> {
+  if (statuses.length === 0) return 0;
+  const rows = await db
+    .delete(tasks)
+    .where(
+      and(
+        eq(tasks.companyId, companyId),
+        inArray(tasks.status, statuses),
+        isNull(tasks.archivedAt),
+      ),
+    )
+    .returning({ id: tasks.id });
+  return rows.length;
+}
+
 export type UpdateTaskFields = Partial<typeof tasks.$inferInsert>;
 
 export async function updateTask(

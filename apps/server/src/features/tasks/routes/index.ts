@@ -12,11 +12,14 @@ import taskCommentsRouter from "./task-comments";
 import taskEventsRouter from "./task-events";
 import taskUsageRouter from "./task-usage";
 import taskArchiveRouter from "./task-archive";
+import taskBulkRouter from "./task-bulk";
 import agentTaskCommentsRouter from "./agent-task-comments";
 import { Router } from "express";
 
-// Combined user-JWT router for /api/tasks.
+// Combined user-JWT router for /api/tasks. Bulk mounts first so its static
+// `/bulk` path is matched before any `/:id` param routes in tasksRouter.
 const tasksFeatureRouter: Router = Router();
+tasksFeatureRouter.use(taskBulkRouter);
 tasksFeatureRouter.use(tasksRouter);
 tasksFeatureRouter.use(taskCommentsRouter);
 tasksFeatureRouter.use(taskEventsRouter);

@@ -849,6 +849,11 @@ export const tasksApi = {
     }),
   unarchive: (id: string) =>
     request<TaskResponse>(`/api/tasks/${id}/unarchive`, { method: "POST" }),
+  bulk: (input: { action: "archive" | "delete"; status: string }) =>
+    request<{ ok: boolean; affected: number }>(`/api/tasks/bulk`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
 };
 
 // One past/current chat session (thread reset_generation).
