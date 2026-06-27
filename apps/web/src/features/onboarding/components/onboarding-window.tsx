@@ -78,6 +78,11 @@ export function OnboardingWindow({ me, onDismiss }: OnboardingWindowProps) {
   const [model, setModel] = useState("sonnet");
   const [ccGatewayUrl, setCcGatewayUrl] = useState("");
   const [ccApiKey, setCcApiKey] = useState("");
+  // Codex form state — gateway-only (BYORT), same shape as Claude Code: the
+  // model plus the Codex Gateway URL + bearer the agent runs against.
+  const [codexModel, setCodexModel] = useState("gpt-5.5");
+  const [codexGatewayUrl, setCodexGatewayUrl] = useState("");
+  const [codexApiKey, setCodexApiKey] = useState("");
   const [ceoName, setCeoName] = useState(resume.ceoName);
   const [pendingAgentId, setPendingAgentId] = useState<string | null>(
     resume.pendingAgentId,
@@ -107,9 +112,15 @@ export function OnboardingWindow({ me, onDismiss }: OnboardingWindowProps) {
   const adapterConfig: AdapterConfig =
     adapterType === "claude-code"
       ? { model, gatewayUrl: ccGatewayUrl.trim(), apiKey: ccApiKey.trim() }
-      : adapterType === "openclaw"
-        ? { gatewayUrl, apiKey }
-        : { gatewayUrl: hermesGatewayUrl, apiKey: hermesApiKey };
+      : adapterType === "codex"
+        ? {
+            model: codexModel,
+            gatewayUrl: codexGatewayUrl.trim(),
+            apiKey: codexApiKey.trim(),
+          }
+        : adapterType === "openclaw"
+          ? { gatewayUrl, apiKey }
+          : { gatewayUrl: hermesGatewayUrl, apiKey: hermesApiKey };
 
   const center = useMemo(() => {
     if (typeof window === "undefined") return undefined;
@@ -161,6 +172,12 @@ export function OnboardingWindow({ me, onDismiss }: OnboardingWindowProps) {
               ccApiKey={ccApiKey}
               onCcGatewayUrlChange={setCcGatewayUrl}
               onCcApiKeyChange={setCcApiKey}
+              codexModel={codexModel}
+              onCodexModelChange={setCodexModel}
+              codexGatewayUrl={codexGatewayUrl}
+              codexApiKey={codexApiKey}
+              onCodexGatewayUrlChange={setCodexGatewayUrl}
+              onCodexApiKeyChange={setCodexApiKey}
               onContinue={handleRuntimeContinue}
               onBack={() => setStepIndex(0)}
             />

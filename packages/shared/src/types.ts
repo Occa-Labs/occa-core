@@ -515,7 +515,7 @@ export const ROLE_SLUG_MAX = 32;
 // ── Adapter types ──
 // Order = display order in any "pick an adapter" UI. Keep openclaw first
 // as the default-rendered card until usage data says otherwise.
-export const ADAPTER_TYPES = ["openclaw", "hermes", "claude-code"] as const;
+export const ADAPTER_TYPES = ["openclaw", "hermes", "claude-code", "codex"] as const;
 export type AdapterType = (typeof ADAPTER_TYPES)[number];
 
 // Narrow an arbitrary string to a registered adapter type. Use when a
@@ -565,12 +565,38 @@ export const CLAUDE_CODE_MODELS = [
   { value: "haiku", label: "Haiku 4.5 · fastest, cheapest" },
 ] as const;
 
+// codex (OpenAI Codex CLI) is gateway-only BYORT, same config shape as
+// claude-code: an OCCA-held gateway bearer + a per-agent model. The model
+// credential lives on the gateway box (OPENAI_API_KEY / `codex login`), never
+// in OCCA. Re-declared here (not imported from the adapter) so `@occa/shared`
+// stays adapter-agnostic.
+export interface CodexAdapterConfig {
+  model?: string;
+  /** Remote Codex Gateway base URL. */
+  gatewayUrl?: string;
+  /** Bearer for the remote gateway. Required when `gatewayUrl` is set. */
+  apiKey?: string;
+}
+
+// Model options offered in the codex runtime picker. The `value` is the slug
+// passed to `codex -m`. Verified against developers.openai.com/codex/models
+// (2026-06-27). The lineup churns ~monthly and several older codex slugs sunset
+// ~2026-07-23, so keep a fallback and re-verify against the box's `codex` build.
+// NOTE: "gpt-5.5-codex" / "o4-mini" do NOT exist as codex models — the codex
+// suffix lineup ended at gpt-5.3-codex; the current frontier is plain gpt-5.x.
+export const CODEX_MODELS = [
+  { value: "gpt-5.5", label: "GPT-5.5 · newest frontier (default)" },
+  { value: "gpt-5.4", label: "GPT-5.4 · flagship" },
+  { value: "gpt-5.4-mini", label: "GPT-5.4 mini · fast, efficient" },
+] as const;
+
 // Union of all known adapter configs. Per `adapterType` discrimination
 // lives in the server zod schema; client TS can pass any shape.
 export type AdapterConfig =
   | OpenclawAdapterConfig
   | HermesAdapterConfig
-  | ClaudeCodeAdapterConfig;
+  | ClaudeCodeAdapterConfig
+  | CodexAdapterConfig;
 
 // ── POST /api/adapters/openclaw/probe ──
 export interface ProbeRequest {

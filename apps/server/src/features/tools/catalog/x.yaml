@@ -39,7 +39,7 @@ metadataFields: []
 
 actions:
   - name: tweet
-    description: "Post a single tweet (up to 280 characters)."
+    description: "Post a single tweet. Standard length is 280 characters; longer posts (up to 25,000) require the account to have X Premium."
 
 hasDynamicActions: false
 hasTestConnection: true

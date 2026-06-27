@@ -1,10 +1,11 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, isNotNull, ne, sql } from "drizzle-orm";
 import {
   agentIdentities,
   companies,
   deployments,
 } from "@occa/shared/schema";
 import { db } from "../../../infra/database/client";
+import { PG_ERROR_CODES } from "../../../lib/pg-errors";
 
 /**
  * Mutate company row with on-chain cache columns. Idempotent: callers
@@ -125,20 +126,66 @@ export async function nextAgentIndex(companyId: string): Promise<number> {
 }
 
 /**
+ * Per-company deployment_index values already claimed in the DB, excluding
+ * the row being anchored. The (company_id, deployment_index) unique index
+ * means writing any of these onto another row throws — so the anchor probe
+ * must skip them, not just on-chain-occupied slots. Without this the prepare
+ * flow can pick an index that's free on chain but taken in the DB cache
+ * (drift), then deadlock on the unique violation.
+ */
+export async function usedDeploymentIndices(args: {
+  companyId: string;
+  excludeAgentId: string;
+}): Promise<Set<number>> {
+  const rows = await db
+    .select({ idx: deployments.deploymentIndex })
+    .from(deployments)
+    .where(
+      and(
+        eq(deployments.companyId, args.companyId),
+        ne(deployments.id, args.excludeAgentId),
+        isNotNull(deployments.deploymentIndex),
+      ),
+    );
+  return new Set(rows.map((r) => Number(r.idx)));
+}
+
+/**
  * Reserve an `agent_index` on a deployment row whose value drifts from
  * the one the prepare flow chose. Used so the FE-signed transaction
  * targets the exact PDA the server assigned.
  *
  * The (company_id, deployment_index) unique index in the DB will throw
  * if two callers race for the same slot — caller should treat that as
- * a collision signal and pick the next one.
+ * a collision signal and pick the next one. Returns false on a unique
+ * violation instead of throwing, so the request never hangs on an
+ * unhandled rejection.
  */
 export async function reserveAgentIndex(args: {
   agentId: string;
   agentIndex: number;
-}): Promise<void> {
-  await db
-    .update(deployments)
-    .set({ deploymentIndex: args.agentIndex, updatedAt: new Date() })
-    .where(eq(deployments.id, args.agentId));
+}): Promise<boolean> {
+  try {
+    await db
+      .update(deployments)
+      .set({ deploymentIndex: args.agentIndex, updatedAt: new Date() })
+      .where(eq(deployments.id, args.agentId));
+    return true;
+  } catch (err) {
+    if (isUniqueViolation(err)) return false;
+    throw err;
+  }
+}
+
+// Postgres unique-violation SQLSTATE. A drifted DB cache can collide on
+// (company_id, deployment_index) even after the on-chain probe — treat it
+// as "pick another index", not a crash. Drizzle wraps the pg error, so the
+// SQLSTATE may sit on the error itself or its `cause`.
+function isUniqueViolation(err: unknown): boolean {
+  const direct = (err as { code?: string }).code;
+  const wrapped = (err as { cause?: { code?: string } }).cause?.code;
+  return (
+    direct === PG_ERROR_CODES.UNIQUE_VIOLATION ||
+    wrapped === PG_ERROR_CODES.UNIQUE_VIOLATION
+  );
 }

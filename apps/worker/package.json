@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@occa/adapter-claude-code": "workspace:*",
+    "@occa/adapter-codex": "workspace:*",
     "@occa/adapter-hermes": "workspace:*",
     "@occa/adapter-openclaw": "workspace:*",
     "@occa/runtime-core": "workspace:*",

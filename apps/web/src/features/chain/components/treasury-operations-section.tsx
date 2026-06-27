@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
@@ -25,6 +25,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 import { useAnchorWallet } from "@/features/chain/hooks/use-anchor-wallet";
+import { usePayoutAsset } from "@/features/chain/hooks/use-payout-asset";
 import {
   classifyWalletError,
   type AnchorErrorCode,
@@ -66,6 +67,16 @@ const ANCHOR_WHITELIST = [
 
 function defaultWhitelistFor(kind: 0 | 1): string[] {
   return kind === 0 ? DISBURSEMENT_WHITELIST : ANCHOR_WHITELIST;
+}
+
+// Drift-banner detail copy, per account kind. The newer on-chain action that
+// triggered the drift differs by wallet: the Disbursement Wallet gained USDC
+// (SPL) payouts, the Anchor Wallet gained per-deliverable provenance. The old
+// copy named provenance for both, which read wrong on the disbursement card.
+function driftDetailCopy(kind: 0 | 1): string {
+  return kind === 0
+    ? "OCCA added on-chain USDC payouts that this wallet isn't permitted to sign yet. Sync permissions to turn it on — one owner signature, no other changes."
+    : "OCCA added a newer on-chain action (per-article provenance) that this wallet isn't permitted to sign yet. Sync permissions to turn it on — one owner signature, no other changes.";
 }
 
 function kindString(kind: 0 | 1): OperationsKindString {
@@ -382,10 +393,7 @@ function OperationsRow({
                 Action needed — new capability not enabled yet
               </p>
               <p className="mt-0.5 text-[11px] text-amber-100/70 leading-relaxed">
-                OCCA added a newer on-chain action (per-article provenance)
-                that this wallet isn&apos;t permitted to sign yet. Sync
-                permissions to turn it on — one owner signature, no other
-                changes.
+                {driftDetailCopy(ops.kind)}
               </p>
               <div className="mt-2">
                 <ManageOperationsButton
@@ -1202,6 +1210,30 @@ function RoutinePayoutConfirmModal({
   const canConfirm =
     !!d && !plan.isLoading && !nothingPayable && !insufficient && !busy;
 
+  // Full asset catalog (with mints) so amounts in ANY mint format correctly —
+  // a run can pay both the active asset and older invoices in another mint.
+  const payoutAsset = usePayoutAsset(companyId);
+  const assetByMint = useMemo(() => {
+    const m = new Map<string, PayoutAsset>();
+    for (const a of payoutAsset.data?.assets ?? []) m.set(a.mint, a);
+    return m;
+  }, [payoutAsset.data?.assets]);
+  const fmtMint = (amount: number, mint: string): string => {
+    const a = assetByMint.get(mint);
+    if (a) return fmtAsset(amount, a);
+    // Before the catalog loads: SOL is fixed, SPL defaults to USDC decimals.
+    if (mint === SOL_PSEUDO_MINT_BASE58)
+      return `${formatAssetAmount(amount, 9)} SOL`;
+    return formatAssetAmount(amount, 6);
+  };
+  // Legs paid this run in a mint OTHER than the active asset — surfaced so the
+  // SOL (or USDC) side of a mixed run isn't hidden from the totals.
+  const otherLegs = d
+    ? Object.entries(d.totalsByMint)
+        .filter(([mint, amount]) => mint !== d.payoutMint && amount > 0)
+        .map(([mint, amount]) => ({ mint, amount }))
+    : [];
+
   return (
     <Modal
       open={open}
@@ -1285,9 +1317,7 @@ function RoutinePayoutConfirmModal({
                       </span>
                     </span>
                     <span className="font-semibold text-white/90 tabular-nums">
-                      {a.mint === SOL_PSEUDO_MINT_BASE58
-                        ? `${formatAssetAmount(a.totalLamports, 9)} SOL`
-                        : fmtAsset(a.totalLamports, d.asset)}
+                      {fmtMint(a.totalLamports, a.mint)}
                     </span>
                   </div>
                 ))}
@@ -1352,6 +1382,27 @@ function RoutinePayoutConfirmModal({
                     </div>
                   )}
                 </div>
+              </div>
+            )}
+
+            {otherLegs.length > 0 && (
+              <div className="rounded-lg bg-white/3 px-3 py-2.5 text-[11px] space-y-1">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-white/35">
+                  Also paid this run
+                </p>
+                {otherLegs.map((leg) => (
+                  <Row
+                    key={leg.mint}
+                    label="To agents (net)"
+                    value={fmtMint(leg.amount, leg.mint)}
+                  />
+                ))}
+                <p className="text-[10px] text-white/30 leading-relaxed">
+                  Paid from each asset&apos;s own treasury balance, plus the
+                  same{" "}
+                  {(d.feeBps / 100).toFixed(d.feeBps % 100 === 0 ? 0 : 2)}% fee.
+                  The coverage check above only covers {d.asset.symbol}.
+                </p>
               </div>
             )}
 

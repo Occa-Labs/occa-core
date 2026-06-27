@@ -1,0 +1,36 @@
+{
+  "name": "@occa/gateway-codex",
+  "version": "0.1.0",
+  "description": "Codex Gateway — a thin HTTP service that wraps the `codex` CLI so OCCA can run Codex agents on a box it does not own (BYORT). Phase 1 ships the wire contract only; the service (codex-cli wrapper + HTTP server) lands in Phase 2.",
+  "license": "MIT",
+  "author": "OCCA",
+  "keywords": [
+    "occa",
+    "codex",
+    "openai",
+    "ai-agents",
+    "gateway",
+    "byort"
+  ],
+  "type": "module",
+  "private": true,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./wire": "./src/wire.ts"
+  },
+  "bin": {
+    "occa-codex-gateway": "./src/bin.ts"
+  },
+  "scripts": {
+    "dev": "tsx src/bin.ts",
+    "start": "tsx src/bin.ts",
+    "doctor": "tsx src/bin.ts doctor"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "tsx": "^4.21.0",
+    "typescript": "^5"
+  }
+}

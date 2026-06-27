@@ -4,6 +4,7 @@
 
 import { and, arrayOverlaps, desc, eq, ilike, inArray, or, sql } from "drizzle-orm";
 import { documents } from "@occa/shared/schema";
+import type { DocumentKind } from "@occa/shared/types";
 import { db } from "../../../infra/database/client";
 
 export type DocumentRow = typeof documents.$inferSelect;
@@ -18,15 +19,21 @@ export async function insertDocument(
 
 // Latest N documents for a company. Used by chat surface to surface
 // "recent work" snapshot — agent gets a feel for what the team shipped
-// without paying for full document bodies.
+// without paying for full document bodies. Optional `kind` filter keeps a
+// recency-ordered list from being flooded by process scratch (each news
+// cycle writes ~8 process docs per deliverable), which otherwise pushes the
+// real deliverables out of a bounded window.
 export async function listRecent(args: {
   companyId: string;
   limit: number;
+  kind?: DocumentKind;
 }): Promise<DocumentRow[]> {
+  const conditions = [eq(documents.companyId, args.companyId)];
+  if (args.kind) conditions.push(eq(documents.kind, args.kind));
   return db
     .select()
     .from(documents)
-    .where(eq(documents.companyId, args.companyId))
+    .where(and(...conditions))
     .orderBy(desc(documents.createdAt))
     .limit(args.limit);
 }
@@ -40,17 +47,18 @@ export async function listByAnyTag(args: {
   companyId: string;
   tags: string[];
   limit: number;
+  kind?: DocumentKind;
 }): Promise<DocumentRow[]> {
   if (args.tags.length === 0) return [];
+  const conditions = [
+    eq(documents.companyId, args.companyId),
+    arrayOverlaps(documents.tags, args.tags),
+  ];
+  if (args.kind) conditions.push(eq(documents.kind, args.kind));
   return db
     .select()
     .from(documents)
-    .where(
-      and(
-        eq(documents.companyId, args.companyId),
-        arrayOverlaps(documents.tags, args.tags),
-      ),
-    )
+    .where(and(...conditions))
     .orderBy(desc(documents.createdAt))
     .limit(args.limit);
 }

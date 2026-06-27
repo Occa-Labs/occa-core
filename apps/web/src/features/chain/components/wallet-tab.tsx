@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
+  AlertTriangle,
   Anchor,
   Check,
   Coins,
@@ -30,6 +31,11 @@ import { SOLANA_CAIP_CHAIN } from "@/lib/env-flags";
 import { formatRoleLabel } from "@/lib/format-role";
 import { CEO_ROLE } from "@occa/shared/role-catalog";
 import { useAnchorWallet } from "@/features/chain/hooks/use-anchor-wallet";
+import { usePayoutAsset } from "@/features/chain/hooks/use-payout-asset";
+import {
+  activeAssetSymbol,
+  agentMissingActiveRate,
+} from "@/features/chain/lib/payout-rate";
 import { AnchorAgentPanel } from "./anchor-panels";
 import {
   classifyWalletError,
@@ -179,6 +185,18 @@ export function WalletTab({
     agent.agentChainTxSignature === null;
   const isCeo = agent.role === CEO_ROLE;
 
+  // Active payout asset → flag when this agent has no task rate in it
+  // (completed tasks would generate no invoice). Pure UI reminder.
+  const payoutAsset = usePayoutAsset(agent.companyId);
+  const activeMint = payoutAsset.data?.activeMint;
+  const missingActiveRate = activeMint
+    ? agentMissingActiveRate(agent, activeMint)
+    : false;
+  const activeSymbol = activeAssetSymbol(
+    activeMint ?? "",
+    payoutAsset.data?.assets,
+  );
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex-1 min-h-0 overflow-y-auto px-5 py-5">
@@ -199,6 +217,17 @@ export function WalletTab({
         )}
 
         <div className="mt-4 space-y-4 max-w-3xl">
+          {missingActiveRate && (
+            <div className="flex items-start gap-2.5 rounded-xl border border-amber-400/25 bg-amber-400/8 px-3.5 py-2.5">
+              <AlertTriangle className="size-3.5 shrink-0 text-amber-300/90 mt-0.5" />
+              <p className="text-[11.5px] leading-snug text-amber-100/85">
+                No {activeSymbol} task rate set. The company pays in{" "}
+                {activeSymbol} right now, so this agent&apos;s completed tasks
+                won&apos;t be invoiced until you set a {activeSymbol} rate
+                below.
+              </p>
+            </div>
+          )}
           <ReceivingWalletCard
             agent={agent}
             wallet={wallet.data}

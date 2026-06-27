@@ -219,6 +219,7 @@ async function publishContent(
     content: input.content,
     format,
     tags: deliverableTags,
+    url,
   });
 
   return {

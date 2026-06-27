@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import {
+  AlertTriangle,
   Anchor,
   ArrowLeft,
   ArrowRight,
@@ -34,6 +35,11 @@ import type { AgentDTO, CompanyDTO } from "@occa/shared/types";
 import { TreasuryPane } from "./treasury-pane";
 import { WalletTab } from "./wallet-tab";
 import { AnchorSetupModal } from "./anchor-setup-modal";
+import { usePayoutAsset } from "../hooks/use-payout-asset";
+import {
+  activeAssetSymbol,
+  agentMissingActiveRate,
+} from "../lib/payout-rate";
 import { useCompanyAnchors } from "../api/use-company-anchors";
 import { useCompanyTraceAnchors } from "../api/use-company-trace-anchors";
 import { useCompanyTransactions } from "../api/use-company-transactions";
@@ -165,7 +171,12 @@ export function ChainWindow({
         />
         <div className="flex-1 flex flex-col min-w-0">
           {active === "agents" ? (
-            <AgentsSection agent={selectedAgent} onReloadMe={onReloadMe} />
+            <AgentsSection
+              agent={selectedAgent}
+              agents={agents}
+              companyId={company.id}
+              onReloadMe={onReloadMe}
+            />
           ) : (
             <div className="flex-1 overflow-y-auto px-5 py-5">
               {active === "registry" && (
@@ -850,11 +861,27 @@ function TransactionRow({ record }: { record: CompanyTransactionRecord }) {
 
 function AgentsSection({
   agent,
+  agents,
+  companyId,
   onReloadMe,
 }: {
   agent: AgentDTO | null;
+  agents: AgentDTO[];
+  companyId: string;
   onReloadMe: () => Promise<void> | void;
 }) {
+  // Roll-up: which active agents lack a rate in the active payout asset, so
+  // the operator sees the gap across the whole company without clicking each.
+  const payoutAsset = usePayoutAsset(companyId);
+  const activeMint = payoutAsset.data?.activeMint;
+  const activeSymbol = activeAssetSymbol(
+    activeMint ?? "",
+    payoutAsset.data?.assets,
+  );
+  const missing = activeMint
+    ? agents.filter((a) => agentMissingActiveRate(a, activeMint))
+    : [];
+
   if (!agent) {
     return (
       <div className="flex-1 overflow-y-auto px-5 py-5">
@@ -874,6 +901,25 @@ function AgentsSection({
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
+      {missing.length > 0 && (
+        <div className="shrink-0 mx-5 mt-4 flex items-start gap-2.5 rounded-xl border border-amber-400/25 bg-amber-400/8 px-3.5 py-2.5">
+          <AlertTriangle className="size-3.5 shrink-0 text-amber-300/90 mt-0.5" />
+          <p className="text-[11.5px] leading-snug text-amber-100/85">
+            {missing.length === 1
+              ? "1 agent has"
+              : `${missing.length} agents have`}{" "}
+            no {activeSymbol} task rate
+            {missing.length <= 5 && (
+              <span className="text-amber-100/60">
+                {" "}
+                ({missing.map((a) => a.name).join(", ")})
+              </span>
+            )}
+            . The company pays in {activeSymbol}, so their completed tasks
+            won&apos;t be invoiced until each has a {activeSymbol} rate set.
+          </p>
+        </div>
+      )}
       <WalletTab agent={agent} onReloadMe={onReloadMe} />
     </div>
   );

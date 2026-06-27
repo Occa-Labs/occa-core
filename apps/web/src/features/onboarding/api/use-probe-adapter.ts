@@ -26,6 +26,11 @@ export type ProbeAdapterInput =
       type: "claude-code";
       // Gateway-only (BYORT) — the gateway URL + bearer are required.
       input: { model?: string; gatewayUrl: string; apiKey: string };
+    }
+  | {
+      type: "codex";
+      // Gateway-only (BYORT) — the gateway URL + bearer are required.
+      input: { model?: string; gatewayUrl: string; apiKey: string };
     };
 
 export function useProbeAdapter() {
@@ -35,6 +40,8 @@ export function useProbeAdapter() {
         ? adaptersApi.probeOpenclaw(variables.input)
         : variables.type === "hermes"
           ? adaptersApi.probeHermes(variables.input)
-          : adaptersApi.probeClaudeCode(variables.input),
+          : variables.type === "claude-code"
+            ? adaptersApi.probeClaudeCode(variables.input)
+            : adaptersApi.probeCodex(variables.input),
   });
 }

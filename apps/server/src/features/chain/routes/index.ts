@@ -46,6 +46,7 @@ import {
 } from "../services/transaction";
 import {
   nextAgentIndex,
+  usedDeploymentIndices,
   persistAgentChainRegistration,
   persistAgentReceivingAddress,
   persistCompanyChainRegistration,
@@ -961,15 +962,23 @@ router.post(
       return;
     }
 
-    // Pick a free deployment_index. Prefer the row's reserved index if any.
+    // Pick a free deployment_index — free on chain AND not already claimed
+    // by another row in the DB. The (company, index) unique constraint
+    // rejects a DB collision even when the on-chain slot is open after
+    // drift, so skipping only on-chain-occupied slots isn't enough.
+    const usedInDb = await usedDeploymentIndices({
+      companyId: agent.companyId!,
+      excludeAgentId: agentId,
+    });
     let agentIndex =
       agent.deploymentIndex ?? (await nextAgentIndex(agent.companyId!));
     let agentPda: PublicKey | null = null;
-    for (let attempt = 0; attempt < 16; attempt += 1) {
+    for (let attempt = 0; attempt < 32; attempt += 1) {
       const probe = deriveDeploymentPda(companyPda, agentIndex);
       // eslint-disable-next-line no-await-in-loop
-      const exists = await accountExists(probe.pda);
-      if (!exists) {
+      const taken =
+        usedInDb.has(agentIndex) || (await accountExists(probe.pda));
+      if (!taken) {
         agentPda = probe.pda;
         break;
       }
@@ -982,9 +991,16 @@ router.post(
       return;
     }
 
-    // Pin the index on the row so confirm can't drift.
+    // Pin the index on the row so confirm can't drift. A false return means
+    // a concurrent caller grabbed the slot — surface a conflict, never hang.
     if (agent.deploymentIndex !== agentIndex) {
-      await reserveAgentIndex({ agentId, agentIndex });
+      const reserved = await reserveAgentIndex({ agentId, agentIndex });
+      if (!reserved) {
+        res
+          .status(StatusCodes.CONFLICT)
+          .json({ error: ERROR_CODES.CHAIN_TX_FAILED });
+        return;
+      }
     }
 
     const { instruction } = buildCreateDeploymentInstruction({
@@ -1266,15 +1282,22 @@ router.post(
     }
 
     // Allocate a free deployment_index. Same probe-loop as the legacy
-    // single-ix path so behaviour matches.
+    // single-ix path so behaviour matches: skip slots taken on chain AND
+    // slots already claimed in the DB (drift makes these diverge, and the
+    // (company, index) unique constraint rejects a DB collision).
+    const usedInDb = await usedDeploymentIndices({
+      companyId: agent.companyId!,
+      excludeAgentId: agentId,
+    });
     let agentIndex =
       agent.deploymentIndex ?? (await nextAgentIndex(agent.companyId!));
     let agentPda: PublicKey | null = null;
-    for (let attempt = 0; attempt < 16; attempt += 1) {
+    for (let attempt = 0; attempt < 32; attempt += 1) {
       const probe = deriveDeploymentPda(companyPda, agentIndex);
       // eslint-disable-next-line no-await-in-loop
-      const exists = await accountExists(probe.pda);
-      if (!exists) {
+      const taken =
+        usedInDb.has(agentIndex) || (await accountExists(probe.pda));
+      if (!taken) {
         agentPda = probe.pda;
         break;
       }
@@ -1287,8 +1310,16 @@ router.post(
       return;
     }
 
+    // A false return means a concurrent caller grabbed the slot — surface a
+    // conflict instead of letting the unique violation hang the request.
     if (agent.deploymentIndex !== agentIndex) {
-      await reserveAgentIndex({ agentId, agentIndex });
+      const reserved = await reserveAgentIndex({ agentId, agentIndex });
+      if (!reserved) {
+        res
+          .status(StatusCodes.CONFLICT)
+          .json({ error: ERROR_CODES.CHAIN_TX_FAILED });
+        return;
+      }
     }
 
     const instructions = [];

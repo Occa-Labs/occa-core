@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertCircle,
   CheckCircle2,
+  Cpu,
   HelpCircle,
   Loader2,
   Network,
@@ -22,7 +23,7 @@ import type {
   AdapterType,
   AgentDTO,
 } from "@occa/shared/types";
-import { CLAUDE_CODE_MODELS } from "@occa/shared/types";
+import { CLAUDE_CODE_MODELS, CODEX_MODELS } from "@occa/shared/types";
 import { CSUITE_ROLES, ROLE_LABELS, ROLE_ORDER } from "./_shared";
 
 type DeployStep = "form" | "probing" | "creating";
@@ -116,6 +117,11 @@ export function DeployAgentModal({
   const [model, setModel] = useState("sonnet");
   const [ccGatewayUrl, setCcGatewayUrl] = useState("");
   const [ccApiKey, setCcApiKey] = useState("");
+  // Codex form state — gateway-only (BYORT), same shape as Claude Code: the
+  // model plus the Codex Gateway URL + bearer the agent runs against.
+  const [codexModel, setCodexModel] = useState("gpt-5.5");
+  const [codexGatewayUrl, setCodexGatewayUrl] = useState("");
+  const [codexApiKey, setCodexApiKey] = useState("");
   // Optional flat per-task invoice rate, entered in SOL. Empty = no rate
   // (operator can set it later from the Wallet tab).
   const [taskRateSol, setTaskRateSol] = useState("");
@@ -164,9 +170,11 @@ export function DeployAgentModal({
   const credsFilled =
     adapterType === "claude-code"
       ? ccGatewayUrl.trim().length > 0 && ccApiKey.trim().length > 0
-      : adapterType === "openclaw"
-        ? gatewayUrl.trim().length > 0 && apiKey.trim().length > 0
-        : hermesGatewayUrl.trim().length > 0 && hermesApiKey.trim().length > 0;
+      : adapterType === "codex"
+        ? codexGatewayUrl.trim().length > 0 && codexApiKey.trim().length > 0
+        : adapterType === "openclaw"
+          ? gatewayUrl.trim().length > 0 && apiKey.trim().length > 0
+          : hermesGatewayUrl.trim().length > 0 && hermesApiKey.trim().length > 0;
   const canProbe = credsFilled && step === "form";
   const canCreate =
     name.trim().length > 0 &&
@@ -201,6 +209,11 @@ export function DeployAgentModal({
     setHermesGatewayUrl("");
     setHermesApiKey("");
     setModel("sonnet");
+    setCcGatewayUrl("");
+    setCcApiKey("");
+    setCodexModel("gpt-5.5");
+    setCodexGatewayUrl("");
+    setCodexApiKey("");
     setTaskRateSol("");
     setParentAgentId("");
     setStep("form");
@@ -246,15 +259,21 @@ export function DeployAgentModal({
                 ? { gatewayUrl: ccGatewayUrl.trim(), apiKey: ccApiKey.trim() }
                 : {}),
             })
-          : adapterType === "openclaw"
-            ? await adaptersApi.probeOpenclaw({
-                gatewayUrl: gatewayUrl.trim(),
-                apiKey: apiKey.trim(),
+          : adapterType === "codex"
+            ? await adaptersApi.probeCodex({
+                model: codexModel,
+                gatewayUrl: codexGatewayUrl.trim(),
+                apiKey: codexApiKey.trim(),
               })
-            : await adaptersApi.probeHermes({
-                gatewayUrl: hermesGatewayUrl.trim(),
-                apiKey: hermesApiKey.trim(),
-              });
+            : adapterType === "openclaw"
+              ? await adaptersApi.probeOpenclaw({
+                  gatewayUrl: gatewayUrl.trim(),
+                  apiKey: apiKey.trim(),
+                })
+              : await adaptersApi.probeHermes({
+                  gatewayUrl: hermesGatewayUrl.trim(),
+                  apiKey: hermesApiKey.trim(),
+                });
       setProbeResult({
         ok: res.ok,
         latencyMs: res.latencyMs,
@@ -281,6 +300,9 @@ export function DeployAgentModal({
     model,
     ccGatewayUrl,
     ccApiKey,
+    codexModel,
+    codexGatewayUrl,
+    codexApiKey,
   ]);
 
   type StreamErrorBody = {
@@ -323,12 +345,18 @@ export function DeployAgentModal({
                 ? { gatewayUrl: ccGatewayUrl.trim(), apiKey: ccApiKey.trim() }
                 : {}),
             }
-          : adapterType === "openclaw"
-            ? { gatewayUrl: gatewayUrl.trim(), apiKey: apiKey.trim() }
-            : {
-                gatewayUrl: hermesGatewayUrl.trim(),
-                apiKey: hermesApiKey.trim(),
-              };
+          : adapterType === "codex"
+            ? {
+                model: codexModel,
+                gatewayUrl: codexGatewayUrl.trim(),
+                apiKey: codexApiKey.trim(),
+              }
+            : adapterType === "openclaw"
+              ? { gatewayUrl: gatewayUrl.trim(), apiKey: apiKey.trim() }
+              : {
+                  gatewayUrl: hermesGatewayUrl.trim(),
+                  apiKey: hermesApiKey.trim(),
+                };
       const res = await agentsApi.createStream(
         {
           name: name.trim(),
@@ -372,6 +400,9 @@ export function DeployAgentModal({
     model,
     ccGatewayUrl,
     ccApiKey,
+    codexModel,
+    codexGatewayUrl,
+    codexApiKey,
     parentAgentId,
     taskRateSol,
     companyId,
@@ -620,6 +651,13 @@ export function DeployAgentModal({
                 label="Claude Code"
                 onClick={() => switchAdapter("claude-code")}
               />
+              <AdapterTab
+                active={adapterType === "codex"}
+                disabled={busy}
+                icon={<Cpu className="size-3" />}
+                label="Codex"
+                onClick={() => switchAdapter("codex")}
+              />
             </div>
           </div>
 
@@ -631,6 +669,12 @@ export function DeployAgentModal({
               Runs on a Claude subscription via a Claude Gateway on the host
               box (BYORT). Set the gateway URL + bearer below. For local dev,
               run a gateway on localhost.
+            </p>
+          ) : adapterType === "codex" ? (
+            <p className="text-[11px] text-white/40 leading-relaxed">
+              Runs on OpenAI Codex via a Codex Gateway on the host box (BYORT).
+              Set the gateway URL + bearer below. For local dev, run a gateway
+              on localhost.
             </p>
           ) : (
             <button
@@ -690,6 +734,59 @@ export function DeployAgentModal({
                   value={ccApiKey}
                   onChange={(e) => {
                     setCcApiKey(e.target.value);
+                    setProbeResult(null);
+                    setFailedAgentId(null);
+                  }}
+                  placeholder="gateway bearer (required with a gateway)"
+                  type="password"
+                  disabled={busy}
+                  className="w-full rounded-xl bg-white/5 ring-1 ring-inset ring-white/10 focus:ring-white/22 focus:outline-none px-3.5 py-2.5 text-[13px] text-white/85 transition disabled:opacity-50 font-mono"
+                />
+              </div>
+            </div>
+          ) : adapterType === "codex" ? (
+            <div className="space-y-2.5">
+              <label className="block">
+                <span className="text-[11px] text-white/50 mb-1.5 block">
+                  Model
+                </span>
+                <select
+                  value={codexModel}
+                  onChange={(e) => {
+                    setCodexModel(e.target.value);
+                    setProbeResult(null);
+                    setFailedAgentId(null);
+                  }}
+                  disabled={busy}
+                  className="w-full rounded-xl bg-white/5 ring-1 ring-inset ring-white/10 focus:ring-white/22 focus:outline-none px-3.5 py-2.5 text-[13px] text-white/85 transition disabled:opacity-50 font-mono"
+                >
+                  {CODEX_MODELS.map((m) => (
+                    <option key={m.value} value={m.value}>
+                      {m.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="space-y-2 rounded-xl ring-1 ring-inset ring-white/10 bg-white/2 p-3">
+                <span className="text-[11px] text-white/50 block">
+                  Codex Gateway (BYORT)
+                </span>
+                <input
+                  value={codexGatewayUrl}
+                  onChange={(e) => {
+                    setCodexGatewayUrl(e.target.value);
+                    setProbeResult(null);
+                    setFailedAgentId(null);
+                  }}
+                  placeholder="https://codex.your-box.com"
+                  type="url"
+                  disabled={busy}
+                  className="w-full rounded-xl bg-white/5 ring-1 ring-inset ring-white/10 focus:ring-white/22 focus:outline-none px-3.5 py-2.5 text-[13px] text-white/85 transition disabled:opacity-50 font-mono"
+                />
+                <input
+                  value={codexApiKey}
+                  onChange={(e) => {
+                    setCodexApiKey(e.target.value);
                     setProbeResult(null);
                     setFailedAgentId(null);
                   }}

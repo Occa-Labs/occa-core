@@ -41,6 +41,7 @@ export interface SaveDeliverableInput {
   content: string; // markdown body
   format?: string;
   tags: string[];
+  url?: string | null; // live URL the receiver returned, when published
 }
 
 export async function saveDeliverableDocument(
@@ -55,6 +56,7 @@ export async function saveDeliverableDocument(
       title: input.title,
       content: input.content,
       format: input.format ?? "markdown",
+      url: input.url ?? null,
       tags: input.tags,
       kind: "deliverable" satisfies DocumentKind,
     });

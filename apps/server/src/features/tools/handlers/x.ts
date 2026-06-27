@@ -16,6 +16,13 @@ import type { ToolHandler, ToolInvokeResult } from "../domain/types";
 
 const X_TWEET_URL = "https://api.twitter.com/2/tweets";
 
+// Max characters per post. 280 is the standard ceiling; an X Premium
+// (verified) account can post up to 25,000 via the same /2/tweets endpoint
+// (a "note tweet" — no special param, X promotes it automatically). The
+// configured account here is Premium, so we allow the higher ceiling; the
+// API still rejects >280 if the account ever loses Premium.
+const MAX_TWEET_CHARS = 25000;
+
 const credentialsSchema = z.object({
   apiKey: z.string().min(1),
   apiSecret: z.string().min(1),
@@ -26,7 +33,7 @@ const credentialsSchema = z.object({
 type XCredentials = z.infer<typeof credentialsSchema>;
 
 const tweetInputSchema = z.object({
-  text: z.string().min(1).max(280),
+  text: z.string().min(1).max(MAX_TWEET_CHARS),
 });
 
 const tweetOutputSchema = z.object({
@@ -226,7 +233,8 @@ export const xHandler: ToolHandler = {
   actions: {
     tweet: {
       name: "tweet",
-      description: "Post a single tweet (up to 280 characters).",
+      description:
+        "Post a single tweet. Standard length is 280 characters; longer posts (up to 25,000) require the account to have X Premium.",
       inputSchema: tweetInputSchema,
       outputSchema: tweetOutputSchema,
       invoke: async (ctx, input) => {

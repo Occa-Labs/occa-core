@@ -241,13 +241,14 @@ router.get(
         new PublicKey(identity.agentPubkey),
       ).pda;
     } catch (err) {
-      log.error(
+      // Placeholder pubkey from a pre-chain deployment (not valid base58) —
+      // the agent simply isn't anchored yet. That's a normal pre-anchor
+      // state, not a server fault: report it as not-anchored, not a 500.
+      log.warn(
         { err, deploymentId, identityId: identity.id },
-        "onchain: invalid stored pubkey",
+        "onchain: unanchored agent (placeholder pubkey)",
       );
-      res
-        .status(StatusCodes.INTERNAL_SERVER_ERROR)
-        .json({ error: ERROR_CODES.INTERNAL_ERROR });
+      res.status(StatusCodes.OK).json({ deployment: null, identity: null });
       return;
     }
 

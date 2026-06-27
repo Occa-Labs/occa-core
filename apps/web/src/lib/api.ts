@@ -151,6 +151,11 @@ export const adaptersApi = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+  probeCodex: (input: { model?: string; gatewayUrl?: string; apiKey?: string }) =>
+    request<ProbeResponse>("/api/adapters/codex/probe", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
 };
 
 // ── On-chain Registry ──────────────────────────────────────────────────────
@@ -1064,7 +1069,11 @@ export const agentsApi = {
         }
       | {
           adapterType: "claude-code";
-          adapterConfig: { model?: string };
+          adapterConfig: { model?: string; gatewayUrl?: string; apiKey?: string };
+        }
+      | {
+          adapterType: "codex";
+          adapterConfig: { model?: string; gatewayUrl: string; apiKey: string };
         },
   ) =>
     request<AgentResponse>(`/api/agents/${id}/adapter/switch`, {

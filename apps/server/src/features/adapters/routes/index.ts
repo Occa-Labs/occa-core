@@ -218,4 +218,45 @@ router.post(
   },
 );
 
+// POST /api/adapters/codex/probe
+//
+// codex is gateway-only (BYORT). probeConnection hits the Codex Gateway's
+// /v1/health, which confirms codex is installed and the auth (OPENAI_API_KEY
+// or a `codex login` session) resolves on the gateway box.
+const codexProbeBody = z.object({
+  model: z.string().trim().min(1).max(LIMITS.LABEL).optional(),
+  gatewayUrl: z.string().url(),
+  apiKey: z.string().min(1).max(LIMITS.API_KEY),
+});
+
+router.post(
+  "/codex/probe",
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const parsed = codexProbeBody.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(StatusCodes.BAD_REQUEST).json({
+        error: ERROR_CODES.INVALID_BODY,
+        detail: parsed.error.flatten(),
+      });
+      return;
+    }
+    const adapter = getAdapter("codex");
+    if (!adapter) {
+      res
+        .status(StatusCodes.INTERNAL_SERVER_ERROR)
+        .json({ error: ERROR_CODES.INTERNAL_ERROR });
+      return;
+    }
+    const result = await adapter.probeConnection(parsed.data);
+    const payload: ProbeResponse = {
+      ok: result.ok,
+      latencyMs: result.latencyMs,
+      error: result.error as ProbeResponse["error"],
+      info: result.info as ProbeResponse["info"],
+    };
+    res.status(StatusCodes.OK).json(payload);
+  },
+);
+
 export default router;

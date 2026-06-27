@@ -124,6 +124,49 @@ export function AdapterCredsHelp({ adapter }: { adapter: AdapterType }) {
     );
   }
 
+  if (adapter === "codex") {
+    return (
+      <div className="space-y-4 px-4 py-4">
+        <p className="text-[12px] leading-relaxed text-white/45">
+          Codex (OpenAI) runs via a Codex Gateway you host (BYORT). The gateway
+          wraps <C>codex exec</C> over HTTP; OCCA never spawns <C>codex</C>{" "}
+          itself, it always talks to your gateway. The per-agent knob is the
+          model (<C>gpt-5.5</C> / <C>gpt-5.4</C> / <C>gpt-5.4-mini</C>).
+        </p>
+
+        <HelpField label="Gateway URL">
+          <p>
+            The public <C>https://</C> URL of the Codex Gateway service. Install{" "}
+            <C>codex</C> on the host, authenticate it, then run the gateway and
+            front it with Caddy + TLS so it is reachable as{" "}
+            <C>https://your-host</C>.
+          </p>
+          <p>
+            For local dev, run a gateway on the same box and use{" "}
+            <C>http://localhost:8719</C>.
+          </p>
+        </HelpField>
+
+        <HelpField label="API key">
+          <p>
+            The <C>CODEX_GATEWAY_TOKEN</C> you set when starting the gateway,
+            sent as <C>Authorization: Bearer</C>. It is the only secret OCCA
+            stores; the host&apos;s codex auth never leaves the box. The probe
+            hits <C>GET /v1/health</C> with it to verify the connection.
+          </p>
+        </HelpField>
+
+        <HelpField label="Billing">
+          <p>
+            Headless <C>codex exec</C> runs on the host&apos;s codex auth — an
+            <C>OPENAI_API_KEY</C> or a <C>codex login</C> ChatGPT session on the
+            box. One gateway can serve many agents.
+          </p>
+        </HelpField>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4 px-4 py-4">
       <p className="text-[12px] leading-relaxed text-white/45">

@@ -36,10 +36,20 @@ export const claudeCodeAdapterConfigSchema = z.object({
   apiKey: z.string().min(1).max(LIMITS.API_KEY),
 });
 
+// codex is gateway-only BYORT, same shape as claude-code: an OCCA-held gateway
+// bearer + a per-agent model. Codex authenticates on the gateway box
+// (OPENAI_API_KEY / `codex login`); OCCA never holds the model credential.
+export const codexAdapterConfigSchema = z.object({
+  model: z.string().trim().min(1).max(LIMITS.LABEL).optional(),
+  gatewayUrl: z.string().url(),
+  apiKey: z.string().min(1).max(LIMITS.API_KEY),
+});
+
 export const adapterConfigSchema = z.union([
   openclawAdapterConfigSchema,
   hermesAdapterConfigSchema,
   claudeCodeAdapterConfigSchema,
+  codexAdapterConfigSchema,
 ]);
 
 // Upper bound for a per-task invoice rate (lamports). 1000 SOL — far above
@@ -116,6 +126,11 @@ export const createAgentBody = z.discriminatedUnion("adapterType", [
     ...createAgentSharedFields,
     adapterType: z.literal("claude-code"),
     adapterConfig: claudeCodeAdapterConfigSchema,
+  }),
+  z.object({
+    ...createAgentSharedFields,
+    adapterType: z.literal("codex"),
+    adapterConfig: codexAdapterConfigSchema,
   }),
 ]);
 
@@ -214,6 +229,10 @@ export const switchAdapterBody = z.discriminatedUnion("adapterType", [
   z.object({
     adapterType: z.literal("claude-code"),
     adapterConfig: claudeCodeAdapterConfigSchema,
+  }),
+  z.object({
+    adapterType: z.literal("codex"),
+    adapterConfig: codexAdapterConfigSchema,
   }),
 ]);
 

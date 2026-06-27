@@ -309,6 +309,12 @@ export const documents = pgTable(
     content: text("content").notNull(), // markdown body
     format: text("format").notNull().default("markdown"),
 
+    // Canonical live URL of this deliverable when it was shipped to an
+    // external receiver (the publish tool's receiver returns a { url }).
+    // NULL for `process` scratch and anything never published outward.
+    // Lets read paths surface a real link back to the published piece.
+    url: text("url"),
+
     tags: text("tags").array().notNull().default(sql`'{}'::text[]`),
 
     // `deliverable` (shipped/published work, real headline + topic tags) vs

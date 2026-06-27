@@ -10,6 +10,7 @@
 
 import { Router, type Request, type Response } from "express";
 import { ERROR_CODES } from "@occa/shared/error-codes";
+import { DOCUMENT_KINDS, type DocumentKind } from "@occa/shared/types";
 import { StatusCodes } from "http-status-codes";
 import { requireAgentToken } from "../../../middleware/agent-auth";
 import {
@@ -34,6 +35,7 @@ interface AgentDocumentDTO {
   deploymentId: string | null;
   title: string;
   format: string;
+  url: string | null;
   tags: string[];
   createdAt: string;
 }
@@ -49,6 +51,7 @@ function toAgentDocumentListItem(row: DocumentRow): AgentDocumentDTO {
     deploymentId: row.deploymentId,
     title: row.title,
     format: row.format,
+    url: row.url,
     tags: row.tags,
     createdAt: row.createdAt.toISOString(),
   };
@@ -61,9 +64,12 @@ function toAgentDocumentFull(row: DocumentRow): AgentDocumentFullDTO {
 const AGENT_DOCS_DEFAULT_LIMIT = 25;
 const AGENT_DOCS_MAX_LIMIT = 100;
 
-// GET /api/me/agent/documents?tags=foo,bar&limit=25
+// GET /api/me/agent/documents?tags=foo,bar&limit=25&kind=deliverable
 // List documents in the agent's company, recency-ordered. ?tags filters
-// to docs whose tags overlap any of the comma-separated values.
+// to docs whose tags overlap any of the comma-separated values. ?kind
+// filters to a single document kind — pass `deliverable` so a recency
+// window isn't flooded by process scratch (each pipeline run writes ~8
+// process docs per deliverable). An unrecognized kind is ignored.
 router.get("/", requireAgentToken, async (req: Request, res: Response) => {
   const { companyId } = req.agent!;
 
@@ -80,10 +86,14 @@ router.get("/", requireAgentToken, async (req: Request, res: Response) => {
     .map((t) => t.trim())
     .filter((t) => t.length > 0);
 
+  const kind = DOCUMENT_KINDS.includes(req.query.kind as DocumentKind)
+    ? (req.query.kind as DocumentKind)
+    : undefined;
+
   const rows =
     tags.length > 0
-      ? await listDocumentsByAnyTag({ companyId, tags, limit })
-      : await listRecentDocuments({ companyId, limit });
+      ? await listDocumentsByAnyTag({ companyId, tags, limit, kind })
+      : await listRecentDocuments({ companyId, limit, kind });
 
   res.json({ documents: rows.map(toAgentDocumentListItem) });
 });

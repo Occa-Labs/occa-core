@@ -4,18 +4,27 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertCircle, CheckCircle2, HelpCircle, Loader2 } from "lucide-react";
 import { ApiError, adaptersApi, agentsApi } from "@/lib/api";
 import type { AgentDTO } from "@occa/shared/types";
-import { CLAUDE_CODE_MODELS } from "@occa/shared/types";
+import { CLAUDE_CODE_MODELS, CODEX_MODELS } from "@occa/shared/types";
 import { Modal } from "@/components/ui/modal";
 import { FloatingPanel } from "@/components/ui/floating-panel";
 import { Button } from "@/components/ui/button";
 import { AdapterCredsHelp } from "./adapter-creds-help";
 
-type TargetAdapter = "openclaw" | "hermes" | "claude-code";
+type TargetAdapter = "openclaw" | "hermes" | "claude-code" | "codex";
 
 const ADAPTER_LABELS: Record<TargetAdapter, string> = {
   openclaw: "OpenClaw",
   hermes: "Hermes",
   "claude-code": "Claude Code",
+  codex: "Codex",
+};
+
+// Runtimes whose only per-agent knob is a model picked from a gateway-backed
+// list (claude-code, codex) — they share one form layout, differing only in
+// the model list + copy. The HTTP adapters (openclaw, hermes) take URL + key.
+const MODEL_DEFAULTS: Partial<Record<TargetAdapter, string>> = {
+  "claude-code": "sonnet",
+  codex: "gpt-5.5",
 };
 
 // Move an already-deployed agent to a different runtime. Provision +
@@ -74,12 +83,16 @@ export function SwitchAdapterModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  // Changing the target invalidates a stale probe (creds differ).
+  // Changing the target invalidates a stale probe (creds differ). For a
+  // model-backed runtime, also reset the model to that runtime's default so a
+  // stale "sonnet" doesn't carry into a codex switch (and vice versa).
   const handleTargetChange = useCallback((next: TargetAdapter) => {
     setTarget((prev) => {
       if (prev === next) return prev;
       setProbe(null);
       setError(null);
+      const def = MODEL_DEFAULTS[next];
+      if (def) setModel(def);
       return next;
     });
   }, []);
@@ -104,15 +117,22 @@ export function SwitchAdapterModal({
                 ? { gatewayUrl: gatewayUrl.trim(), apiKey: apiKey.trim() }
                 : {}),
             })
-          : target === "openclaw"
-            ? await adaptersApi.probeOpenclaw({
-                gatewayUrl: gatewayUrl.trim(),
-                apiKey: apiKey.trim(),
+          : target === "codex"
+            ? await adaptersApi.probeCodex({
+                model,
+                ...(gatewayUrl.trim() && apiKey.trim()
+                  ? { gatewayUrl: gatewayUrl.trim(), apiKey: apiKey.trim() }
+                  : {}),
               })
-            : await adaptersApi.probeHermes({
-                gatewayUrl: gatewayUrl.trim(),
-                apiKey: apiKey.trim(),
-              });
+            : target === "openclaw"
+              ? await adaptersApi.probeOpenclaw({
+                  gatewayUrl: gatewayUrl.trim(),
+                  apiKey: apiKey.trim(),
+                })
+              : await adaptersApi.probeHermes({
+                  gatewayUrl: gatewayUrl.trim(),
+                  apiKey: apiKey.trim(),
+                });
       setProbe({ ok: res.ok, latencyMs: res.latencyMs, error: res.error });
     } catch (e) {
       setProbe({
@@ -139,6 +159,15 @@ export function SwitchAdapterModal({
             ...(gatewayUrl.trim() && apiKey.trim()
               ? { gatewayUrl: gatewayUrl.trim(), apiKey: apiKey.trim() }
               : {}),
+          },
+        });
+      } else if (target === "codex") {
+        await agentsApi.switchAdapter(agent.id, {
+          adapterType: "codex",
+          adapterConfig: {
+            model,
+            gatewayUrl: gatewayUrl.trim(),
+            apiKey: apiKey.trim(),
           },
         });
       } else {
@@ -214,9 +243,9 @@ export function SwitchAdapterModal({
           Where do I find the {ADAPTER_LABELS[target]} Gateway URL and API key?
         </button>
 
-        {/* Config — claude-code is credential-less (host auth), so it only
-            picks a model; the HTTP adapters collect gateway + bearer. */}
-        {target === "claude-code" ? (
+        {/* Config — claude-code / codex pick a model + a gateway (host auth
+            lives on the box); the HTTP adapters collect gateway + bearer. */}
+        {target === "claude-code" || target === "codex" ? (
           <div className="space-y-2.5">
             <label className="block">
               <span className="text-[10px] uppercase tracking-wider text-white/40">
@@ -230,21 +259,25 @@ export function SwitchAdapterModal({
                 }}
                 className="mt-1 w-full rounded-md border border-white/12 bg-white/5 px-3 py-2 text-xs text-white/90 font-mono focus:outline-none focus:ring-1 focus:ring-white/25"
               >
-                {CLAUDE_CODE_MODELS.map((m) => (
-                  <option key={m.value} value={m.value}>
-                    {m.label}
-                  </option>
-                ))}
+                {(target === "codex" ? CODEX_MODELS : CLAUDE_CODE_MODELS).map(
+                  (m) => (
+                    <option key={m.value} value={m.value}>
+                      {m.label}
+                    </option>
+                  ),
+                )}
               </select>
             </label>
             <p className="text-[10px] text-white/35 leading-relaxed">
-              Runs on a Claude subscription via a Claude Gateway on the host
-              box. Sonnet is the efficient default; Fable is most capable but
-              priciest.
+              {target === "codex"
+                ? "Runs on OpenAI Codex via a Codex Gateway on the host box. gpt-5.5 is newest; gpt-5.4-mini is cheapest."
+                : "Runs on a Claude subscription via a Claude Gateway on the host box. Sonnet is the efficient default; Fable is most capable but priciest."}
             </p>
             <div className="space-y-2.5 rounded-md border border-white/10 bg-white/2 p-2.5">
               <span className="text-[10px] uppercase tracking-wider text-white/40">
-                Claude Gateway (BYORT)
+                {target === "codex"
+                  ? "Codex Gateway (BYORT)"
+                  : "Claude Gateway (BYORT)"}
               </span>
               <input
                 value={gatewayUrl}
@@ -252,7 +285,11 @@ export function SwitchAdapterModal({
                   setGatewayUrl(e.target.value);
                   setProbe(null);
                 }}
-                placeholder="https://claude.your-box.com"
+                placeholder={
+                  target === "codex"
+                    ? "https://codex.your-box.com"
+                    : "https://claude.your-box.com"
+                }
                 className="w-full rounded-md border border-white/12 bg-white/5 px-3 py-2 text-xs text-white/90 font-mono focus:outline-none focus:ring-1 focus:ring-white/25"
               />
               <input

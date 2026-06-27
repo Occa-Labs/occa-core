@@ -15,6 +15,7 @@
 import { useState } from "react";
 import {
   CheckCircle2,
+  Cpu,
   Info,
   Loader2,
   Network,
@@ -23,7 +24,7 @@ import {
 } from "lucide-react";
 import { ApiError } from "@/lib/api";
 import type { AdapterType } from "@occa/shared/types";
-import { CLAUDE_CODE_MODELS } from "@occa/shared/types";
+import { CLAUDE_CODE_MODELS, CODEX_MODELS } from "@occa/shared/types";
 import { FloatingPanel } from "@/components/ui/floating-panel";
 import { useProbeAdapter } from "../api/use-probe-adapter";
 import {
@@ -54,6 +55,13 @@ interface StepRuntimeProps {
   ccApiKey: string;
   onCcGatewayUrlChange: (next: string) => void;
   onCcApiKeyChange: (next: string) => void;
+  // codex (gateway-only BYORT — model + Codex Gateway URL + bearer)
+  codexModel: string;
+  onCodexModelChange: (next: string) => void;
+  codexGatewayUrl: string;
+  codexApiKey: string;
+  onCodexGatewayUrlChange: (next: string) => void;
+  onCodexApiKeyChange: (next: string) => void;
 
   onContinue: () => void;
   onBack: () => void;
@@ -85,21 +93,30 @@ export function StepRuntime(props: StepRuntimeProps) {
                 apiKey: props.ccApiKey.trim(),
               },
             })
-          : adapterType === "openclaw"
+          : adapterType === "codex"
             ? await probe.mutateAsync({
-                type: "openclaw",
+                type: "codex",
                 input: {
-                  gatewayUrl: props.gatewayUrl.trim(),
-                  apiKey: props.apiKey.trim(),
+                  model: props.codexModel,
+                  gatewayUrl: props.codexGatewayUrl.trim(),
+                  apiKey: props.codexApiKey.trim(),
                 },
               })
-            : await probe.mutateAsync({
-                type: "hermes",
-                input: {
-                  gatewayUrl: props.hermesGatewayUrl.trim(),
-                  apiKey: props.hermesApiKey.trim(),
-                },
-              });
+            : adapterType === "openclaw"
+              ? await probe.mutateAsync({
+                  type: "openclaw",
+                  input: {
+                    gatewayUrl: props.gatewayUrl.trim(),
+                    apiKey: props.apiKey.trim(),
+                  },
+                })
+              : await probe.mutateAsync({
+                  type: "hermes",
+                  input: {
+                    gatewayUrl: props.hermesGatewayUrl.trim(),
+                    apiKey: props.hermesApiKey.trim(),
+                  },
+                });
       if (result.ok) onContinue();
     } catch {
       /* error surfaced inline below */
@@ -174,6 +191,13 @@ export function StepRuntime(props: StepRuntimeProps) {
             description="Runs on a Claude subscription via a Claude Gateway (BYORT)."
             onSelect={() => switchAdapter("claude-code")}
           />
+          <AdapterCard
+            active={adapterType === "codex"}
+            icon={<Cpu className="size-4" />}
+            label="Codex"
+            description="Runs on OpenAI Codex via a Codex Gateway (BYORT)."
+            onSelect={() => switchAdapter("codex")}
+          />
         </div>
 
         {adapterType === "claude-code" ? (
@@ -191,6 +215,24 @@ export function StepRuntime(props: StepRuntimeProps) {
             }}
             onApiKeyChange={(next) => {
               props.onCcApiKeyChange(next);
+              probe.reset();
+            }}
+          />
+        ) : adapterType === "codex" ? (
+          <CodexForm
+            model={props.codexModel}
+            onModelChange={(next) => {
+              props.onCodexModelChange(next);
+              probe.reset();
+            }}
+            gatewayUrl={props.codexGatewayUrl}
+            apiKey={props.codexApiKey}
+            onGatewayUrlChange={(next) => {
+              props.onCodexGatewayUrlChange(next);
+              probe.reset();
+            }}
+            onApiKeyChange={(next) => {
+              props.onCodexApiKeyChange(next);
               probe.reset();
             }}
           />
@@ -319,6 +361,13 @@ function isFormReady(props: StepRuntimeProps): boolean {
       props.ccGatewayUrl.trim().length > 0 && props.ccApiKey.trim().length > 0
     );
   }
+  // codex is gateway-only — needs the Codex Gateway URL + bearer.
+  if (props.adapterType === "codex") {
+    return (
+      props.codexGatewayUrl.trim().length > 0 &&
+      props.codexApiKey.trim().length > 0
+    );
+  }
   if (props.adapterType === "openclaw") {
     return (
       props.gatewayUrl.trim().length > 0 && props.apiKey.trim().length > 0
@@ -441,6 +490,71 @@ function ClaudeCodeForm({
         Runs on a Claude subscription via a Claude Gateway on the host box
         (BYORT). For local dev, run a gateway on localhost. sonnet is
         cheapest; opus for higher quality.
+      </p>
+    </div>
+  );
+}
+
+function CodexForm({
+  model,
+  onModelChange,
+  gatewayUrl,
+  apiKey,
+  onGatewayUrlChange,
+  onApiKeyChange,
+}: {
+  model: string;
+  onModelChange: (next: string) => void;
+  gatewayUrl: string;
+  apiKey: string;
+  onGatewayUrlChange: (next: string) => void;
+  onApiKeyChange: (next: string) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-1.5">
+        <span className="text-[10px] uppercase tracking-wider text-white/40">
+          Model
+        </span>
+        <select
+          value={model}
+          onChange={(e) => onModelChange(e.target.value)}
+          className="rounded-md border border-white/10 bg-white/5 px-3 py-2 font-mono text-[12px] text-white focus:border-white/25 focus:outline-none"
+        >
+          {CODEX_MODELS.map((m) => (
+            <option key={m.value} value={m.value}>
+              {m.label}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <span className="text-[10px] uppercase tracking-wider text-white/40">
+          Codex Gateway URL
+        </span>
+        <input
+          value={gatewayUrl}
+          onChange={(e) => onGatewayUrlChange(e.target.value)}
+          placeholder="https://codex.your-box.com"
+          className="rounded-md border border-white/10 bg-white/5 px-3 py-2 font-mono text-[12px] text-white focus:border-white/25 focus:outline-none"
+        />
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <span className="text-[10px] uppercase tracking-wider text-white/40">
+          Gateway bearer
+        </span>
+        <input
+          value={apiKey}
+          onChange={(e) => onApiKeyChange(e.target.value)}
+          type="password"
+          placeholder="paste gateway token"
+          className="rounded-md border border-white/10 bg-white/5 px-3 py-2 font-mono text-[12px] text-white focus:border-white/25 focus:outline-none"
+        />
+      </div>
+      <p className="text-[11px] text-white/40 leading-relaxed">
+        Runs on OpenAI Codex via a Codex Gateway on the host box (BYORT). For
+        local dev, run a gateway on localhost. gpt-5.5 is newest; gpt-5.4-mini
+        is cheapest.
       </p>
     </div>
   );
