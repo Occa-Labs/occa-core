@@ -27,6 +27,7 @@ import {
   deriveOperationsPda,
   derivePolicyPda,
   deriveTreasuryPda,
+  formatChainError,
 } from "@occa/sdk";
 import { getConnection } from "../../../infra/solana/connection";
 import { getOperatorKeypair } from "../../../infra/solana/operator-signer";
@@ -279,7 +280,7 @@ async function executeOnePayout(
     // trust in autonomous payouts. Surface as a hard failure with the
     // chain error attached.
     if (confirm.value.err) {
-      const chainErr = stringifyChainErr(confirm.value.err);
+      const chainErr = formatChainError(confirm.value.err, "treasury");
       log.error(
         { signature, chainErr, deploymentId: args.agent.deploymentId },
         "payout tx reverted on-chain",
@@ -295,31 +296,18 @@ async function executeOnePayout(
   } catch (err) {
     // err can be a Solana SendTransactionError (object with InstructionError
     // field), a plain Error, or a string. `String({...})` returns
-    // "[object Object]" which is useless in the UI — extract a real
-    // message via stringifyChainErr first, then fall back to err.message.
+    // "[object Object]" which is useless in the UI — decode a real
+    // message via formatChainError first, then fall back to err.message.
     const inner = (err as { logs?: unknown; InstructionError?: unknown } | null)
       ?? null;
     const message =
       err instanceof Error
-        ? err.message || stringifyChainErr(inner ?? err)
-        : stringifyChainErr(err);
+        ? err.message || formatChainError(inner ?? err, "treasury")
+        : formatChainError(err, "treasury");
     log.error(
       { err, deploymentId: args.agent.deploymentId },
       "payout tx failed",
     );
     return { ...base, signature: null, error: message };
-  }
-}
-
-// `confirmTransaction` returns a Solana `TransactionError`, which can be
-// a string (rare) or an object like `{ InstructionError: [0, { Custom: 6014 }] }`.
-// JSON-stringify so the FE / logs get something human-readable instead of
-// "[object Object]".
-function stringifyChainErr(err: unknown): string {
-  if (typeof err === "string") return err;
-  try {
-    return JSON.stringify(err);
-  } catch {
-    return "unknown chain error";
   }
 }

@@ -42,3 +42,6 @@ coverage
 .claude
 .github
 CLAUDE.md
+# SSH/TLS private keys — never commit
+*.pem
+*.ppk

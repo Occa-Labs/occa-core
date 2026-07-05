@@ -24,6 +24,7 @@ import {
   derivePolicyPda,
   deriveOperationsPda,
   deriveTreasuryPda,
+  formatChainError,
 } from "@occa/sdk";
 import { db } from "../../../infra/database/client";
 import { deployments } from "@occa/shared/schema";
@@ -185,7 +186,7 @@ export async function listCompanyTransactions({
           signature: sig.signature,
           slot: sig.slot,
           blockTime: sig.blockTime ?? null,
-          err: sig.err ? JSON.stringify(sig.err) : null,
+          err: sig.err ? formatChainError(sig.err) : null,
         });
       } else if (existing.blockTime === null && sig.blockTime != null) {
         existing.blockTime = sig.blockTime;

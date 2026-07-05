@@ -16,6 +16,7 @@ import { Router, type Request, type Response } from "express";
 import { StatusCodes } from "http-status-codes";
 import { and, eq, isNotNull, sql, inArray } from "drizzle-orm";
 import { PublicKey } from "@solana/web3.js";
+import { formatChainError } from "@occa/sdk";
 import {
   agentIdentities,
   companies,
@@ -338,7 +339,7 @@ router.get("/transactions/:sig", async (req: Request, res: Response) => {
       action,
       signer,
       accounts,
-      err: tx.meta?.err ? JSON.stringify(tx.meta.err) : null,
+      err: tx.meta?.err ? formatChainError(tx.meta.err) : null,
     });
   } catch (err) {
     log.error({ err, sig: req.params.sig }, "get transaction failed");

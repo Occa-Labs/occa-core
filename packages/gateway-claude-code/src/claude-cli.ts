@@ -15,7 +15,9 @@
 
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
+import { join } from "node:path";
 
 import type { ClaudeStreamEvent, RunClaudeInput, RunClaudeResult } from "./wire";
 
@@ -210,6 +212,14 @@ function spawnClaude(
   }
   if (input.maxBudgetUsd && input.maxBudgetUsd > 0) {
     args.push("--max-budget-usd", String(input.maxBudgetUsd));
+  }
+  // Headless `claude -p` does not auto-trust a project .mcp.json. If the
+  // seeded workspace carries one, pass it explicitly — and strictly, so only
+  // the workspace's own servers load (no user/global MCP bleed-through).
+  // Tool access still rides allowedTools (callers allow mcp__<name>).
+  const mcpConfig = join(input.cwd, ".mcp.json");
+  if (existsSync(mcpConfig)) {
+    args.push("--mcp-config", mcpConfig, "--strict-mcp-config");
   }
 
   return new Promise<SpawnOutput>((resolve) => {

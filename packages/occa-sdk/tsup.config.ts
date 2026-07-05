@@ -6,6 +6,7 @@ export default defineConfig({
     pda: "src/pda.ts",
     constants: "src/constants.ts",
     instructions: "src/instructions.ts",
+    errors: "src/errors.ts",
   },
   format: ["esm", "cjs"],
   dts: true,

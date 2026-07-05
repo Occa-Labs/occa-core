@@ -5,6 +5,7 @@ import {
   Transaction,
   TransactionInstruction,
 } from "@solana/web3.js";
+import { formatChainError } from "@occa/sdk";
 import { getConnection } from "../../../infra/solana/connection";
 
 /**
@@ -132,7 +133,7 @@ export async function awaitConfirmedTx(
     if (tx) {
       if (tx.meta?.err) {
         throw new Error(
-          `transaction ${signature} failed on-chain: ${JSON.stringify(tx.meta.err)}`,
+          `transaction ${signature} failed on-chain: ${formatChainError(tx.meta.err)}`,
         );
       }
       return tx;
