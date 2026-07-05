@@ -1,9 +1,18 @@
 {
   "name": "@occa/gateway-codex",
   "version": "0.1.0",
-  "description": "Codex Gateway — a thin HTTP service that wraps the `codex` CLI so OCCA can run Codex agents on a box it does not own (BYORT). Phase 1 ships the wire contract only; the service (codex-cli wrapper + HTTP server) lands in Phase 2.",
+  "description": "Codex Gateway — a thin HTTP service that wraps the `codex` CLI so OCCA can run Codex agents on a box it does not own (BYORT).",
   "license": "MIT",
   "author": "OCCA",
+  "homepage": "https://github.com/Occa-Labs/occa-core/tree/main/packages/gateway-codex#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Occa-Labs/occa-core.git",
+    "directory": "packages/gateway-codex"
+  },
+  "bugs": {
+    "url": "https://github.com/Occa-Labs/occa-core/issues"
+  },
   "keywords": [
     "occa",
     "codex",
@@ -13,24 +22,46 @@
     "byort"
   ],
   "type": "module",
-  "private": true,
-  "main": "./src/index.ts",
-  "types": "./src/index.ts",
-  "exports": {
-    ".": "./src/index.ts",
-    "./wire": "./src/wire.ts"
-  },
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "bin": {
-    "occa-codex-gateway": "./src/bin.ts"
+    "occa-codex-gateway": "./dist/bin.js",
+    "gateway-codex": "./dist/bin.js"
   },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./wire": {
+      "types": "./dist/wire.d.ts",
+      "import": "./dist/wire.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
+    "build": "tsup",
+    "prepack": "tsup",
     "dev": "tsx src/bin.ts",
-    "start": "tsx src/bin.ts",
+    "start": "node dist/bin.js",
     "doctor": "tsx src/bin.ts doctor"
   },
   "devDependencies": {
     "@types/node": "^20",
+    "tsup": "^8.0.0",
     "tsx": "^4.21.0",
     "typescript": "^5"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }

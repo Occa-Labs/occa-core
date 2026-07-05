@@ -8,7 +8,7 @@
     "dev:web": "pnpm --filter @occa/web dev",
     "dev:worker": "pnpm --filter @occa/worker dev",
     "build": "pnpm --filter @occa/web build",
-    "build:packages": "pnpm --filter @occa/sdk --filter @occa/gateway-claude-code build",
+    "build:packages": "pnpm --filter @occa/sdk --filter @occa/gateway-claude-code --filter @occa/gateway-codex build",
     "postinstall": "pnpm run build:packages",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
